@@ -18,7 +18,6 @@ class CallHandler {
     };
   }
 
-  // Main INVITE handler - routes to internal, ring group, inbound, or outbound
   async handleInvite(req, res) {
     const callId = req.get('Call-Id');
     const from = req.getParsedHeader('From');
@@ -26,7 +25,6 @@ class CallHandler {
     const userAgent = req.get('User-Agent') || '';
     const fromUri = from.uri || '';
 
-    // FIRST: Check if from a trunk by User-Agent or domain
     if (userAgent.includes('SignalWire') || userAgent.includes('Twilio') || fromUri.includes('signalwire.com') || fromUri.includes('twilio.com')) {
       logger.info(`INBOUND TRUNK DETECTED: User-Agent=${userAgent} From=${fromUri}`);
       return this._handleInbound(req, res, { isTrunk: true, trunkName: 'signalwire', trunk: this.trunkManager.getTrunk('signalwire') });
@@ -37,7 +35,6 @@ class CallHandler {
       return this._handleInbound(req, res, trunkCheck);
     }
 
-    // Extract extension numbers (handle + prefix)
     const fromExt = from.uri.match(/sip:\+?(\d+)@/)?.[1];
     const toExt = to.uri.match(/sip:\+?(\d+)@/)?.[1];
 
@@ -46,7 +43,6 @@ class CallHandler {
       return res.send(404);
     }
 
-    // Verify caller is registered
     const callerRegistered = await this.registrar.isRegistered(fromExt);
     if (!callerRegistered) {
       logger.warn(`INVITE rejected: caller ${fromExt} not registered`);
@@ -58,26 +54,20 @@ class CallHandler {
       return res.send(404);
     }
 
-    // Check if dialing a ring group
     const ringGroup = await this.ringGroupHandler.isRingGroup(toExt);
     if (ringGroup) {
       return this._handleRingGroupCall(req, res, fromExt, ringGroup, callId);
     }
 
-    // Check if this is an outbound call (non-extension number)
     const isExtension = await Extension.findOne({ extension: toExt });
     if (!isExtension) {
       return this._handleOutbound(req, res, fromExt, toExt, callId);
     }
 
-    // Internal call
     logger.info(`CALL ${fromExt} -> ${toExt} [${callId}]`);
     return this._handleInternal(req, res, fromExt, toExt, callId, from);
   }
 
-  // ============================================================
-  // INTERNAL CALL (extension to extension)
-  // ============================================================
   async _handleInternal(req, res, fromExt, toExt, callId, from) {
     const calleeContacts = await this.registrar.getContacts(toExt);
     if (calleeContacts.length === 0) {
@@ -90,7 +80,6 @@ class CallHandler {
     try {
       const contact = calleeContacts[0];
       const targetUri = `sip:${toExt}@${contact.ip}:${contact.port}`;
-
       const rtpOffer = await this._rtpengineOffer(callId, from.params.tag, req.body);
 
       if (!rtpOffer) {
@@ -100,10 +89,7 @@ class CallHandler {
       const { uas, uac } = await this.srf.createB2BUA(req, res, targetUri, {
         localSdpB: rtpOffer.sdp,
         localSdpA: async (sdp, res) => {
-          const rtpAnswer = await this._rtpengineAnswer(
-            callId, from.params.tag,
-            res.getParsedHeader('To').params.tag, sdp
-          );
+          const rtpAnswer = await this._rtpengineAnswer(callId, from.params.tag, res.getParsedHeader('To').params.tag, sdp);
           return rtpAnswer ? rtpAnswer.sdp : sdp;
         }
       });
@@ -112,40 +98,30 @@ class CallHandler {
       cdr.answerTime = new Date();
       cdr.recorded = !!rtpOffer;
       await cdr.save();
-
       logger.info(`CALL ANSWERED ${fromExt} -> ${toExt} [${callId}]`);
       this._trackCall(callId, uas, uac, cdr, fromExt, toExt, from.params.tag);
-
     } catch (err) {
       await this._failCall(cdr, err, fromExt, toExt);
     }
   }
 
-  // ============================================================
-  // RING GROUP CALL
-  // ============================================================
   async _handleRingGroupCall(req, res, fromExt, ringGroup, callId) {
     logger.info(`CALL ${fromExt} -> RG:${ringGroup.number} (${ringGroup.name}) [${callId}]`);
-
     const cdr = await this._createCDR(fromExt, `RG:${ringGroup.number}`, 'internal', callId, req.source_address);
 
     try {
       const result = await this.ringGroupHandler.ringGroup(req, res, ringGroup, cdr);
-
       if (result && result.uas && result.uac) {
         cdr.status = 'answered';
         cdr.answerTime = new Date();
         if (result.answeredBy) cdr.to = result.answeredBy;
         await cdr.save();
-
         const onDestroy = async (hangupBy) => {
           await this._endCall(cdr, hangupBy);
           this.activeCalls.delete(callId);
         };
-
         result.uas.on('destroy', () => { result.uac.destroy(); onDestroy('caller'); });
         result.uac.on('destroy', () => { result.uas.destroy(); onDestroy('callee'); });
-
         this.activeCalls.set(callId, { uas: result.uas, uac: result.uac, cdr, fromExt });
       }
     } catch (err) {
@@ -153,9 +129,6 @@ class CallHandler {
     }
   }
 
-  // ============================================================
-  // INBOUND CALL (from trunk/PSTN)
-  // ============================================================
   async _handleInbound(req, res, trunkCheck) {
     const callId = req.get('Call-Id');
     const callerID = this.callRouter.extractCallerID(req);
@@ -163,10 +136,9 @@ class CallHandler {
 
     logger.info(`INBOUND via ${trunkCheck.trunkName}: ${callerID} -> DID:${did} [${callId}]`);
 
-    // Find inbound route
     const route = await this.callRouter.findInboundRoute(did, trunkCheck.trunkName);
     if (!route) {
-      logger.warn(`INBOUND: no route for DID ${did}, rejecting`);
+      logger.warn(`INBOUND: no route for DID ${did}`);
       return res.send(404);
     }
 
@@ -175,11 +147,9 @@ class CallHandler {
     cdr.didNumber = did;
     await cdr.save();
 
-    // Route based on destination type
     const { type, target } = route.destination;
 
     if (type === 'extension') {
-      // Ring a single extension
       const contacts = await this.registrar.getContacts(target);
       if (contacts.length === 0) {
         logger.warn(`INBOUND: extension ${target} not registered`);
@@ -190,26 +160,24 @@ class CallHandler {
 
       const contact = contacts[0];
       const targetUri = `sip:${target}@${contact.ip}:${contact.port}`;
+      logger.info(`INBOUND: dialing ${target} at ${targetUri}`);
 
       try {
         const { uas, uac } = await this.srf.createB2BUA(req, res, targetUri, {
           localSdpB: req.body
         });
-
         cdr.status = 'answered';
         cdr.answerTime = new Date();
         cdr.to = target;
         await cdr.save();
-
         logger.info(`INBOUND ANSWERED: ${callerID} -> ${target} [${callId}]`);
         this._trackCall(callId, uas, uac, cdr, callerID, target, null);
-
       } catch (err) {
+        logger.error(`INBOUND DIAL FAILED: ${target} error=${err.message} status=${err.status}`);
         await this._failCall(cdr, err, callerID, target);
       }
 
     } else if (type === 'ringgroup') {
-      // Ring a group
       const ringGroup = await this.ringGroupHandler.isRingGroup(target);
       if (!ringGroup) {
         logger.warn(`INBOUND: ring group ${target} not found`);
@@ -223,12 +191,10 @@ class CallHandler {
           cdr.answerTime = new Date();
           if (result.answeredBy) cdr.to = result.answeredBy;
           await cdr.save();
-
           const onDestroy = async (hangupBy) => {
             await this._endCall(cdr, hangupBy);
             this.activeCalls.delete(callId);
           };
-
           result.uas.on('destroy', () => { result.uac.destroy(); onDestroy('caller'); });
           result.uac.on('destroy', () => { result.uas.destroy(); onDestroy('callee'); });
         }
@@ -237,7 +203,6 @@ class CallHandler {
       }
 
     } else {
-      // Hangup or unknown destination
       logger.info(`INBOUND: destination is hangup for DID ${did}`);
       cdr.status = 'completed';
       cdr.hangupCause = 'no_destination';
@@ -246,27 +211,21 @@ class CallHandler {
     }
   }
 
-  // ============================================================
-  // OUTBOUND CALL (extension to PSTN via trunk)
-  // ============================================================
   async _handleOutbound(req, res, fromExt, dialedNumber, callId) {
     logger.info(`OUTBOUND: ${fromExt} -> ${dialedNumber} [${callId}]`);
 
-    // Find matching outbound route
     const route = await this.callRouter.findOutboundRoute(dialedNumber);
     if (!route) {
       logger.warn(`OUTBOUND: no route for ${dialedNumber}`);
       return res.send(404);
     }
 
-    // Get the trunk
     const trunk = this.trunkManager.getTrunk(route.trunk);
     if (!trunk) {
       logger.warn(`OUTBOUND: trunk ${route.trunk} not found`);
       return res.send(503);
     }
 
-    // Process the number (strip/prepend)
     const processedNumber = this.callRouter.processOutboundNumber(dialedNumber, route);
     const callerId = route.callerIdNumber || fromExt;
 
@@ -276,43 +235,26 @@ class CallHandler {
 
     try {
       const { uas, uac } = await this.trunkManager.sendOutbound(req, res, trunk, processedNumber, callerId);
-
       cdr.status = 'answered';
       cdr.answerTime = new Date();
       await cdr.save();
-
       logger.info(`OUTBOUND ANSWERED: ${fromExt} -> ${processedNumber} via ${route.trunk} [${callId}]`);
       this._trackCall(callId, uas, uac, cdr, fromExt, dialedNumber, null);
-
     } catch (err) {
       await this._failCall(cdr, err, fromExt, dialedNumber);
     }
   }
 
-  // ============================================================
-  // SHARED HELPERS
-  // ============================================================
-
   async _createCDR(from, to, direction, sipCallId, fromIp) {
-    const cdr = new CDR({
-      callId: uuidv4(),
-      sipCallId,
-      from, to, direction,
-      status: 'ringing',
-      startTime: new Date(),
-      fromIp
-    });
+    const cdr = new CDR({ callId: uuidv4(), sipCallId, from, to, direction, status: 'ringing', startTime: new Date(), fromIp });
     await cdr.save();
     return cdr;
   }
 
   _trackCall(callId, uas, uac, cdr, fromExt, toExt, fromTag) {
     this.activeCalls.set(callId, { uas, uac, cdr, fromExt, toExt });
-
     const onDestroy = async (hangupBy) => {
       await this._endCall(cdr, hangupBy);
-
-      // Stop rtpengine and convert recording
       if (fromTag) {
         await this._rtpengineDelete(callId, fromTag);
         setTimeout(() => {
@@ -323,16 +265,12 @@ class CallHandler {
               cdr.recordingSize = require('fs').statSync(wavPath).size;
               cdr.save().catch(e => logger.error(`CDR update: ${e.message}`));
             }
-          } catch (err) {
-            logger.error(`Recording conversion: ${err.message}`);
-          }
+          } catch (err) { logger.error(`Recording conversion: ${err.message}`); }
         }, 2000);
       }
-
       this.activeCalls.delete(callId);
       await ActiveCall.deleteOne({ callId: cdr.callId }).catch(() => {});
     };
-
     uas.on('destroy', () => { uac.destroy(); onDestroy('caller'); });
     uac.on('destroy', () => { uas.destroy(); onDestroy('callee'); });
   }
@@ -364,7 +302,6 @@ class CallHandler {
       cdr.answerTime = new Date();
       cdr.recorded = false;
       await cdr.save();
-
       this.activeCalls.set(callId, { uas, uac, cdr });
       uas.on('destroy', async () => { uac.destroy(); await this._endCall(cdr, 'caller'); this.activeCalls.delete(callId); });
       uac.on('destroy', async () => { uas.destroy(); await this._endCall(cdr, 'callee'); this.activeCalls.delete(callId); });
@@ -373,15 +310,10 @@ class CallHandler {
     }
   }
 
-  // RTPEngine
   async _rtpengineOffer(callId, fromTag, sdp) {
     if (!this.rtpengine) return null;
     try {
-      const response = await this.rtpengine.offer(this.rtpengineConfig, {
-        'call-id': callId, 'from-tag': fromTag, sdp,
-        'record call': 'yes', 'flags': ['trust-address'],
-        'replace': ['origin', 'session-connection'], 'ICE': 'remove'
-      });
+      const response = await this.rtpengine.offer(this.rtpengineConfig, { 'call-id': callId, 'from-tag': fromTag, sdp, 'record call': 'yes', 'flags': ['trust-address'], 'replace': ['origin', 'session-connection'], 'ICE': 'remove' });
       return response.result === 'ok' ? response : null;
     } catch (err) { return null; }
   }
@@ -389,32 +321,20 @@ class CallHandler {
   async _rtpengineAnswer(callId, fromTag, toTag, sdp) {
     if (!this.rtpengine) return null;
     try {
-      const response = await this.rtpengine.answer(this.rtpengineConfig, {
-        'call-id': callId, 'from-tag': fromTag, 'to-tag': toTag, sdp,
-        'record call': 'yes', 'flags': ['trust-address'],
-        'replace': ['origin', 'session-connection'], 'ICE': 'remove'
-      });
+      const response = await this.rtpengine.answer(this.rtpengineConfig, { 'call-id': callId, 'from-tag': fromTag, 'to-tag': toTag, sdp, 'record call': 'yes', 'flags': ['trust-address'], 'replace': ['origin', 'session-connection'], 'ICE': 'remove' });
       return response.result === 'ok' ? response : null;
     } catch (err) { return null; }
   }
 
   async _rtpengineDelete(callId, fromTag) {
     if (!this.rtpengine) return;
-    try {
-      await this.rtpengine.delete(this.rtpengineConfig, { 'call-id': callId, 'from-tag': fromTag });
-    } catch (err) {}
+    try { await this.rtpengine.delete(this.rtpengineConfig, { 'call-id': callId, 'from-tag': fromTag }); } catch (err) {}
   }
 
   getActiveCalls() {
     const calls = [];
     for (const [id, call] of this.activeCalls) {
-      calls.push({
-        callId: id,
-        from: call.fromExt || call.cdr.from,
-        to: call.toExt || call.cdr.to,
-        duration: Math.round((Date.now() - call.cdr.startTime) / 1000),
-        status: call.cdr.status
-      });
+      calls.push({ callId: id, from: call.fromExt || call.cdr.from, to: call.toExt || call.cdr.to, duration: Math.round((Date.now() - call.cdr.startTime) / 1000), status: call.cdr.status });
     }
     return calls;
   }
