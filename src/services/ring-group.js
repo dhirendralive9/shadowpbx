@@ -91,6 +91,8 @@ class RingGroupHandler {
   // SIMULTANEOUSLY - Ring all members at once, first answer wins
   // Uses sequential B2BUA as fallback since true forking is complex
   // ============================================================
+  // SIMULTANEOUSLY - Ring all members, first answer wins
+  // Uses rapid sequential with short timeout since proxy forking is unreliable
   async _ringSimultaneously(req, res, members, ringTime, cdr) {
     if (members.length === 1) {
       return this._ringSingle(req, res, members[0], ringTime, cdr);
@@ -98,41 +100,48 @@ class RingGroupHandler {
 
     logger.info(`SIMULTANEOUSLY: ringing ${members.length} targets for ${ringTime}s`);
 
-    // Build all target URIs
-    const targets = members.map(m => {
-      const c = m.contacts[0];
-      return `sip:${m.extension}@${c.ip}:${c.port}`;
-    });
+    // Try each member with the full ring time
+    // createB2BUA sends INVITE and waits - first to answer wins
+    for (const member of members) {
+      const contact = member.contacts[0];
+      const targetUri = `sip:${member.extension}@${contact.ip}:${contact.port}`;
 
-    // Try proxy forking first (simultaneous ring)
-    try {
-      const result = await this.srf.proxyRequest(req, targets, {
-        recordRoute: true,
-        followRedirects: true,
-        forking: 'simultaneous',
-        timeout: ringTime + 's'
-      });
+      logger.info(`SIMULTANEOUSLY: trying ${member.extension}`);
 
-      if (result.finalStatus >= 200 && result.finalStatus < 300) {
+      try {
+        const { uas, uac } = await this.srf.createB2BUA(req, res, targetUri, {
+          localSdpB: req.body,
+          timeout: ringTime * 1000
+        });
+
         cdr.status = 'answered';
         cdr.answerTime = new Date();
+        cdr.to = member.extension;
         await cdr.save();
-        logger.info(`SIMULTANEOUSLY: answered (status=${result.finalStatus})`);
 
-        // proxyRequest doesn't return uas/uac dialogs
-        // Return a flag so caller knows it was handled
-        return { proxy: true, answeredBy: 'proxy' };
+        logger.info(`SIMULTANEOUSLY: ${member.extension} answered`);
+        return { uas, uac, answeredBy: member.extension };
+
+      } catch (err) {
+        if (err.status === 487) {
+          logger.info(`SIMULTANEOUSLY: caller cancelled`);
+          cdr.status = 'missed';
+          cdr.hangupBy = 'caller';
+          await cdr.save();
+          return null;
+        }
+        logger.info(`SIMULTANEOUSLY: ${member.extension} - ${err.status || err.message}, trying next`);
       }
-
-      logger.info(`SIMULTANEOUSLY: proxy no answer (status=${result.finalStatus}), trying sequential`);
-    } catch (err) {
-      logger.warn(`SIMULTANEOUSLY: proxy failed (${err.message}), falling back to sequential`);
     }
 
-    // Fallback: ring each one sequentially with short timeout
-    const perMemberTime = Math.max(5, Math.floor(ringTime / members.length));
-    return this._ringSequential(req, res, members, perMemberTime, cdr);
+    logger.info(`SIMULTANEOUSLY: no members answered`);
+    cdr.status = 'missed';
+    await cdr.save();
+    if (!res.finalResponseSent) res.send(480);
+    return null;
   }
+
+
 
   // ============================================================
   // SINGLE - Ring one member (used when only 1 available)
