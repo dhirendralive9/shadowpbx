@@ -1,7 +1,7 @@
 {
   "name": "shadowpbx",
-  "version": "1.0.0",
-  "description": "Minimal Node.js PBX - Internal communications with call recording",
+  "version": "2.0.0",
+  "description": "Minimal Node.js PBX - Internal communications, ring groups, SIP trunking, call recording",
   "main": "src/app.js",
   "scripts": {
     "start": "node src/app.js",
@@ -20,7 +20,7 @@
   "devDependencies": {
     "nodemon": "^3.0.0"
   },
-  "keywords": ["pbx", "sip", "voip", "nodejs", "drachtio", "call-recording", "telephony"],
+  "keywords": ["pbx", "sip", "voip", "nodejs", "drachtio", "call-recording", "telephony", "ring-group", "trunk"],
   "license": "MIT",
   "repository": {
     "type": "git",

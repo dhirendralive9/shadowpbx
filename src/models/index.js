@@ -1,6 +1,8 @@
 const mongoose = require('mongoose');
 
-// Extension schema - represents a SIP user/phone
+// ============================================================
+// Extension
+// ============================================================
 const extensionSchema = new mongoose.Schema({
   extension: { type: String, required: true, unique: true, index: true },
   name: { type: String, required: true },
@@ -8,7 +10,6 @@ const extensionSchema = new mongoose.Schema({
   email: { type: String },
   enabled: { type: Boolean, default: true },
   maxContacts: { type: Number, default: 5 },
-  // Runtime state (updated by SIP registrations)
   registrations: [{
     contact: String,
     ip: String,
@@ -29,7 +30,81 @@ extensionSchema.methods.getActiveContacts = function () {
   return this.registrations.filter(r => r.expires > new Date());
 };
 
-// Call Detail Record schema
+// ============================================================
+// Ring Group
+// ============================================================
+const ringGroupSchema = new mongoose.Schema({
+  number: { type: String, required: true, unique: true, index: true },
+  name: { type: String, required: true },
+  strategy: {
+    type: String,
+    enum: ['ringall', 'sequential', 'random'],
+    default: 'ringall'
+  },
+  members: [{ type: String }], // array of extension numbers
+  ringTime: { type: Number, default: 30 },  // seconds per member (sequential) or total (ringall)
+  noAnswerDest: {
+    type: { type: String, enum: ['hangup', 'extension', 'ringgroup', 'voicemail'], default: 'hangup' },
+    target: { type: String, default: '' }
+  },
+  enabled: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now }
+});
+
+// ============================================================
+// SIP Trunk
+// ============================================================
+const trunkSchema = new mongoose.Schema({
+  name: { type: String, required: true, unique: true },
+  provider: { type: String, default: 'signalwire' },
+  host: { type: String, required: true },        // e.g. yourspace.sip.signalwire.com
+  username: { type: String, required: true },
+  password: { type: String, required: true },
+  port: { type: Number, default: 5060 },
+  transport: { type: String, default: 'udp' },
+  register: { type: Boolean, default: true },
+  enabled: { type: Boolean, default: true },
+  // Registration state
+  registered: { type: Boolean, default: false },
+  registeredAt: Date,
+  createdAt: { type: Date, default: Date.now }
+});
+
+// ============================================================
+// Inbound Route
+// ============================================================
+const inboundRouteSchema = new mongoose.Schema({
+  did: { type: String, index: true },  // blank = catch-all
+  name: { type: String, required: true },
+  trunk: { type: String },  // trunk name, blank = any
+  destination: {
+    type: { type: String, enum: ['extension', 'ringgroup', 'hangup'], required: true },
+    target: { type: String, required: true }
+  },
+  enabled: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now }
+});
+
+// ============================================================
+// Outbound Route
+// ============================================================
+const outboundRouteSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  patterns: [{ type: String }],  // dial patterns e.g. "1NXXNXXXXXX", "NXXNXXXXXX"
+  trunk: { type: String, required: true },  // trunk name
+  prepend: { type: String, default: '' },   // prepend to dialed number
+  strip: { type: Number, default: 0 },      // digits to strip from front
+  callerIdNumber: { type: String },          // override caller ID
+  enabled: { type: Boolean, default: true },
+  priority: { type: Number, default: 10 },
+  createdAt: { type: Date, default: Date.now }
+});
+
+outboundRouteSchema.index({ priority: 1 });
+
+// ============================================================
+// CDR
+// ============================================================
 const cdrSchema = new mongoose.Schema({
   callId: { type: String, required: true, unique: true, index: true },
   from: { type: String, required: true, index: true },
@@ -43,26 +118,26 @@ const cdrSchema = new mongoose.Schema({
   startTime: { type: Date, default: Date.now },
   answerTime: Date,
   endTime: Date,
-  duration: { type: Number, default: 0 },      // total seconds
-  talkTime: { type: Number, default: 0 },       // seconds after answer
+  duration: { type: Number, default: 0 },
+  talkTime: { type: Number, default: 0 },
   hangupCause: String,
   hangupBy: { type: String, enum: ['caller', 'callee', 'system'] },
-  // Recording
   recorded: { type: Boolean, default: false },
   recordingPath: String,
   recordingSize: Number,
-  // SIP details
   sipCallId: String,
   fromIp: String,
   toIp: String,
   codec: String,
+  trunkUsed: String,
+  didNumber: String,
 });
 
 cdrSchema.index({ startTime: -1 });
-cdrSchema.index({ from: 1, startTime: -1 });
-cdrSchema.index({ to: 1, startTime: -1 });
 
-// Active call tracking (in-memory, but persisted for crash recovery)
+// ============================================================
+// Active Call (crash recovery)
+// ============================================================
 const activeCallSchema = new mongoose.Schema({
   callId: { type: String, required: true, unique: true },
   from: String,
@@ -75,7 +150,11 @@ const activeCallSchema = new mongoose.Schema({
 });
 
 const Extension = mongoose.model('Extension', extensionSchema);
+const RingGroup = mongoose.model('RingGroup', ringGroupSchema);
+const Trunk = mongoose.model('Trunk', trunkSchema);
+const InboundRoute = mongoose.model('InboundRoute', inboundRouteSchema);
+const OutboundRoute = mongoose.model('OutboundRoute', outboundRouteSchema);
 const CDR = mongoose.model('CDR', cdrSchema);
 const ActiveCall = mongoose.model('ActiveCall', activeCallSchema);
 
-module.exports = { Extension, CDR, ActiveCall };
+module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, CDR, ActiveCall };

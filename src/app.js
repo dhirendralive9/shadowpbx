@@ -5,38 +5,36 @@ const express = require('express');
 const logger = require('./utils/logger');
 const Registrar = require('./services/registrar');
 const CallHandler = require('./services/call-handler');
+const RingGroupHandler = require('./services/ring-group');
+const TrunkManager = require('./services/trunk-manager');
+const CallRouter = require('./services/call-router');
 const createApiRouter = require('./routes/api');
+const { convertAllPending } = require('./utils/converter');
 
-// Try to load rtpengine client (optional - recording won't work without it)
 let RtpEngineClient;
 try {
   RtpEngineClient = require('rtpengine-client').Client;
 } catch (e) {
-  logger.warn('rtpengine-client not available - call recording disabled');
+  logger.warn('rtpengine-client not available - recording disabled');
 }
 
 async function main() {
   logger.info('===========================================');
-  logger.info('  ShadowPBX v1.0 Starting...');
+  logger.info('  ShadowPBX v2.0 Starting...');
   logger.info('===========================================');
 
-  // ============================================================
-  // 1. Connect to MongoDB
-  // ============================================================
+  // 1. MongoDB
   const mongoUri = process.env.MONGODB_URI || 'mongodb://localhost:27017/shadowpbx';
   try {
     await mongoose.connect(mongoUri);
-    logger.info(`MongoDB connected: ${mongoUri}`);
+    logger.info(`MongoDB connected`);
   } catch (err) {
-    logger.error(`MongoDB connection failed: ${err.message}`);
+    logger.error(`MongoDB failed: ${err.message}`);
     process.exit(1);
   }
 
-  // ============================================================
-  // 2. Connect to Drachtio server
-  // ============================================================
+  // 2. Drachtio
   const srf = new Srf();
-
   srf.connect({
     host: process.env.DRACHTIO_HOST || '127.0.0.1',
     port: parseInt(process.env.DRACHTIO_PORT) || 9022,
@@ -44,38 +42,39 @@ async function main() {
   });
 
   srf.on('connect', (err, hp) => {
-    if (err) {
-      logger.error(`Drachtio connection failed: ${err}`);
-      return;
-    }
-    logger.info(`Drachtio connected, listening on ${hp}`);
+    if (err) return logger.error(`Drachtio failed: ${err}`);
+    logger.info(`Drachtio connected: ${hp}`);
   });
 
   srf.on('error', (err) => {
     logger.error(`Drachtio error: ${err.message}`);
-    // Will auto-reconnect
   });
 
-  // ============================================================
-  // 3. Initialize RTPEngine client (optional)
-  // ============================================================
+  // 3. RTPEngine
   let rtpengine = null;
   if (RtpEngineClient) {
     rtpengine = new RtpEngineClient();
-    logger.info(`RTPEngine client initialized (${process.env.RTPENGINE_HOST}:${process.env.RTPENGINE_PORT})`);
+    logger.info(`RTPEngine client ready`);
   }
 
-  // ============================================================
   // 4. Initialize services
-  // ============================================================
   const registrar = new Registrar(srf);
-  const callHandler = new CallHandler(srf, registrar, rtpengine);
+  const ringGroupHandler = new RingGroupHandler(srf, registrar, rtpengine);
+  const trunkManager = new TrunkManager(srf);
+  const callRouter = new CallRouter();
+  const callHandler = new CallHandler(srf, registrar, rtpengine, ringGroupHandler, trunkManager, callRouter);
 
-  // ============================================================
-  // 5. SIP request handlers
-  // ============================================================
+  // 5. Initialize trunks (register with providers)
+  try {
+    await trunkManager.initialize();
+  } catch (err) {
+    logger.warn(`Trunk initialization: ${err.message}`);
+  }
 
-  // Handle REGISTER
+  // 6. Convert pending recordings from previous session
+  setTimeout(() => convertAllPending(), 5000);
+
+  // 7. SIP handlers
   srf.register((req, res) => {
     registrar.handleRegister(req, res).catch(err => {
       logger.error(`Register error: ${err.message}`);
@@ -83,7 +82,6 @@ async function main() {
     });
   });
 
-  // Handle INVITE (calls)
   srf.invite((req, res) => {
     callHandler.handleInvite(req, res).catch(err => {
       logger.error(`Invite error: ${err.message}`);
@@ -91,20 +89,12 @@ async function main() {
     });
   });
 
-  // Handle OPTIONS (keepalive/ping)
-  srf.options((req, res) => {
-    res.send(200);
-  });
+  srf.options((req, res) => res.send(200));
 
-  // Handle BYE, CANCEL, etc are managed by drachtio dialog layer
-
-  // ============================================================
-  // 6. Express API server
-  // ============================================================
+  // 8. Express API
   const app = express();
   app.use(express.json());
 
-  // Simple auth middleware
   app.use('/api', (req, res, next) => {
     const token = req.headers['x-api-key'] || req.query.apikey;
     if (token !== process.env.ADMIN_SECRET) {
@@ -113,41 +103,29 @@ async function main() {
     next();
   });
 
-  app.use('/api', createApiRouter(registrar, callHandler));
-
-  // Public health check
-  app.get('/health', (req, res) => {
-    res.json({ status: 'ok', service: 'ShadowPBX' });
-  });
+  app.use('/api', createApiRouter(registrar, callHandler, trunkManager));
+  app.get('/health', (req, res) => res.json({ status: 'ok', service: 'ShadowPBX', version: '2.0.0' }));
 
   const apiPort = parseInt(process.env.API_PORT) || 3000;
-  app.listen(apiPort, () => {
-    logger.info(`API server listening on port ${apiPort}`);
-  });
+  app.listen(apiPort, () => logger.info(`API on port ${apiPort}`));
 
-  // ============================================================
-  // 7. Graceful shutdown
-  // ============================================================
-  process.on('SIGINT', async () => {
-    logger.info('Shutting down ShadowPBX...');
+  // 9. Graceful shutdown
+  const shutdown = async () => {
+    logger.info('Shutting down...');
     await mongoose.disconnect();
     process.exit(0);
-  });
-
-  process.on('SIGTERM', async () => {
-    logger.info('Shutting down ShadowPBX...');
-    await mongoose.disconnect();
-    process.exit(0);
-  });
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 
   logger.info('===========================================');
-  logger.info('  ShadowPBX v1.0 Ready!');
+  logger.info('  ShadowPBX v2.0 Ready!');
   logger.info(`  SIP: ${process.env.EXTERNAL_IP}:${process.env.SIP_PORT || 5060}`);
   logger.info(`  API: http://localhost:${apiPort}/api`);
   logger.info('===========================================');
 }
 
 main().catch(err => {
-  logger.error(`Fatal error: ${err.message}`);
+  logger.error(`Fatal: ${err.message}`);
   process.exit(1);
 });
