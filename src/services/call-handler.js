@@ -27,7 +27,7 @@ class CallHandler {
     const fromUri = from.uri || '';
 
     // FIRST: Check if from a trunk by User-Agent or domain
-    if (userAgent.includes('SignalWire') || fromUri.includes('signalwire.com')) {
+    if (userAgent.includes('SignalWire') || userAgent.includes('Twilio') || fromUri.includes('signalwire.com') || fromUri.includes('twilio.com')) {
       logger.info(`INBOUND TRUNK DETECTED: User-Agent=${userAgent} From=${fromUri}`);
       return this._handleInbound(req, res, { isTrunk: true, trunkName: 'signalwire', trunk: this.trunkManager.getTrunk('signalwire') });
     }
