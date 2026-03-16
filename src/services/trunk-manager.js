@@ -4,11 +4,10 @@ const logger = require('../utils/logger');
 class TrunkManager {
   constructor(srf) {
     this.srf = srf;
-    this.registrations = new Map(); // trunkName -> registration dialog
-    this.trunkEndpoints = new Map(); // trunkName -> trunk config
+    this.registrations = new Map();
+    this.trunkEndpoints = new Map();
   }
 
-  // Initialize all enabled trunks on startup
   async initialize() {
     const trunks = await Trunk.find({ enabled: true });
     for (const trunk of trunks) {
@@ -16,11 +15,9 @@ class TrunkManager {
     }
     logger.info(`TrunkManager: ${trunks.length} trunk(s) initialized`);
 
-    // Re-register every 5 minutes
     setInterval(() => this._refreshRegistrations(), 300000);
   }
 
-  // Register a trunk with the provider
   async registerTrunk(trunk) {
     if (!trunk.register) {
       this.trunkEndpoints.set(trunk.name, trunk);
@@ -46,26 +43,25 @@ class TrunkManager {
       });
 
       this.trunkEndpoints.set(trunk.name, trunk);
-
-      // Update DB
       trunk.registered = true;
       trunk.registeredAt = new Date();
       await trunk.save();
 
       logger.info(`Trunk ${trunk.name}: registered with ${trunk.host}`);
     } catch (err) {
+      // Even if registration fails, still add to endpoints for outbound
+      this.trunkEndpoints.set(trunk.name, trunk);
       logger.error(`Trunk ${trunk.name}: registration failed - ${err.message}`);
       trunk.registered = false;
       await trunk.save();
     }
   }
 
-  // Send outbound call through a trunk
-  // Send outbound call through a trunk
+  // Send outbound call through a trunk with auth
   async sendOutbound(req, res, trunk, dialedNumber, callerId) {
     const trunkConfig = typeof trunk === 'string' ? this.trunkEndpoints.get(trunk) : trunk;
     if (!trunkConfig) {
-      throw new Error(`Trunk not configured`);
+      throw new Error('Trunk not configured');
     }
 
     const host = trunkConfig.host || trunk.host;
@@ -90,26 +86,26 @@ class TrunkManager {
     });
   }
 
-  // Check if a SIP INVITE is from a known trunk (inbound)
   isFromTrunk(req) {
-    const sourceIp = req.source_address;
     const fromUri = req.getParsedHeader('From').uri;
+    const userAgent = req.get('User-Agent') || '';
 
     for (const [name, trunk] of this.trunkEndpoints) {
-      // Match by source IP or From URI domain
-      if (fromUri.includes(trunk.host)) {
+      if (fromUri.includes(trunk.host) ||
+          fromUri.includes('signalwire.com') ||
+          fromUri.includes('twilio.com') ||
+          userAgent.includes('SignalWire') ||
+          userAgent.includes('Twilio')) {
         return { isTrunk: true, trunkName: name, trunk };
       }
     }
     return { isTrunk: false };
   }
 
-  // Get trunk by name
   getTrunk(name) {
     return this.trunkEndpoints.get(name);
   }
 
-  // Get all trunk statuses
   async getStatus() {
     const trunks = await Trunk.find({});
     return trunks.map(t => ({
@@ -122,7 +118,6 @@ class TrunkManager {
     }));
   }
 
-  // Refresh registrations for active trunks
   async _refreshRegistrations() {
     const trunks = await Trunk.find({ enabled: true, register: true });
     for (const trunk of trunks) {

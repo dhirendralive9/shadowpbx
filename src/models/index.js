@@ -27,9 +27,7 @@ extensionSchema.methods.isRegistered = function () {
 };
 
 extensionSchema.methods.getActiveContacts = function () {
-  return this.registrations
-    .filter(r => r.expires > new Date())
-    .sort((a, b) => b.registeredAt - a.registeredAt);
+  return this.registrations.filter(r => r.expires > new Date());
 };
 
 // ============================================================
@@ -38,13 +36,19 @@ extensionSchema.methods.getActiveContacts = function () {
 const ringGroupSchema = new mongoose.Schema({
   number: { type: String, required: true, unique: true, index: true },
   name: { type: String, required: true },
+  description: { type: String, default: '' },
   strategy: {
     type: String,
-    enum: ['ringall', 'sequential', 'random'],
-    default: 'ringall'
+    enum: ['simultaneously', 'orderby', 'random', 'roundrobin', 'ringall', 'sequential'],
+    default: 'simultaneously'
   },
-  members: [{ type: String }], // array of extension numbers
-  ringTime: { type: Number, default: 30 },  // seconds per member (sequential) or total (ringall)
+  members: [{ type: String }],
+  ringTime: { type: Number, default: 30 },
+  callerIdPrefix: { type: String, default: '' },
+  hideCallerId: { type: Boolean, default: false },
+  stickyAgent: { type: Boolean, default: false },
+  lastAgentIndex: { type: Number, default: 0 },
+  stickyMap: { type: Map, of: String, default: {} },
   noAnswerDest: {
     type: { type: String, enum: ['hangup', 'extension', 'ringgroup', 'voicemail'], default: 'hangup' },
     target: { type: String, default: '' }
@@ -59,14 +63,13 @@ const ringGroupSchema = new mongoose.Schema({
 const trunkSchema = new mongoose.Schema({
   name: { type: String, required: true, unique: true },
   provider: { type: String, default: 'signalwire' },
-  host: { type: String, required: true },        // e.g. yourspace.sip.signalwire.com
+  host: { type: String, required: true },
   username: { type: String, required: true },
   password: { type: String, required: true },
   port: { type: Number, default: 5060 },
   transport: { type: String, default: 'udp' },
   register: { type: Boolean, default: true },
   enabled: { type: Boolean, default: true },
-  // Registration state
   registered: { type: Boolean, default: false },
   registeredAt: Date,
   createdAt: { type: Date, default: Date.now }
@@ -76,9 +79,9 @@ const trunkSchema = new mongoose.Schema({
 // Inbound Route
 // ============================================================
 const inboundRouteSchema = new mongoose.Schema({
-  did: { type: String, index: true },  // blank = catch-all
+  did: { type: String, index: true },
   name: { type: String, required: true },
-  trunk: { type: String },  // trunk name, blank = any
+  trunk: { type: String },
   destination: {
     type: { type: String, enum: ['extension', 'ringgroup', 'hangup'], required: true },
     target: { type: String, required: true }
@@ -92,11 +95,11 @@ const inboundRouteSchema = new mongoose.Schema({
 // ============================================================
 const outboundRouteSchema = new mongoose.Schema({
   name: { type: String, required: true },
-  patterns: [{ type: String }],  // dial patterns e.g. "1NXXNXXXXXX", "NXXNXXXXXX"
-  trunk: { type: String, required: true },  // trunk name
-  prepend: { type: String, default: '' },   // prepend to dialed number
-  strip: { type: Number, default: 0 },      // digits to strip from front
-  callerIdNumber: { type: String },          // override caller ID
+  patterns: [{ type: String }],
+  trunk: { type: String, required: true },
+  prepend: { type: String, default: '' },
+  strip: { type: Number, default: 0 },
+  callerIdNumber: { type: String },
   enabled: { type: Boolean, default: true },
   priority: { type: Number, default: 10 },
   createdAt: { type: Date, default: Date.now }
@@ -138,7 +141,7 @@ const cdrSchema = new mongoose.Schema({
 cdrSchema.index({ startTime: -1 });
 
 // ============================================================
-// Active Call (crash recovery)
+// Active Call
 // ============================================================
 const activeCallSchema = new mongoose.Schema({
   callId: { type: String, required: true, unique: true },
