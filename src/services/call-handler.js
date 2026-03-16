@@ -23,16 +23,23 @@ class CallHandler {
     const callId = req.get('Call-Id');
     const from = req.getParsedHeader('From');
     const to = req.getParsedHeader('To');
+    const userAgent = req.get('User-Agent') || '';
+    const fromUri = from.uri || '';
 
-    // Check if call is from a trunk (inbound from PSTN)
+    // FIRST: Check if from a trunk by User-Agent or domain
+    if (userAgent.includes('SignalWire') || fromUri.includes('signalwire.com')) {
+      logger.info(`INBOUND TRUNK DETECTED: User-Agent=${userAgent} From=${fromUri}`);
+      return this._handleInbound(req, res, { isTrunk: true, trunkName: 'signalwire', trunk: this.trunkManager.getTrunk('signalwire') });
+    }
+
     const trunkCheck = this.trunkManager.isFromTrunk(req);
     if (trunkCheck.isTrunk) {
       return this._handleInbound(req, res, trunkCheck);
     }
 
-    // Extract extension numbers
-    const fromExt = from.uri.match(/sip:(\d+)@/)?.[1];
-    const toExt = to.uri.match(/sip:(\d+)@/)?.[1];
+    // Extract extension numbers (handle + prefix)
+    const fromExt = from.uri.match(/sip:\+?(\d+)@/)?.[1];
+    const toExt = to.uri.match(/sip:\+?(\d+)@/)?.[1];
 
     if (!fromExt) {
       logger.warn(`INVITE rejected: invalid from=${fromExt}`);
