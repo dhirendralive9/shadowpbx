@@ -27,7 +27,9 @@ extensionSchema.methods.isRegistered = function () {
 };
 
 extensionSchema.methods.getActiveContacts = function () {
-  return this.registrations.filter(r => r.expires > new Date());
+  return this.registrations
+    .filter(r => r.expires > new Date())
+    .sort((a, b) => b.registeredAt - a.registeredAt);
 };
 
 // ============================================================
