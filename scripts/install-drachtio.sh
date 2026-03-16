@@ -40,8 +40,7 @@ MONGO_ADMIN_PASS=$(gen_pass 24)
 MONGO_APP_PASS=$(gen_pass 24)
 DRACHTIO_SECRET=$(gen_pass 20)
 API_SECRET=$(gen_pass 32)
-EXTERNAL_IP=$(curl -s ifconfig.me 2>/dev/null || curl -s icanhazip.com)
-
+EXTERNAL_IP=$(curl -4 -s ifconfig.me 2>/dev/null || curl -4 -s icanhazip.com 2>/dev/null || hostname -I | awk '{print $1}')
 MONGO_DB="shadowpbx"
 MONGO_USER="shadowpbx"
 APP_DIR="/opt/shadowpbx"
