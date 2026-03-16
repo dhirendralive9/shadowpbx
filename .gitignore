@@ -1,0 +1,6 @@
+node_modules/
+.env
+CREDENTIALS.txt
+recordings/
+*.log
+*.pcap
