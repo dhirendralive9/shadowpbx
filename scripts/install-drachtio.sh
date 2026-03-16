@@ -41,19 +41,26 @@ MONGO_APP_PASS=$(gen_pass 24)
 DRACHTIO_SECRET=$(gen_pass 20)
 API_SECRET=$(gen_pass 32)
 EXTERNAL_IP=$(curl -4 -s ifconfig.me 2>/dev/null || curl -4 -s icanhazip.com 2>/dev/null || hostname -I | awk '{print $1}')
+
 MONGO_DB="shadowpbx"
 MONGO_USER="shadowpbx"
 APP_DIR="/opt/shadowpbx"
 LOG_DIR="/var/log/shadowpbx"
 REC_DIR="/var/lib/shadowpbx/recordings"
 
+# Ask for SIP domain
+echo ""
+read -p "Enter your SIP domain (or press Enter for ${EXTERNAL_IP}): " SIP_DOMAIN
+SIP_DOMAIN=${SIP_DOMAIN:-$EXTERNAL_IP}
+
 echo ""
 echo -e "${BOLD}============================================${NC}"
 echo -e "${BOLD}  ShadowPBX - Fresh Server Installation${NC}"
 echo -e "${BOLD}============================================${NC}"
 echo ""
-echo "  Server IP: ${EXTERNAL_IP}"
-echo "  Target:    ${APP_DIR}"
+echo "  Server IP:   ${EXTERNAL_IP}"
+echo "  SIP Domain:  ${SIP_DOMAIN}"
+echo "  Target:      ${APP_DIR}"
 echo ""
 read -p "Continue? (y/n): " -n 1 -r
 echo ""
@@ -67,9 +74,13 @@ apt-get upgrade -y -qq
 apt-get install -y -qq \
   build-essential git curl wget gnupg lsb-release \
   libcurl4-openssl-dev libssl-dev \
-  pkg-config iptables-persistent netfilter-persistent \
-  openssl ca-certificates software-properties-common \
-  unzip htop
+  pkg-config openssl ca-certificates \
+  software-properties-common unzip htop
+
+# Install iptables-persistent non-interactively
+echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
+echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
+apt-get install -y -qq iptables-persistent netfilter-persistent
 
 log "System dependencies installed"
 
@@ -98,8 +109,9 @@ systemctl enable mongod
 systemctl start mongod
 sleep 3
 
-# Create admin and app users
-mongosh --quiet admin << MONGOEOF
+# Create users (skip if auth already enabled)
+if ! grep -q "authorization: enabled" /etc/mongod.conf; then
+  mongosh --quiet admin << MONGOEOF
 db.createUser({
   user: "admin",
   pwd: "${MONGO_ADMIN_PASS}",
@@ -107,7 +119,7 @@ db.createUser({
 });
 MONGOEOF
 
-mongosh --quiet ${MONGO_DB} << MONGOEOF
+  mongosh --quiet ${MONGO_DB} << MONGOEOF
 db.createUser({
   user: "${MONGO_USER}",
   pwd: "${MONGO_APP_PASS}",
@@ -115,18 +127,17 @@ db.createUser({
 });
 MONGOEOF
 
-# Enable auth + bind localhost only
-if ! grep -q "authorization: enabled" /etc/mongod.conf; then
+  # Enable auth + bind localhost only
   cat >> /etc/mongod.conf << EOF
 
 security:
   authorization: enabled
 EOF
+  sed -i 's/bindIp:.*/bindIp: 127.0.0.1/' /etc/mongod.conf
+  systemctl restart mongod
+  sleep 2
 fi
-sed -i 's/bindIp:.*/bindIp: 127.0.0.1/' /etc/mongod.conf
 
-systemctl restart mongod
-sleep 2
 log "MongoDB secured (auth enabled, localhost only)"
 
 MONGO_URI="mongodb://${MONGO_USER}:${MONGO_APP_PASS}@127.0.0.1:27017/${MONGO_DB}?authSource=${MONGO_DB}"
@@ -190,20 +201,26 @@ docker ps | grep -q rtpengine && log "RTPEngine running (ports 10000-20000)" || 
 # ============================================================
 step "6/8 - Setting up ShadowPBX application..."
 # ============================================================
-mkdir -p ${APP_DIR}/src ${LOG_DIR} ${REC_DIR}
+mkdir -p ${APP_DIR} ${LOG_DIR} ${REC_DIR}
 
-# Copy app files if in current directory
-if [ -f "./package.json" ]; then
-  cp -r ./src ./package.json ${APP_DIR}/ 2>/dev/null || true
+# Copy app files from current directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if [ -f "${SCRIPT_DIR}/package.json" ]; then
+  cp -r ${SCRIPT_DIR}/src ${APP_DIR}/
+  cp ${SCRIPT_DIR}/package.json ${APP_DIR}/
+  log "App files copied from ${SCRIPT_DIR}"
+else
+  warn "No source files found in ${SCRIPT_DIR} - copy them manually to ${APP_DIR}"
 fi
 
-# Write .env with generated passwords
+# Write .env
 cat > ${APP_DIR}/.env << EOF
 # ShadowPBX - Generated $(date)
 DRACHTIO_HOST=127.0.0.1
 DRACHTIO_PORT=9022
 DRACHTIO_SECRET=${DRACHTIO_SECRET}
-SIP_DOMAIN=pbx.webtobuzz.com
+SIP_DOMAIN=${SIP_DOMAIN}
 SIP_PORT=5060
 EXTERNAL_IP=${EXTERNAL_IP}
 RTPENGINE_HOST=127.0.0.1
@@ -219,14 +236,18 @@ SIP_RATE_LIMIT=20
 LOG_LEVEL=info
 EOF
 
-# Install dependencies
+log ".env created"
+
+# Install npm dependencies
 if [ -f "${APP_DIR}/package.json" ]; then
   cd ${APP_DIR}
-  npm install --production --silent
+  npm install --production 2>&1 | tail -5
   log "npm dependencies installed"
+else
+  warn "package.json not found - run 'npm install' manually in ${APP_DIR}"
 fi
 
-# systemd service
+# Create systemd service
 cat > /etc/systemd/system/shadowpbx.service << EOF
 [Unit]
 Description=ShadowPBX
@@ -249,14 +270,18 @@ EOF
 
 systemctl daemon-reload
 systemctl enable shadowpbx
-log "ShadowPBX service created"
+log "systemd service created"
 
 # ============================================================
 step "7/8 - Firewall + SIP brute force protection..."
 # ============================================================
 
-# SIP rate limiting chain
-iptables -N SIP_LIMIT 2>/dev/null || iptables -F SIP_LIMIT
+# Flush old SIP rules
+iptables -F SIP_LIMIT 2>/dev/null || true
+iptables -X SIP_LIMIT 2>/dev/null || true
+
+# Create SIP rate limiting chain
+iptables -N SIP_LIMIT 2>/dev/null || true
 iptables -A SIP_LIMIT -m recent --name sip_brute --set
 iptables -A SIP_LIMIT -m recent --name sip_brute --update --seconds 60 --hitcount 30 -j DROP
 iptables -A SIP_LIMIT -j ACCEPT
@@ -274,19 +299,21 @@ iptables -A INPUT -p tcp --dport 5060 -j SIP_LIMIT
 # RTP media
 iptables -A INPUT -p udp --dport 10000:20000 -j ACCEPT
 
-# API - localhost only (access via SSH tunnel: ssh -L 3000:localhost:3000 root@server)
+# API - localhost only
 iptables -A INPUT -p tcp --dport 3000 -s 127.0.0.1 -j ACCEPT
-iptables -A INPUT -p tcp --dport 3000 -j DROP
 
 netfilter-persistent save 2>/dev/null || true
 log "Firewall: SIP rate limited (30/min), API localhost-only"
 
-# fail2ban for SIP auth failures
+# fail2ban
 apt-get install -y -qq fail2ban
+
+mkdir -p /etc/fail2ban/filter.d /etc/fail2ban/jail.d
 
 cat > /etc/fail2ban/filter.d/shadowpbx.conf << 'FBEOF'
 [Definition]
 failregex = REGISTER rejected.*from <HOST>
+            REGISTER blocked.*IP <HOST>
             INVITE rejected.*from <HOST>
 ignoreregex =
 FBEOF
@@ -305,25 +332,26 @@ FBEOF
 
 systemctl enable fail2ban
 systemctl restart fail2ban
-log "fail2ban: 5 failed SIP auths = 1 hour IP ban"
+log "fail2ban: 5 failed SIP auths = 1 hour ban"
 
 # ============================================================
-step "8/8 - Verification..."
+step "8/8 - Starting ShadowPBX and verifying..."
 # ============================================================
+
+# Start the service
+systemctl start shadowpbx
+sleep 3
 
 echo ""
-echo "--- Services ---"
-echo -n "  MongoDB:   "; systemctl is-active mongod
-echo -n "  Docker:    "; systemctl is-active docker
-echo -n "  Drachtio:  "; docker ps --format '{{.Status}}' -f name=drachtio 2>/dev/null || echo "stopped"
-echo -n "  RTPEngine: "; docker ps --format '{{.Status}}' -f name=rtpengine 2>/dev/null || echo "stopped"
-echo -n "  fail2ban:  "; systemctl is-active fail2ban
+echo "--- Service Status ---"
+echo -n "  MongoDB:    "; systemctl is-active mongod
+echo -n "  Docker:     "; systemctl is-active docker
+echo -n "  Drachtio:   "; docker ps --format '{{.Status}}' -f name=drachtio 2>/dev/null || echo "not running"
+echo -n "  RTPEngine:  "; docker ps --format '{{.Status}}' -f name=rtpengine 2>/dev/null || echo "not running"
+echo -n "  ShadowPBX:  "; systemctl is-active shadowpbx
+echo -n "  fail2ban:   "; systemctl is-active fail2ban
 
-# ============================================================
-# CREDENTIALS OUTPUT
-# ============================================================
-
-# Also save to a file
+# Save credentials
 CREDS_FILE="${APP_DIR}/CREDENTIALS.txt"
 cat > ${CREDS_FILE} << CREDSEOF
 ShadowPBX Credentials - Generated $(date)
@@ -332,20 +360,12 @@ ShadowPBX Credentials - Generated $(date)
 MongoDB Admin:    admin / ${MONGO_ADMIN_PASS}
 MongoDB App:      ${MONGO_USER} / ${MONGO_APP_PASS}
 MongoDB URI:      ${MONGO_URI}
-
 Drachtio Secret:  ${DRACHTIO_SECRET}
-
 API URL:          http://localhost:3000/api
 API Key:          ${API_SECRET}
-
 SIP Server:       ${EXTERNAL_IP}:5060 (UDP)
-
-Security:
-  SIP rate limit: 30 req/min per IP
-  fail2ban:       5 failed auths = 1hr ban
-  API:            localhost only (SSH tunnel)
+SIP Domain:       ${SIP_DOMAIN}
 CREDSEOF
-
 chmod 600 ${CREDS_FILE}
 
 echo ""
@@ -368,18 +388,33 @@ echo ""
 echo -e "  ${BOLD}ShadowPBX API${NC}"
 echo "    URL:      http://localhost:3000/api"
 echo "    API Key:  ${API_SECRET}"
-echo "    Access:   ssh -L 3000:localhost:3000 root@${EXTERNAL_IP}"
+echo "    Remote:   ssh -L 3000:localhost:3000 root@${EXTERNAL_IP}"
 echo ""
-echo -e "  ${BOLD}SIP Server${NC}: ${EXTERNAL_IP}:5060 (UDP)"
+echo -e "  ${BOLD}SIP Server${NC}"
+echo "    Address:  ${EXTERNAL_IP}:5060 (UDP)"
+echo "    Domain:   ${SIP_DOMAIN}"
 echo ""
 echo -e "  ${BOLD}Security${NC}"
 echo "    SIP rate limit:  30 req/min per IP"
 echo "    fail2ban:        5 failed auths = 1hr ban"
 echo "    API port 3000:   localhost only"
 echo ""
-echo "  Credentials also saved: ${CREDS_FILE}"
+echo "  Credentials saved: ${CREDS_FILE}"
 echo ""
 echo -e "${BOLD}${RED}════════════════════════════════════════════════════════${NC}"
 echo ""
-echo "  Next: cd ${APP_DIR} && npm install && systemctl start shadowpbx"
+echo "  Create extensions:"
+echo ""
+EXT1_PASS=$(gen_pass 12)
+EXT2_PASS=$(gen_pass 12)
+EXT3_PASS=$(gen_pass 12)
+echo "    curl -X POST http://localhost:3000/api/extensions/bulk \\"
+echo "      -H 'Content-Type: application/json' \\"
+echo "      -H 'X-API-Key: ${API_SECRET}' \\"
+echo "      -d '{\"extensions\":["
+echo "        {\"extension\":\"2001\",\"name\":\"User One\",\"password\":\"${EXT1_PASS}\"},"
+echo "        {\"extension\":\"2002\",\"name\":\"User Two\",\"password\":\"${EXT2_PASS}\"},"
+echo "        {\"extension\":\"2003\",\"name\":\"User Three\",\"password\":\"${EXT3_PASS}\"}]}'"
+echo ""
+echo "  Then register softphone: Server=${EXTERNAL_IP} User=2001 Pass=${EXT1_PASS}"
 echo ""
