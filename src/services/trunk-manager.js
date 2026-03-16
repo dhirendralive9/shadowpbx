@@ -61,33 +61,33 @@ class TrunkManager {
   }
 
   // Send outbound call through a trunk
+  // Send outbound call through a trunk
   async sendOutbound(req, res, trunk, dialedNumber, callerId) {
-    const trunkConfig = this.trunkEndpoints.get(trunk.name);
+    const trunkConfig = typeof trunk === 'string' ? this.trunkEndpoints.get(trunk) : trunk;
     if (!trunkConfig) {
-      throw new Error(`Trunk ${trunk.name} not configured`);
+      throw new Error(`Trunk not configured`);
     }
 
-    const targetUri = `sip:${dialedNumber}@${trunkConfig.host}:${trunkConfig.port}`;
+    const host = trunkConfig.host || trunk.host;
+    const port = trunkConfig.port || 5060;
+    const username = trunkConfig.username || trunk.username;
+    const password = trunkConfig.password || trunk.password;
 
-    logger.info(`Outbound via ${trunk.name}: ${callerId} -> ${dialedNumber} @ ${trunkConfig.host}`);
+    const targetUri = `sip:${dialedNumber}@${host}:${port}`;
 
-    const opts = {
+    logger.info(`Outbound via ${trunkConfig.name || 'trunk'}: ${callerId} -> ${dialedNumber} @ ${host}`);
+
+    return this.srf.createB2BUA(req, res, targetUri, {
       localSdpB: req.body,
       headers: {
-        'From': `<sip:${callerId}@${trunkConfig.host}>`,
-        'P-Asserted-Identity': `<sip:${callerId}@${trunkConfig.host}>`
+        'From': `<sip:${username}@${host}>`,
+        'P-Asserted-Identity': `<sip:${callerId}@${host}>`
+      },
+      auth: {
+        username: username,
+        password: password
       }
-    };
-
-    // Add auth if trunk requires it
-    if (trunkConfig.username && trunkConfig.password) {
-      opts.auth = {
-        username: trunkConfig.username,
-        password: trunkConfig.password
-      };
-    }
-
-    return this.srf.createB2BUA(req, res, targetUri, opts);
+    });
   }
 
   // Check if a SIP INVITE is from a known trunk (inbound)
