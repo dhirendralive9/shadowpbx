@@ -1,3 +1,4 @@
+
 const { v4: uuidv4 } = require('uuid');
 const { Extension, CDR, ActiveCall } = require('../models');
 const logger = require('../utils/logger');
@@ -163,15 +164,23 @@ class CallHandler {
       logger.info(`INBOUND: dialing ${target} at ${targetUri}`);
 
       try {
-        const { uas, uac } = await this.srf.createB2BUA(req, res, targetUri, {
-          localSdpB: req.body
+        const result = await this.srf.proxyRequest(req, targetUri, {
+          recordRoute: true,
+          followRedirects: true,
+          timeout: '30s'
         });
-        cdr.status = 'answered';
-        cdr.answerTime = new Date();
-        cdr.to = target;
-        await cdr.save();
-        logger.info(`INBOUND ANSWERED: ${callerID} -> ${target} [${callId}]`);
-        this._trackCall(callId, uas, uac, cdr, callerID, target, null);
+
+        if (result.finalStatus >= 200 && result.finalStatus < 300) {
+          cdr.status = 'answered';
+          cdr.answerTime = new Date();
+          cdr.to = target;
+          await cdr.save();
+          logger.info(`INBOUND ANSWERED: ${callerID} -> ${target} [${callId}]`);
+        } else {
+          logger.warn(`INBOUND: ${target} no answer (status=${result.finalStatus})`);
+          cdr.status = 'missed';
+          await cdr.save();
+        }
       } catch (err) {
         logger.error(`INBOUND DIAL FAILED: ${target} error=${err.message} status=${err.status}`);
         await this._failCall(cdr, err, callerID, target);
@@ -186,7 +195,11 @@ class CallHandler {
 
       try {
         const result = await this.ringGroupHandler.ringGroup(req, res, ringGroup, cdr);
-        if (result && result.uas && result.uac) {
+        if (result && result.proxy) {
+          cdr.status = 'answered';
+          cdr.answerTime = new Date();
+          await cdr.save();
+        } else if (result && result.uas && result.uac) {
           cdr.status = 'answered';
           cdr.answerTime = new Date();
           if (result.answeredBy) cdr.to = result.answeredBy;
