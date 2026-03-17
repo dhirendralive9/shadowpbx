@@ -55,35 +55,38 @@ class RingGroupHandler {
   async _ringAll(req, res, members, ringTime, cdr) {
     logger.info(`RINGALL: dialing ${members.length} targets for ${ringTime}s`);
 
-    const targets = members.map(m => {
-      const c = m.contacts[0];
-      return `sip:${m.extension}@${c.ip}:${c.port}`;
-    });
+    // Use proxyRequest to first available member
+    // proxyRequest with multiple targets doesn't reliably ring all phones
+    const contact = members[0].contacts[0];
+    const targetUri = `sip:${members[0].extension}@${contact.ip}:${contact.port}`;
+
+    logger.info(`RINGALL: routing to first available ${members[0].extension} at ${targetUri}`);
 
     try {
-      const result = await this.srf.proxyRequest(req, targets, {
+      const result = await this.srf.proxyRequest(req, targetUri, {
         recordRoute: true,
         followRedirects: true,
-        forking: 'simultaneous',
         timeout: ringTime + 's'
       });
 
       if (result.finalStatus >= 200 && result.finalStatus < 300) {
         cdr.status = 'answered';
         cdr.answerTime = new Date();
+        cdr.to = members[0].extension;
         await cdr.save();
-        logger.info(`RINGALL: answered (status=${result.finalStatus})`);
-        return { proxy: true, answeredBy: 'proxy' };
+        logger.info(`RINGALL: ${members[0].extension} answered`);
+        return { proxy: true, answeredBy: members[0].extension };
       }
 
       logger.info(`RINGALL: no answer (status=${result.finalStatus})`);
       cdr.status = 'missed';
       await cdr.save();
       return null;
-
     } catch (err) {
-      logger.warn(`RINGALL: proxy failed (${err.message}), trying sequential`);
-      return this._ringSequential(req, res, members, ringTime, cdr);
+      logger.error(`RINGALL: failed - ${err.message}`);
+      cdr.status = 'missed';
+      await cdr.save();
+      return null;
     }
   }
 
