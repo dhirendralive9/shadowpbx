@@ -8,6 +8,7 @@ const CallHandler = require('./services/call-handler');
 const RingGroupHandler = require('./services/ring-group');
 const TrunkManager = require('./services/trunk-manager');
 const CallRouter = require('./services/call-router');
+const TransferHandler = require('./services/transfer-handler');
 const createApiRouter = require('./routes/api');
 const { convertAllPending } = require('./utils/converter');
 
@@ -75,6 +76,8 @@ async function main() {
   const trunkManager = new TrunkManager(srf);
   const callRouter = new CallRouter();
   const callHandler = new CallHandler(srf, registrar, rtpengine, ringGroupHandler, trunkManager, callRouter);
+  const transferHandler = new TransferHandler(srf, registrar, callHandler, trunkManager, callRouter);
+  callHandler.transferHandler = transferHandler;
 
   // 5. Initialize trunks (register with providers)
   try {
@@ -115,7 +118,7 @@ async function main() {
     next();
   });
 
-  app.use('/api', createApiRouter(registrar, callHandler, trunkManager));
+  app.use('/api', createApiRouter(registrar, callHandler, trunkManager, transferHandler));
   app.get('/health', (req, res) => res.json({ status: 'ok', service: 'ShadowPBX', version: '2.0.0' }));
 
   const apiPort = parseInt(process.env.API_PORT) || 3000;

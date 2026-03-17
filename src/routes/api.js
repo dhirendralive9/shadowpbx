@@ -2,7 +2,7 @@ const express = require('express');
 const { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, CDR } = require('../models');
 const logger = require('../utils/logger');
 
-function createApiRouter(registrar, callHandler, trunkManager) {
+function createApiRouter(registrar, callHandler, trunkManager, transferHandler) {
   const router = express.Router();
 
   // ============================================================
@@ -196,6 +196,29 @@ function createApiRouter(registrar, callHandler, trunkManager) {
       await OutboundRoute.findByIdAndDelete(req.params.id);
       res.json({ success: true, message: 'Route deleted' });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // ============================================================
+  // Active Calls + Transfer
+  // ============================================================
+  router.get('/calls/active', async (req, res) => {
+    try {
+      const calls = callHandler.getActiveCalls();
+      res.json({ success: true, calls });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.post('/calls/:callId/transfer', async (req, res) => {
+    try {
+      const { target, type } = req.body;
+      if (!target) return res.status(400).json({ success: false, error: 'target required' });
+      if (!transferHandler) return res.status(503).json({ success: false, error: 'Transfer handler not available' });
+
+      const result = await transferHandler.apiTransfer(req.params.callId, target, type || 'blind');
+      res.json(result);
+    } catch (err) {
+      res.status(err.message.includes('not found') ? 404 : 500).json({ success: false, error: err.message });
+    }
   });
 
   // ============================================================

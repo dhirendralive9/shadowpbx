@@ -137,6 +137,10 @@ const cdrSchema = new mongoose.Schema({
   codec: String,
   trunkUsed: String,
   didNumber: String,
+  transferredBy: String,
+  transferredTo: String,
+  transferType: { type: String, enum: ['blind', 'attended'] },
+  transferTime: Date,
 });
 
 cdrSchema.index({ startTime: -1 });

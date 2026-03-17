@@ -13,6 +13,7 @@ class CallHandler {
     this.trunkManager = trunkManager;
     this.callRouter = callRouter;
     this.activeCalls = new Map();
+    this.transferHandler = null; // set after construction
     this.rtpengineConfig = {
       host: process.env.RTPENGINE_HOST || '127.0.0.1',
       port: parseInt(process.env.RTPENGINE_PORT) || 22222
@@ -290,6 +291,12 @@ class CallHandler {
 
   _trackCall(callId, uas, uac, cdr, fromExt, toExt, fromTag) {
     this.activeCalls.set(callId, { uas, uac, cdr, fromExt, toExt });
+
+    // Attach transfer (REFER) handlers if transfer handler is available
+    if (this.transferHandler) {
+      this.transferHandler.attachReferHandlers(callId, uas, uac, cdr);
+    }
+
     const onDestroy = async (hangupBy) => {
       await this._endCall(cdr, hangupBy);
       if (fromTag) {
