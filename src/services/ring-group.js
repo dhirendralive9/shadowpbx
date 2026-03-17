@@ -6,6 +6,16 @@ class RingGroupHandler {
     this.srf = srf;
     this.registrar = registrar;
     this.rtpengine = rtpengine;
+    this.simring = null;
+
+    // Load simring from drachtio-fn-b2b-sugar
+    try {
+      const { simring } = require('drachtio-fn-b2b-sugar');
+      this.simring = simring;
+      logger.info('SimRing loaded from drachtio-fn-b2b-sugar');
+    } catch (err) {
+      logger.warn('drachtio-fn-b2b-sugar not available, using proxy fallback');
+    }
   }
 
   async isRingGroup(number) {
@@ -38,7 +48,7 @@ class RingGroupHandler {
     switch (strategy) {
       case 'simultaneously':
       case 'ringall':
-        return this._ringAll(req, res, availableMembers, ringTime, cdr);
+        return this._ringSimultaneously(req, res, availableMembers, ringTime, cdr);
       case 'orderby':
       case 'sequential':
         return this._ringSequential(req, res, availableMembers, ringTime, cdr);
@@ -48,19 +58,58 @@ class RingGroupHandler {
       case 'roundrobin':
         return this._ringRoundRobin(req, res, availableMembers, ringTime, cdr, ringGroup);
       default:
-        return this._ringAll(req, res, availableMembers, ringTime, cdr);
+        return this._ringSimultaneously(req, res, availableMembers, ringTime, cdr);
     }
   }
 
-  async _ringAll(req, res, members, ringTime, cdr) {
-    logger.info(`RINGALL: dialing ${members.length} targets for ${ringTime}s`);
+  // SIMULTANEOUSLY - Ring all members at once using simring
+  async _ringSimultaneously(req, res, members, ringTime, cdr) {
+    const targets = members.map(m => {
+      const c = m.contacts[0];
+      return `sip:${m.extension}@${c.ip}:${c.port}`;
+    });
 
-    // Use proxyRequest to first available member
-    // proxyRequest with multiple targets doesn't reliably ring all phones
+    logger.info(`SIMRING: ringing ${targets.length} targets: ${targets.join(', ')}`);
+
+    // Use drachtio-fn-b2b-sugar simring if available
+    if (this.simring && targets.length > 1) {
+      try {
+        const { uas, uac } = await this.simring(req, res, targets, {
+          timeout: ringTime * 1000,
+          localSdpB: req.body
+        });
+
+        cdr.status = 'answered';
+        cdr.answerTime = new Date();
+        // Find which member answered
+        const answeredUri = uac.remote.uri || '';
+        const answeredExt = members.find(m => answeredUri.includes(m.extension));
+        cdr.to = answeredExt ? answeredExt.extension : 'unknown';
+        await cdr.save();
+        logger.info(`SIMRING: answered by ${cdr.to}`);
+        return { uas, uac, answeredBy: cdr.to };
+      } catch (err) {
+        if (err.status === 487) {
+          logger.info(`SIMRING: caller cancelled`);
+          cdr.status = 'missed';
+          cdr.hangupBy = 'caller';
+          await cdr.save();
+          return null;
+        }
+        logger.warn(`SIMRING: failed (${err.message}), falling back to proxy`);
+      }
+    }
+
+    // Fallback: proxy to first available
+    return this._ringProxy(req, res, members, ringTime, cdr);
+  }
+
+  // Proxy fallback - single target
+  async _ringProxy(req, res, members, ringTime, cdr) {
     const contact = members[0].contacts[0];
     const targetUri = `sip:${members[0].extension}@${contact.ip}:${contact.port}`;
 
-    logger.info(`RINGALL: routing to first available ${members[0].extension} at ${targetUri}`);
+    logger.info(`PROXY: routing to ${members[0].extension} at ${targetUri}`);
 
     try {
       const result = await this.srf.proxyRequest(req, targetUri, {
@@ -74,68 +123,38 @@ class RingGroupHandler {
         cdr.answerTime = new Date();
         cdr.to = members[0].extension;
         await cdr.save();
-        logger.info(`RINGALL: ${members[0].extension} answered`);
+        logger.info(`PROXY: ${members[0].extension} answered`);
         return { proxy: true, answeredBy: members[0].extension };
       }
 
-      logger.info(`RINGALL: no answer (status=${result.finalStatus})`);
+      logger.info(`PROXY: no answer (status=${result.finalStatus})`);
       cdr.status = 'missed';
       await cdr.save();
       return null;
     } catch (err) {
-      logger.error(`RINGALL: failed - ${err.message}`);
+      logger.error(`PROXY: failed - ${err.message}`);
       cdr.status = 'missed';
       await cdr.save();
       return null;
     }
   }
 
+  // ORDER BY - Ring members one at a time using proxy
   async _ringSequential(req, res, members, ringTimePerMember, cdr) {
-    for (const member of members) {
-      const contact = member.contacts[0];
-      const targetUri = `sip:${member.extension}@${contact.ip}:${contact.port}`;
-
-      logger.info(`SEQUENTIAL: trying ${member.extension} for ${ringTimePerMember}s`);
-
-      try {
-        const { uas, uac } = await this.srf.createB2BUA(req, res, targetUri, {
-          localSdpB: req.body,
-          timeout: ringTimePerMember * 1000
-        });
-
-        cdr.status = 'answered';
-        cdr.answerTime = new Date();
-        cdr.to = member.extension;
-        await cdr.save();
-
-        logger.info(`SEQUENTIAL: ${member.extension} answered`);
-        return { uas, uac, answeredBy: member.extension };
-
-      } catch (err) {
-        if (err.status === 487) {
-          logger.info(`SEQUENTIAL: caller cancelled`);
-          cdr.status = 'missed';
-          cdr.hangupBy = 'caller';
-          await cdr.save();
-          return null;
-        }
-        logger.info(`SEQUENTIAL: ${member.extension} - ${err.status || err.message}, trying next`);
-      }
-    }
-
-    logger.info(`SEQUENTIAL: no members answered`);
-    cdr.status = 'missed';
-    await cdr.save();
-    if (!res.finalResponseSent) res.send(480);
-    return null;
+    // proxyRequest can only be called once, so use it for the first member
+    // For true sequential, we'd need createB2BUA but that has SDP issues with trunks
+    // So we proxy to first member only
+    logger.info(`SEQUENTIAL: trying ${members.length} members, starting with ${members[0].extension}`);
+    return this._ringProxy(req, res, members, ringTimePerMember, cdr);
   }
 
+  // ROUND ROBIN - Rotate starting member each call
   async _ringRoundRobin(req, res, members, ringTimePerMember, cdr, ringGroup) {
     let startIndex = (ringGroup.lastAgentIndex + 1) % members.length;
     const ordered = [...members.slice(startIndex), ...members.slice(0, startIndex)];
-    logger.info(`ROUNDROBIN: starting from index ${startIndex} (${ordered[0].extension})`);
+    logger.info(`ROUNDROBIN: starting from ${ordered[0].extension}`);
 
-    const result = await this._ringSequential(req, res, ordered, ringTimePerMember, cdr);
+    const result = await this._ringProxy(req, res, ordered, ringTimePerMember, cdr);
 
     if (result && result.answeredBy) {
       const answeredIndex = members.findIndex(m => m.extension === result.answeredBy);

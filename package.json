@@ -9,18 +9,29 @@
     "setup": "bash scripts/install-drachtio.sh"
   },
   "dependencies": {
+    "dotenv": "^16.3.1",
+    "drachtio-fn-b2b-sugar": "^0.2.1",
     "drachtio-srf": "^5.0.0",
-    "rtpengine-client": "^0.4.12",
     "express": "^4.18.2",
     "mongoose": "^7.6.0",
-    "dotenv": "^16.3.1",
+    "rtpengine-client": "^0.4.12",
     "uuid": "^9.0.0",
     "winston": "^3.11.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.0"
   },
-  "keywords": ["pbx", "sip", "voip", "nodejs", "drachtio", "call-recording", "telephony", "ring-group", "trunk"],
+  "keywords": [
+    "pbx",
+    "sip",
+    "voip",
+    "nodejs",
+    "drachtio",
+    "call-recording",
+    "telephony",
+    "ring-group",
+    "trunk"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
