@@ -69,40 +69,37 @@ class RingGroupHandler {
       return `sip:${m.extension}@${c.ip}:${c.port}`;
     });
 
-    logger.info(`SIMRING: ringing ${targets.length} targets: ${targets.join(', ')}`);
+    logger.info(`SIMRING: forking to ${targets.length} targets: ${targets.join(', ')}`);
 
-    // Use drachtio-fn-b2b-sugar simring if available
-    if (this.simring && targets.length > 1) {
-      try {
-        const { uas, uac } = await this.simring(req, res, targets, {
-          timeout: ringTime * 1000,
-          localSdpB: req.body
-        });
+    try {
+      const result = await this.srf.proxyRequest(req, targets, {
+        recordRoute: true,
+        followRedirects: true,
+        forking: 'simultaneous',
+        timeout: ringTime + 's'
+      });
 
+      if (result.finalStatus >= 200 && result.finalStatus < 300) {
         cdr.status = 'answered';
         cdr.answerTime = new Date();
-        // Find which member answered
-        const answeredUri = uac.remote.uri || '';
-        const answeredExt = members.find(m => answeredUri.includes(m.extension));
-        cdr.to = answeredExt ? answeredExt.extension : 'unknown';
         await cdr.save();
-        logger.info(`SIMRING: answered by ${cdr.to}`);
-        return { uas, uac, answeredBy: cdr.to };
-      } catch (err) {
-        if (err.status === 487) {
-          logger.info(`SIMRING: caller cancelled`);
-          cdr.status = 'missed';
-          cdr.hangupBy = 'caller';
-          await cdr.save();
-          return null;
-        }
-        logger.warn(`SIMRING: failed (${err.message}), falling back to proxy`);
+        logger.info(`SIMRING: answered (status=${result.finalStatus})`);
+        return { proxy: true, answeredBy: 'proxy' };
       }
-    }
 
-    // Fallback: proxy to first available
-    return this._ringProxy(req, res, members, ringTime, cdr);
+      logger.info(`SIMRING: no answer (status=${result.finalStatus})`);
+      cdr.status = 'missed';
+      await cdr.save();
+      return null;
+    } catch (err) {
+      logger.error(`SIMRING: error - ${err.message}`);
+      cdr.status = 'missed';
+      await cdr.save();
+      return null;
+    }
   }
+
+
 
   // Proxy fallback - single target
   async _ringProxy(req, res, members, ringTime, cdr) {
