@@ -91,12 +91,13 @@ class TransferHandler {
   // ============================================================
   // BLIND TRANSFER
   //
-  // The transferor wants to send the other party to a new target
-  // without consulting the target first.
-  //
-  //   Caller <--uas-- PBX --uac--> Callee
-  //   Callee presses transfer to 2003
-  //   PBX: INVITE 2003, if answers → bridge Caller<->2003, BYE Callee
+  // Media bridging strategy:
+  //   1. Get caller's current SDP (what they're sending RTP to)
+  //   2. INVITE new target with caller's SDP as the offer
+  //   3. New target answers with their SDP
+  //   4. Re-INVITE caller with new target's SDP
+  //   5. Now caller<->new target RTP flows directly
+  //   6. BYE the old extension (transferor)
   // ============================================================
   async _handleBlindTransfer(callId, transferorDialog, otherDialog, cdr, target, transferorExt) {
     try {
@@ -110,29 +111,50 @@ class TransferHandler {
 
       logger.info(`BLIND TRANSFER: dialing ${target} at ${targetUri}`);
 
-      // Get the SDP from the other party (the one being transferred)
-      const otherSdp = otherDialog.remote.sdp;
+      // Step 1: Get the caller's local SDP (what the PBX offered to the caller)
+      // This is what the caller is currently sending their RTP to
+      const callerLocalSdp = otherDialog.local.sdp;
+      const callerRemoteSdp = otherDialog.remote.sdp;
 
-      // Create new outbound call to transfer target
+      logger.debug(`BLIND TRANSFER: caller local SDP available: ${!!callerLocalSdp}`);
+      logger.debug(`BLIND TRANSFER: caller remote SDP available: ${!!callerRemoteSdp}`);
+
+      // Step 2: INVITE new target with the transferor's local SDP
+      // This way the new target's RTP will be set up to match the existing media path
+      const transferorLocalSdp = transferorDialog.local.sdp;
+
       const newUac = await this.srf.createUAC(targetUri, {
-        localSdp: otherSdp,
+        localSdp: transferorLocalSdp || callerLocalSdp,
         callingNumber: cdr.from
       });
 
       logger.info(`BLIND TRANSFER: ${target} answered`);
 
-      // Notify transferor of success
+      // Notify transferor of success before we disconnect them
       this._sendNotify(transferorDialog, 'SIP/2.0 200 OK');
 
-      // Re-INVITE the other party with the new target's SDP
+      // Step 3: Re-INVITE the caller (otherDialog) with the new target's SDP
+      // This makes the caller send their RTP to the new target's address
+      const newTargetSdp = newUac.remote.sdp;
+
       try {
-        await otherDialog.modify(newUac.remote.sdp);
-        logger.info(`BLIND TRANSFER: media re-negotiated with other party`);
+        await otherDialog.modify(newTargetSdp);
+        logger.info(`BLIND TRANSFER: caller re-INVITE successful — media path updated`);
       } catch (modErr) {
-        logger.warn(`BLIND TRANSFER: re-INVITE failed, using existing SDP: ${modErr.message}`);
+        logger.warn(`BLIND TRANSFER: caller re-INVITE failed: ${modErr.message}`);
       }
 
-      // BYE the transferor (they're done)
+      // Step 4: Re-INVITE the new target with the caller's updated SDP
+      // This ensures bidirectional RTP flow
+      try {
+        const updatedCallerSdp = otherDialog.remote.sdp;
+        await newUac.modify(updatedCallerSdp);
+        logger.info(`BLIND TRANSFER: target re-INVITE successful — bidirectional media established`);
+      } catch (modErr) {
+        logger.warn(`BLIND TRANSFER: target re-INVITE failed: ${modErr.message}`);
+      }
+
+      // Step 5: BYE the transferor (they're done)
       try {
         transferorDialog.destroy();
       } catch (e) {}
@@ -154,6 +176,11 @@ class TransferHandler {
         this._endTransferredCall(cdr, 'callee');
         this.callHandler.activeCalls.delete(callId);
       });
+
+      // Attach REFER handlers on the new pair for chain transfers
+      if (this.callHandler.transferHandler) {
+        this.callHandler.transferHandler.attachReferHandlers(callId, otherDialog, newUac, cdr);
+      }
 
       // Update active call tracking
       if (activeCall) {
