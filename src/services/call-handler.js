@@ -19,12 +19,26 @@ class CallHandler {
     };
   }
 
+  // Extract extension number from a SIP URI, handling various formats
+  _extractExtFromUri(uri) {
+    if (!uri) return null;
+    // Try standard sip:NNN@host
+    let match = uri.match(/sip:\+?(\d+)@/);
+    if (match) return match[1];
+    // Try sip:user@host (non-numeric userpart — return null)
+    match = uri.match(/sip:([^@]+)@/);
+    if (match && /^\d+$/.test(match[1])) return match[1];
+    return null;
+  }
+
   async handleInvite(req, res) {
     const callId = req.get('Call-Id');
     const from = req.getParsedHeader('From');
     const to = req.getParsedHeader('To');
     const userAgent = req.get('User-Agent') || '';
     const fromUri = from.uri || '';
+
+    logger.debug(`INVITE raw: From-URI=${fromUri} To-URI=${to.uri || ''} Call-Id=${callId} UA=${userAgent}`);
 
     if (userAgent.includes('SignalWire') || userAgent.includes('Twilio') || fromUri.includes('signalwire.com') || fromUri.includes('twilio.com')) {
       logger.info(`INBOUND TRUNK DETECTED: User-Agent=${userAgent} From=${fromUri}`);
@@ -36,11 +50,11 @@ class CallHandler {
       return this._handleInbound(req, res, trunkCheck);
     }
 
-    const fromExt = from.uri.match(/sip:\+?(\d+)@/)?.[1];
-    const toExt = to.uri.match(/sip:\+?(\d+)@/)?.[1];
+    const fromExt = this._extractExtFromUri(fromUri);
+    const toExt = this._extractExtFromUri(to.uri);
 
     if (!fromExt) {
-      logger.warn(`INVITE rejected: invalid from=${fromExt}`);
+      logger.warn(`INVITE rejected: cannot parse extension from From-URI: ${fromUri}`);
       return res.send(404);
     }
 
@@ -164,23 +178,27 @@ class CallHandler {
       logger.info(`INBOUND: dialing ${target} at ${targetUri}`);
 
       try {
-        const result = await this.srf.proxyRequest(req, targetUri, {
-          recordRoute: true,
-          followRedirects: true,
-          timeout: '30s'
+        const { uas, uac } = await this.srf.createB2BUA(req, res, targetUri, {
+          localSdpB: req.body,
+          headers: {
+            'To': `<${targetUri}>`
+          }
         });
 
-        if (result.finalStatus >= 200 && result.finalStatus < 300) {
-          cdr.status = 'answered';
-          cdr.answerTime = new Date();
-          cdr.to = target;
-          await cdr.save();
-          logger.info(`INBOUND ANSWERED: ${callerID} -> ${target} [${callId}]`);
-        } else {
-          logger.warn(`INBOUND: ${target} no answer (status=${result.finalStatus})`);
-          cdr.status = 'missed';
-          await cdr.save();
-        }
+        cdr.status = 'answered';
+        cdr.answerTime = new Date();
+        cdr.to = target;
+        await cdr.save();
+        logger.info(`INBOUND ANSWERED: ${callerID} -> ${target} [${callId}]`);
+
+        // Track the call
+        this.activeCalls.set(callId, { uas, uac, cdr, fromExt: callerID, toExt: target });
+        const onDestroy = async (hangupBy) => {
+          await this._endCall(cdr, hangupBy);
+          this.activeCalls.delete(callId);
+        };
+        uas.on('destroy', () => { uac.destroy(); onDestroy('caller'); });
+        uac.on('destroy', () => { uas.destroy(); onDestroy('callee'); });
       } catch (err) {
         logger.error(`INBOUND DIAL FAILED: ${target} error=${err.message} status=${err.status}`);
         await this._failCall(cdr, err, callerID, target);
@@ -195,21 +213,19 @@ class CallHandler {
 
       try {
         const result = await this.ringGroupHandler.ringGroup(req, res, ringGroup, cdr);
-        if (result && result.proxy) {
-          cdr.status = 'answered';
-          cdr.answerTime = new Date();
-          await cdr.save();
-        } else if (result && result.uas && result.uac) {
+        if (result && result.uas && result.uac) {
           cdr.status = 'answered';
           cdr.answerTime = new Date();
           if (result.answeredBy) cdr.to = result.answeredBy;
           await cdr.save();
+          logger.info(`INBOUND ANSWERED via RG: ${callerID} -> ${result.answeredBy || target} [${callId}]`);
           const onDestroy = async (hangupBy) => {
             await this._endCall(cdr, hangupBy);
             this.activeCalls.delete(callId);
           };
           result.uas.on('destroy', () => { result.uac.destroy(); onDestroy('caller'); });
           result.uac.on('destroy', () => { result.uas.destroy(); onDestroy('callee'); });
+          this.activeCalls.set(callId, { uas: result.uas, uac: result.uac, cdr, fromExt: callerID, toExt: result.answeredBy });
         }
       } catch (err) {
         await this._failCall(cdr, err, callerID, `RG:${target}`);
