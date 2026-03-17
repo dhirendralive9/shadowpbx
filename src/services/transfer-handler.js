@@ -311,9 +311,11 @@ class TransferHandler {
 
     if (type === 'blind') {
       logger.info(`API BLIND TRANSFER: ${callId} -> ${target}`);
-      // Treat UAS as the "transferor" being replaced
+      // API transfer: keep the caller (uas), drop current callee (uac)
+      // transferorDialog = uac (the one being replaced/dropped)
+      // otherDialog = uas (the caller who stays connected)
       await this._handleBlindTransfer(
-        activeCall.sipCallId, uas, uac, cdr, target, 'api'
+        activeCall.sipCallId, uac, uas, cdr, target, 'api'
       );
       return { success: true, message: `Call transferred to ${target}` };
     }
