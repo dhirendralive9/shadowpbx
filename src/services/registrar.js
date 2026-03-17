@@ -11,15 +11,23 @@ class Registrar {
     this.maxAttempts = parseInt(process.env.MAX_REGISTER_ATTEMPTS) || 5;
     this.banDuration = parseInt(process.env.REGISTER_BAN_DURATION) || 300; // seconds
 
+    // In-memory contact cache: extension -> [{ ip, port, userAgent, expires, registeredAt }]
+    // This avoids hitting MongoDB on every INVITE for contact lookups
+    this.contactCache = new Map();
+
     // Clean expired nonces every 5 min
     setInterval(() => this._cleanNonces(), 300000);
     // Clean expired registrations every 30 sec
     setInterval(() => this._cleanExpiredRegistrations(), 30000);
     // Clean expired bans every 60 sec
     setInterval(() => this._cleanBans(), 60000);
+    // Rebuild cache from MongoDB on startup (after 2 sec delay for DB connect)
+    setTimeout(() => this._rebuildCache(), 2000);
   }
 
-  // Handle incoming REGISTER requests
+  // ============================================================
+  // REGISTER handler
+  // ============================================================
   async handleRegister(req, res) {
     const from = req.getParsedHeader('From');
     const uri = from.uri;
@@ -41,7 +49,6 @@ class Registrar {
     const authHeader = req.get('Authorization');
 
     if (!authHeader) {
-      // Send 401 challenge
       return this._challenge(res, ext);
     }
 
@@ -88,39 +95,83 @@ class Registrar {
     if (expires === 0 || contact === '*') {
       extension.registrations = [];
       await extension.save();
+      this.contactCache.delete(ext);
       logger.info(`Extension ${ext} (${extension.name}) unregistered`);
       return res.send(200, { headers: { 'Expires': '0' } });
     }
 
-    // Extract contact URI and source IP
-    const source = `${req.source_address}:${req.source_port}`;
+    // Extract source info
+    const sourceIp = req.source_address;
+    const sourcePort = req.source_port;
     const ua = req.get('User-Agent') || 'unknown';
+    const source = `${sourceIp}:${sourcePort}`;
 
-    // Add/update registration
+    // Extract the Contact URI — this is the device's unique identity
+    // Contact header looks like: <sip:2002@192.168.1.5:8255;transport=udp>
+    // The local IP:port inside is unique per device, even behind shared NAT
+    const contactUri = this._extractContactUri(contact);
+
+    // Build new registration
     const regData = {
       contact: contact,
-      ip: req.source_address,
-      port: req.source_port,
+      contactUri: contactUri,  // stored for dedup matching
+      ip: sourceIp,
+      port: sourcePort,
       userAgent: ua,
       expires: new Date(Date.now() + expires * 1000),
       registeredAt: new Date()
     };
 
-    // Remove existing registration from same IP:port
-    extension.registrations = extension.registrations.filter(
-      r => !(r.ip === req.source_address && r.port === req.source_port)
-    );
+    // ============================================================
+    // NAT-AWARE DEDUPLICATION using Contact URI
+    //
+    // The Contact header contains the device's LOCAL address, e.g.:
+    //   <sip:2002@192.168.1.5:8255>
+    //
+    // This local address is UNIQUE PER DEVICE:
+    //   - Same device, new NAT port → same Contact URI → REPLACE
+    //   - Device A (192.168.1.5) + Device B (192.168.1.100) on
+    //     same public IP → different Contact URIs → KEEP BOTH
+    //   - Same device, same softphone → same Contact URI → REPLACE
+    //
+    // This correctly handles:
+    //   ✓ Same device re-registering (NAT port change) — replaced
+    //   ✓ Two different PCs behind same NAT — kept separate
+    //   ✓ Same PC, two different softphones — kept separate
+    //     (different local ports in Contact URI)
+    // ============================================================
 
-    // Enforce max contacts
+    extension.registrations = extension.registrations.filter(r => {
+      // Remove registration with same Contact URI (same device re-registering)
+      if (r.contactUri && contactUri && r.contactUri === contactUri) {
+        return false;
+      }
+      // Fallback: if no contactUri stored (old data), match by IP + UA
+      if (!r.contactUri && r.ip === sourceIp && this._normalizeUA(r.userAgent) === this._normalizeUA(ua)) {
+        return false;
+      }
+      // Remove expired ones while we're at it
+      if (r.expires <= new Date()) {
+        return false;
+      }
+      return true;
+    });
+
+    // Enforce max contacts (for genuinely different devices)
     if (extension.registrations.length >= extension.maxContacts) {
-      extension.registrations.shift(); // remove oldest
+      // Remove the oldest registration
+      extension.registrations.sort((a, b) => new Date(a.registeredAt) - new Date(b.registeredAt));
+      extension.registrations.shift();
     }
 
     extension.registrations.push(regData);
     extension.updatedAt = new Date();
     await extension.save();
 
-    logger.info(`Extension ${ext} (${extension.name}) registered from ${source} [${ua}] expires=${expires}s`);
+    // Update in-memory cache
+    this._updateCache(ext, extension.registrations);
+
+    logger.info(`Extension ${ext} (${extension.name}) registered from ${source} [${ua}] expires=${expires}s contacts=${extension.registrations.length}`);
 
     res.send(200, {
       headers: {
@@ -130,7 +181,144 @@ class Registrar {
     });
   }
 
-  // Send 401 challenge
+  // ============================================================
+  // Contact lookup (used by call-handler and ring-group)
+  // ============================================================
+
+  // Get active contacts for an extension, sorted newest-first
+  async getContacts(ext) {
+    // Try in-memory cache first
+    const cached = this.contactCache.get(ext);
+    if (cached && cached.length > 0) {
+      // Filter expired and return
+      const now = new Date();
+      const active = cached.filter(c => c.expires > now);
+      if (active.length > 0) {
+        return active;
+      }
+      // All cached contacts expired — fall through to DB
+    }
+
+    // Cache miss or all expired — fetch from MongoDB
+    const extension = await Extension.findOne({ extension: ext, enabled: true });
+    if (!extension) return [];
+
+    const active = extension.getActiveContacts();
+
+    // Update cache
+    this._updateCache(ext, active);
+
+    return active;
+  }
+
+  // Check if extension is registered
+  async isRegistered(ext) {
+    const contacts = await this.getContacts(ext);
+    return contacts.length > 0;
+  }
+
+  // ============================================================
+  // User-Agent normalization
+  //
+  // Different registrations from the same softphone may have
+  // slightly different UA strings (version changes, etc).
+  // We normalize to a fingerprint for dedup purposes.
+  // ============================================================
+  _normalizeUA(ua) {
+    if (!ua) return 'unknown';
+    const base = ua.split(/[\s\/]/)[0].toLowerCase().trim();
+    return base || 'unknown';
+  }
+
+  // ============================================================
+  // Contact URI extraction
+  //
+  // The Contact header contains the device's local SIP URI:
+  //   <sip:2002@192.168.1.5:8255;transport=udp>
+  //
+  // We extract the URI inside the angle brackets. This is the
+  // unique device identity — it stays the same across NAT port
+  // changes, but is different for each physical device.
+  //
+  // Scenarios:
+  //   Same PC, MicroSIP re-registers:
+  //     Contact: <sip:2002@192.168.1.5:8255> (same each time)
+  //     → replaces old entry
+  //
+  //   PC-A and PC-B behind same router:
+  //     PC-A: <sip:2002@192.168.1.5:8255>
+  //     PC-B: <sip:2002@192.168.1.100:6500>
+  //     → two separate entries, both ring
+  //
+  //   Same PC, MicroSIP + X-Lite:
+  //     MicroSIP: <sip:2002@192.168.1.5:8255>
+  //     X-Lite:   <sip:2002@192.168.1.5:5060>
+  //     → two separate entries (different local ports)
+  // ============================================================
+  _extractContactUri(contactHeader) {
+    if (!contactHeader) return null;
+    // Extract URI from angle brackets: <sip:user@host:port;params>
+    const match = contactHeader.match(/<([^>]+)>/);
+    if (match) return match[1];
+    // No angle brackets — try the raw value (strip params after ;)
+    const clean = contactHeader.split(';')[0].trim();
+    return clean || null;
+  }
+
+  // ============================================================
+  // In-memory cache management
+  // ============================================================
+  _updateCache(ext, registrations) {
+    if (!registrations || registrations.length === 0) {
+      this.contactCache.delete(ext);
+      return;
+    }
+
+    // Store sorted newest-first so contacts[0] is always the best
+    const contacts = registrations
+      .map(r => ({
+        ip: r.ip,
+        port: r.port,
+        userAgent: r.userAgent,
+        expires: r.expires instanceof Date ? r.expires : new Date(r.expires),
+        registeredAt: r.registeredAt instanceof Date ? r.registeredAt : new Date(r.registeredAt)
+      }))
+      .filter(c => c.expires > new Date())
+      .sort((a, b) => b.registeredAt.getTime() - a.registeredAt.getTime());
+
+    if (contacts.length > 0) {
+      this.contactCache.set(ext, contacts);
+    } else {
+      this.contactCache.delete(ext);
+    }
+  }
+
+  async _rebuildCache() {
+    try {
+      const extensions = await Extension.find({
+        'registrations.0': { $exists: true },
+        enabled: true
+      });
+      let count = 0;
+      for (const ext of extensions) {
+        const active = ext.getActiveContacts();
+        if (active.length > 0) {
+          this._updateCache(ext.extension, active);
+          count++;
+        }
+      }
+      if (count > 0) {
+        logger.info(`Contact cache rebuilt: ${count} extension(s) with active registrations`);
+      }
+    } catch (err) {
+      logger.error(`Cache rebuild error: ${err.message}`);
+    }
+  }
+
+  // ============================================================
+  // Auth helpers
+  // ============================================================
+
   _challenge(res, ext) {
     const nonce = crypto.randomBytes(16).toString('hex');
     this.nonceMap.set(nonce, { created: Date.now(), extension: ext });
@@ -142,7 +330,6 @@ class Registrar {
     });
   }
 
-  // Parse Authorization header
   _parseAuthHeader(header) {
     if (!header || !header.startsWith('Digest ')) return null;
 
@@ -161,7 +348,6 @@ class Registrar {
     return params;
   }
 
-  // Verify digest authentication
   _verifyDigest(params, password, method) {
     const { username, realm, nonce, uri, response, qop, nc, cnonce } = params;
 
@@ -187,20 +373,10 @@ class Registrar {
     return expected === response;
   }
 
-  // Get SIP contact URIs for an extension
-  async getContacts(ext) {
-    const extension = await Extension.findOne({ extension: ext, enabled: true });
-    if (!extension) return [];
-    return extension.getActiveContacts();
-  }
+  // ============================================================
+  // Cleanup tasks
+  // ============================================================
 
-  // Check if extension is registered
-  async isRegistered(ext) {
-    const contacts = await this.getContacts(ext);
-    return contacts.length > 0;
-  }
-
-  // Clean expired nonces (older than 5 min)
   _cleanNonces() {
     const cutoff = Date.now() - 300000;
     for (const [nonce, data] of this.nonceMap) {
@@ -208,7 +384,6 @@ class Registrar {
     }
   }
 
-  // Brute force protection
   _isBanned(ip) {
     const record = this.failedAttempts.get(ip);
     if (!record) return false;
@@ -239,13 +414,12 @@ class Registrar {
       if (record.banned && record.bannedUntil <= now) {
         this.failedAttempts.delete(ip);
       } else if (!record.banned && (now - record.firstAttempt) > 600000) {
-        // Clear non-banned records older than 10 min
         this.failedAttempts.delete(ip);
       }
     }
   }
 
-  // Clean expired registrations from MongoDB
+  // Clean expired registrations from MongoDB and update cache
   async _cleanExpiredRegistrations() {
     try {
       const extensions = await Extension.find({
@@ -257,6 +431,8 @@ class Registrar {
         ext.registrations = ext.registrations.filter(r => r.expires > new Date());
         if (ext.registrations.length !== before) {
           await ext.save();
+          // Update cache
+          this._updateCache(ext.extension, ext.registrations);
           if (ext.registrations.length === 0) {
             logger.debug(`Extension ${ext.extension} all registrations expired`);
           }

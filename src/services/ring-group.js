@@ -1,6 +1,43 @@
 const { RingGroup } = require('../models');
 const logger = require('../utils/logger');
 
+let doSimring = null;
+let Simring = null;
+
+try {
+  const sugar = require('drachtio-fn-b2b-sugar');
+  
+  // simring can be used two ways:
+  // 1. Direct: simring(req, res, uris, opts)
+  // 2. Factory: simring(logger) returns a function
+  // We try the factory pattern with our logger for debug output
+  const logAdapter = {
+    debug: (...args) => logger.debug(`[simring] ${args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')}`),
+    info: (...args) => logger.info(`[simring] ${args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')}`),
+    error: (...args) => logger.error(`[simring] ${args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ')}`)
+  };
+
+  try {
+    const factoryResult = sugar.simring(logAdapter);
+    if (typeof factoryResult === 'function') {
+      doSimring = factoryResult;
+      logger.info('drachtio-fn-b2b-sugar: simring loaded (factory mode with logger)');
+    } else {
+      // Factory didn't return a function — use simring directly
+      doSimring = sugar.simring;
+      logger.info('drachtio-fn-b2b-sugar: simring loaded (direct mode)');
+    }
+  } catch (e) {
+    // Factory failed — use simring directly
+    doSimring = sugar.simring;
+    logger.info('drachtio-fn-b2b-sugar: simring loaded (direct mode, factory failed)');
+  }
+
+  Simring = sugar.Simring;
+} catch (err) {
+  logger.warn(`drachtio-fn-b2b-sugar not available: ${err.message}`);
+}
+
 class RingGroupHandler {
   constructor(srf, registrar, rtpengine) {
     this.srf = srf;
@@ -12,6 +49,19 @@ class RingGroupHandler {
     return RingGroup.findOne({ number, enabled: true });
   }
 
+  // Get the MOST RECENT active contact for an extension
+  // (avoids stale NAT ports from older registrations)
+  _getLatestContact(contacts) {
+    if (contacts.length === 0) return null;
+    if (contacts.length === 1) return contacts[0];
+    // Sort by registeredAt descending, pick newest
+    return contacts.sort((a, b) => {
+      const ta = a.registeredAt ? new Date(a.registeredAt).getTime() : 0;
+      const tb = b.registeredAt ? new Date(b.registeredAt).getTime() : 0;
+      return tb - ta;
+    })[0];
+  }
+
   async ringGroup(req, res, ringGroup, cdr) {
     const { strategy, members, ringTime, name, number } = ringGroup;
 
@@ -21,7 +71,9 @@ class RingGroupHandler {
     for (const ext of members) {
       const contacts = await this.registrar.getContacts(ext);
       if (contacts.length > 0) {
-        availableMembers.push({ extension: ext, contacts });
+        const latest = this._getLatestContact(contacts);
+        availableMembers.push({ extension: ext, contact: latest });
+        logger.debug(`RINGGROUP: ${ext} -> ${latest.ip}:${latest.port} (${contacts.length} contact(s), using newest)`);
       }
     }
 
@@ -53,276 +105,135 @@ class RingGroupHandler {
   }
 
   // ============================================================
-  // SIMULTANEOUSLY - B2BUA parallel forking
+  // SIMULTANEOUSLY - using drachtio-fn-b2b-sugar simring
   //
-  // How it works:
-  //   1. Send 180 Ringing to the caller (via the inbound SIP leg)
-  //   2. Fire off parallel createUAC() INVITEs to every member
-  //   3. First member to answer (200 OK) wins
-  //   4. CANCEL all other pending legs
-  //   5. Bridge caller <-> winner using createUAS on the
-  //      original req/res with the winner's SDP
+  // simring sends parallel INVITEs to all URIs, connects the
+  // first answerer, and CANCELs the rest. It returns {uas, uac}
+  // just like createB2BUA.
   // ============================================================
   async _ringSimultaneously(req, res, members, ringTime, cdr) {
-    const targets = members.map(m => {
-      const c = m.contacts[0];
-      return { extension: m.extension, uri: `sip:${m.extension}@${c.ip}:${c.port}` };
-    });
+    const uris = members.map(m => `sip:${m.extension}@${m.contact.ip}:${m.contact.port}`);
 
-    logger.info(`SIMRING: forking to ${targets.length} targets: ${targets.map(t => t.uri).join(', ')}`);
+    logger.info(`SIMRING: forking to ${uris.length} targets: ${uris.join(', ')}`);
 
-    return new Promise((resolve) => {
-      let answered = false;
-      let sentFinal = false;
-      const pendingLegs = [];
-      let ringTimer = null;
-      let resolvedAlready = false;
+    if (!doSimring) {
+      logger.warn('SIMRING: drachtio-fn-b2b-sugar not available, falling back to B2BUA with first member');
+      return this._ringB2BUA(req, res, members[0], ringTime, cdr);
+    }
 
-      const _resolve = (val) => {
-        if (resolvedAlready) return;
-        resolvedAlready = true;
-        resolve(val);
+    try {
+      const opts = {
+        localSdpB: req.body
       };
 
-      // Ring timeout — if nobody answers within ringTime seconds
-      ringTimer = setTimeout(() => {
-        if (!answered) {
-          logger.info(`SIMRING: ring timeout after ${ringTime}s`);
-          _cancelAll();
-          if (!sentFinal) {
-            sentFinal = true;
-            cdr.status = 'missed';
-            cdr.save().catch(() => {});
-            if (!res.finalResponseSent) {
-              try { res.send(408); } catch (e) {}
-            }
-          }
-          _resolve(null);
-        }
-      }, (ringTime || 30) * 1000);
+      // simring signature: doSimring(req, res, uris, opts)
+      // It works like createB2BUA but forks to multiple URIs
+      const { uas, uac } = await doSimring(req, res, uris, opts);
 
-      // Cancel all outbound legs except the winner
-      const _cancelAll = (winnerLeg) => {
-        for (const leg of pendingLegs) {
-          if (leg === winnerLeg) continue;
-          // Cancel pending INVITE (not yet answered)
-          if (leg.cancelFn) {
-            try { leg.cancelFn(); } catch (e) {}
-          }
-          // Destroy answered dialog if somehow another answered too
-          if (leg.uac) {
-            try { leg.uac.destroy(); } catch (e) {}
-          }
-        }
-      };
+      logger.info(`SIMRING: answered! Connected to ${uac.remote.uri || 'unknown'}`);
 
-      // Send 180 Ringing to the inbound caller immediately
+      // Try to determine which member answered
+      let answeredBy = null;
+      const remoteUri = uac.remote ? uac.remote.uri : '';
+      for (const m of members) {
+        if (remoteUri.includes(m.extension) || remoteUri.includes(m.contact.ip)) {
+          answeredBy = m.extension;
+          break;
+        }
+      }
+
+      cdr.status = 'answered';
+      cdr.answerTime = new Date();
+      if (answeredBy) cdr.to = answeredBy;
+      await cdr.save();
+
+      return { uas, uac, answeredBy };
+    } catch (err) {
+      logger.error(`SIMRING: failed - ${err.message} (status=${err.status || 'N/A'})`);
+      cdr.status = 'missed';
+      await cdr.save();
       if (!res.finalResponseSent) {
-        try { res.send(180); } catch (e) {}
+        try { res.send(480); } catch (e) {}
       }
-
-      // Track how many legs have finished (answered or failed)
-      let completedLegs = 0;
-      const totalLegs = targets.length;
-
-      const _checkAllFailed = () => {
-        completedLegs++;
-        if (completedLegs >= totalLegs && !answered) {
-          // All legs failed/rejected — nobody answered
-          clearTimeout(ringTimer);
-          logger.info(`SIMRING: all ${totalLegs} legs failed, nobody answered`);
-          if (!sentFinal) {
-            sentFinal = true;
-            cdr.status = 'missed';
-            cdr.save().catch(() => {});
-            if (!res.finalResponseSent) {
-              try { res.send(480); } catch (e) {}
-            }
-          }
-          _resolve(null);
-        }
-      };
-
-      // Fire parallel INVITEs to all members
-      for (const target of targets) {
-        const leg = { extension: target.extension, uac: null, cancelFn: null };
-        pendingLegs.push(leg);
-
-        this.srf.createUAC(target.uri, {
-          localSdp: req.body,
-          headers: {
-            'To': `<${target.uri}>`
-          }
-        }, {
-          cbProvisional: (provisionalRes) => {
-            logger.debug(`SIMRING: ${target.extension} provisional ${provisionalRes.status}`);
-          },
-          cbRequest: (err, reqSent) => {
-            // reqSent is the ClientRequest — we can cancel it
-            if (reqSent && typeof reqSent.cancel === 'function') {
-              leg.cancelFn = () => {
-                try { reqSent.cancel(); } catch (e) {}
-              };
-            }
-          }
-        })
-        .then((uac) => {
-          // This member answered (200 OK received)
-          leg.uac = uac;
-
-          if (answered) {
-            // Someone else already won — BYE this one
-            logger.debug(`SIMRING: ${target.extension} answered but too late, destroying`);
-            try { uac.destroy(); } catch (e) {}
-            _checkAllFailed();
-            return;
-          }
-
-          // *** WINNER ***
-          answered = true;
-          clearTimeout(ringTimer);
-          logger.info(`SIMRING: ${target.extension} answered FIRST!`);
-
-          // Cancel all other pending/ringing legs
-          _cancelAll(leg);
-
-          // Bridge: send 200 OK to the inbound caller with winner's SDP
-          const winnerSdp = uac.remote.sdp;
-
-          this.srf.createUAS(req, res, {
-            localSdp: winnerSdp
-          })
-          .then((uas) => {
-            sentFinal = true;
-            logger.info(`SIMRING: call bridged, caller <-> ${target.extension}`);
-            _resolve({ uas, uac, answeredBy: target.extension });
-          })
-          .catch((err) => {
-            logger.error(`SIMRING: failed to send 200 to caller: ${err.message}`);
-            try { uac.destroy(); } catch (e) {}
-            if (!sentFinal) {
-              sentFinal = true;
-              cdr.status = 'failed';
-              cdr.save().catch(() => {});
-            }
-            _resolve(null);
-          });
-        })
-        .catch((err) => {
-          // This leg failed — busy, rejected, network error, etc.
-          const status = err.status || 'error';
-          logger.debug(`SIMRING: ${target.extension} failed (${status}): ${err.message}`);
-          _checkAllFailed();
-        });
-      }
-    });
+      return null;
+    }
   }
 
   // ============================================================
-  // SEQUENTIAL - Ring members one at a time using B2BUA
-  //
-  // Sends 180 to caller, then tries each member with a per-member
-  // timeout. First to answer gets bridged.
+  // SEQUENTIAL - Ring members one at a time using createB2BUA
+  // Uses passFailure:false to try the next member on failure
   // ============================================================
   async _ringSequential(req, res, members, ringTimePerMember, cdr) {
     logger.info(`SEQUENTIAL: trying ${members.length} members in order`);
 
-    // Send 180 Ringing to caller
-    if (!res.finalResponseSent) {
-      try { res.send(180); } catch (e) {}
-    }
+    for (let i = 0; i < members.length; i++) {
+      const member = members[i];
+      const targetUri = `sip:${member.extension}@${member.contact.ip}:${member.contact.port}`;
+      const isLast = (i === members.length - 1);
 
-    for (const member of members) {
-      const contact = member.contacts[0];
-      const targetUri = `sip:${member.extension}@${contact.ip}:${contact.port}`;
-
-      logger.info(`SEQUENTIAL: trying ${member.extension} at ${targetUri}`);
+      logger.info(`SEQUENTIAL: trying ${member.extension} at ${targetUri} (${i + 1}/${members.length})`);
 
       try {
-        const result = await this._tryMember(req, res, targetUri, member.extension, ringTimePerMember);
-        if (result) {
-          logger.info(`SEQUENTIAL: ${member.extension} answered`);
-          return { ...result, answeredBy: member.extension };
-        }
-        logger.info(`SEQUENTIAL: ${member.extension} no answer, trying next`);
+        const { uas, uac } = await this.srf.createB2BUA(req, res, targetUri, {
+          localSdpB: req.body,
+          passFailure: isLast,  // only pass failure on the last attempt
+          headers: {},
+          finalTimeout: `${ringTimePerMember || 15}s`
+        });
+
+        logger.info(`SEQUENTIAL: ${member.extension} answered`);
+        cdr.status = 'answered';
+        cdr.answerTime = new Date();
+        cdr.to = member.extension;
+        await cdr.save();
+        return { uas, uac, answeredBy: member.extension };
       } catch (err) {
-        logger.debug(`SEQUENTIAL: ${member.extension} error: ${err.message}`);
+        logger.info(`SEQUENTIAL: ${member.extension} failed (${err.status || err.message})`);
+        // If caller hung up (487), stop trying
+        if (err.status === 487) {
+          logger.info('SEQUENTIAL: caller canceled');
+          cdr.status = 'missed';
+          cdr.hangupCause = 'caller_cancel';
+          await cdr.save();
+          return null;
+        }
+        // Continue to next member
       }
     }
 
     // Nobody answered
-    logger.info(`SEQUENTIAL: no members answered`);
+    logger.info('SEQUENTIAL: no members answered');
     cdr.status = 'missed';
     await cdr.save();
-    if (!res.finalResponseSent) {
-      try { res.send(480); } catch (e) {}
-    }
     return null;
   }
 
-  // Try ringing a single member with a timeout
-  _tryMember(req, res, targetUri, extension, timeout) {
-    return new Promise((resolve) => {
-      let done = false;
-      let uacDialog = null;
-      let cancelFn = null;
+  // ============================================================
+  // Single B2BUA call - fallback when simring is not available
+  // ============================================================
+  async _ringB2BUA(req, res, member, ringTime, cdr) {
+    const targetUri = `sip:${member.extension}@${member.contact.ip}:${member.contact.port}`;
+    logger.info(`B2BUA: dialing ${member.extension} at ${targetUri}`);
 
-      const perMemberTimeout = Math.min(timeout || 15, 30);
-
-      const timer = setTimeout(() => {
-        if (!done) {
-          done = true;
-          logger.debug(`SEQUENTIAL: ${extension} timeout after ${perMemberTimeout}s`);
-          if (cancelFn) { try { cancelFn(); } catch (e) {} }
-          if (uacDialog) { try { uacDialog.destroy(); } catch (e) {} }
-          resolve(null);
-        }
-      }, perMemberTimeout * 1000);
-
-      this.srf.createUAC(targetUri, {
-        localSdp: req.body,
-        headers: {
-          'To': `<${targetUri}>`
-        }
-      }, {
-        cbRequest: (err, reqSent) => {
-          if (reqSent && typeof reqSent.cancel === 'function') {
-            cancelFn = () => {
-              try { reqSent.cancel(); } catch (e) {}
-            };
-          }
-        }
-      })
-      .then((uac) => {
-        if (done) {
-          // Timed out already
-          try { uac.destroy(); } catch (e) {}
-          return;
-        }
-        done = true;
-        clearTimeout(timer);
-        uacDialog = uac;
-
-        // Member answered — bridge to caller
-        const winnerSdp = uac.remote.sdp;
-        this.srf.createUAS(req, res, { localSdp: winnerSdp })
-          .then((uas) => {
-            resolve({ uas, uac });
-          })
-          .catch((err) => {
-            logger.error(`SEQUENTIAL: failed to bridge ${extension}: ${err.message}`);
-            try { uac.destroy(); } catch (e) {}
-            resolve(null);
-          });
-      })
-      .catch((err) => {
-        if (!done) {
-          done = true;
-          clearTimeout(timer);
-          resolve(null);
-        }
+    try {
+      const { uas, uac } = await this.srf.createB2BUA(req, res, targetUri, {
+        localSdpB: req.body,
+        headers: {},
+        finalTimeout: `${ringTime || 30}s`
       });
-    });
+
+      logger.info(`B2BUA: ${member.extension} answered`);
+      cdr.status = 'answered';
+      cdr.answerTime = new Date();
+      cdr.to = member.extension;
+      await cdr.save();
+      return { uas, uac, answeredBy: member.extension };
+    } catch (err) {
+      logger.error(`B2BUA: ${member.extension} failed - ${err.message}`);
+      cdr.status = 'missed';
+      await cdr.save();
+      return null;
+    }
   }
 
   // ============================================================

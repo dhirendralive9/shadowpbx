@@ -28,6 +28,18 @@ async function main() {
   try {
     await mongoose.connect(mongoUri);
     logger.info(`MongoDB connected`);
+
+    // Clean all registrations on startup — softphones will re-register
+    // with fresh NAT-mapped ports within seconds
+    try {
+      const result = await mongoose.connection.db.collection('extensions').updateMany(
+        {},
+        { $set: { registrations: [] } }
+      );
+      logger.info(`Startup: cleared registrations from ${result.modifiedCount} extension(s) — waiting for fresh re-registers`);
+    } catch (cleanErr) {
+      logger.warn(`Startup registration cleanup: ${cleanErr.message}`);
+    }
   } catch (err) {
     logger.error(`MongoDB failed: ${err.message}`);
     process.exit(1);

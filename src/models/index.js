@@ -12,6 +12,7 @@ const extensionSchema = new mongoose.Schema({
   maxContacts: { type: Number, default: 5 },
   registrations: [{
     contact: String,
+    contactUri: String,
     ip: String,
     port: Number,
     userAgent: String,

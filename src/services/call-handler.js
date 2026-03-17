@@ -83,6 +83,16 @@ class CallHandler {
     return this._handleInternal(req, res, fromExt, toExt, callId, from);
   }
 
+  // Get the most recent contact for an extension (avoids stale NAT ports)
+  _getLatestContact(contacts) {
+    if (contacts.length <= 1) return contacts[0];
+    return contacts.sort((a, b) => {
+      const ta = a.registeredAt ? new Date(a.registeredAt).getTime() : 0;
+      const tb = b.registeredAt ? new Date(b.registeredAt).getTime() : 0;
+      return tb - ta;
+    })[0];
+  }
+
   async _handleInternal(req, res, fromExt, toExt, callId, from) {
     const calleeContacts = await this.registrar.getContacts(toExt);
     if (calleeContacts.length === 0) {
@@ -93,8 +103,9 @@ class CallHandler {
     const cdr = await this._createCDR(fromExt, toExt, 'internal', callId, req.source_address);
 
     try {
-      const contact = calleeContacts[0];
+      const contact = this._getLatestContact(calleeContacts);
       const targetUri = `sip:${toExt}@${contact.ip}:${contact.port}`;
+      logger.info(`INTERNAL: ${fromExt} -> ${toExt} at ${contact.ip}:${contact.port}`);
       const rtpOffer = await this._rtpengineOffer(callId, from.params.tag, req.body);
 
       if (!rtpOffer) {
@@ -173,16 +184,13 @@ class CallHandler {
         return res.send(480);
       }
 
-      const contact = contacts[0];
+      const contact = this._getLatestContact(contacts);
       const targetUri = `sip:${target}@${contact.ip}:${contact.port}`;
-      logger.info(`INBOUND: dialing ${target} at ${targetUri}`);
+      logger.info(`INBOUND: dialing ${target} at ${contact.ip}:${contact.port}`);
 
       try {
         const { uas, uac } = await this.srf.createB2BUA(req, res, targetUri, {
-          localSdpB: req.body,
-          headers: {
-            'To': `<${targetUri}>`
-          }
+          localSdpB: req.body
         });
 
         cdr.status = 'answered';
