@@ -59,7 +59,7 @@ class TransferHandler {
       return res.send(400);
     }
 
-    // Parse target from Refer-To: <sip:2003@domain> or <sip:+15551234567@domain>
+    // Parse target from Refer-To: <sip:2003@domain> or <sip:*70@domain>
     const targetMatch = referTo.match(/<sip:([^@>]+)@/);
     if (!targetMatch) {
       logger.warn(`REFER rejected: cannot parse Refer-To: ${referTo} [${callId}]`);
@@ -68,6 +68,25 @@ class TransferHandler {
 
     const target = targetMatch[1].replace(/^\+/, '');
     const transferorExt = initiatedBy === 'caller' ? cdr.from : cdr.to;
+
+    // Check if this is a park code (*70-*79)
+    const parkHandler = this.callHandler.parkHandler;
+    if (parkHandler) {
+      const parkSlot = parkHandler.parseParkCode(target);
+      if (parkSlot) {
+        logger.info(`PARK VIA REFER: ${transferorExt} parking to slot ${parkSlot} [${callId}]`);
+        res.send(202);
+        this._sendNotify(transferorDialog, 'SIP/2.0 100 Trying');
+
+        const success = await parkHandler.parkViaTransfer(callId, transferorDialog, otherDialog, cdr, parkSlot, transferorExt);
+        if (success) {
+          this._sendNotify(transferorDialog, 'SIP/2.0 200 OK');
+        } else {
+          this._sendNotify(transferorDialog, 'SIP/2.0 503 Service Unavailable');
+        }
+        return;
+      }
+    }
 
     // Check for Replaces header (attended transfer)
     const replacesHeader = req.get('Replaces') || '';
