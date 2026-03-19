@@ -14,6 +14,7 @@ class CallHandler {
     this.callRouter = callRouter;
     this.activeCalls = new Map();
     this.transferHandler = null; // set after construction
+    this.holdHandler = null;     // set after construction
     this.rtpengineConfig = {
       host: process.env.RTPENGINE_HOST || '127.0.0.1',
       port: parseInt(process.env.RTPENGINE_PORT) || 22222
@@ -297,6 +298,11 @@ class CallHandler {
       this.transferHandler.attachReferHandlers(callId, uas, uac, cdr);
     }
 
+    // Attach hold (re-INVITE) handlers if hold handler is available
+    if (this.holdHandler) {
+      this.holdHandler.attachHoldHandlers(callId, uas, uac, cdr);
+    }
+
     const onDestroy = async (hangupBy) => {
       await this._endCall(cdr, hangupBy);
       if (fromTag) {
@@ -313,6 +319,7 @@ class CallHandler {
         }, 2000);
       }
       this.activeCalls.delete(callId);
+      if (this.holdHandler) this.holdHandler.cleanup(callId);
       await ActiveCall.deleteOne({ callId: cdr.callId }).catch(() => {});
     };
     uas.on('destroy', () => { uac.destroy(); onDestroy('caller'); });
@@ -378,7 +385,17 @@ class CallHandler {
   getActiveCalls() {
     const calls = [];
     for (const [id, call] of this.activeCalls) {
-      calls.push({ callId: id, from: call.fromExt || call.cdr.from, to: call.toExt || call.cdr.to, duration: Math.round((Date.now() - call.cdr.startTime) / 1000), status: call.cdr.status });
+      const holdState = this.holdHandler ? this.holdHandler.holdState.get(id) : null;
+      calls.push({
+        callId: id,
+        cdrCallId: call.cdr ? call.cdr.callId : null,
+        from: call.fromExt || call.cdr.from,
+        to: call.toExt || call.cdr.to,
+        duration: Math.round((Date.now() - call.cdr.startTime) / 1000),
+        status: holdState && holdState.held ? 'held' : call.cdr.status,
+        onHold: holdState ? holdState.held : false,
+        heldBy: holdState ? holdState.heldBy : null
+      });
     }
     return calls;
   }

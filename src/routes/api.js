@@ -2,7 +2,7 @@ const express = require('express');
 const { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, CDR } = require('../models');
 const logger = require('../utils/logger');
 
-function createApiRouter(registrar, callHandler, trunkManager, transferHandler) {
+function createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler) {
   const router = express.Router();
 
   // ============================================================
@@ -215,6 +215,26 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler) 
       if (!transferHandler) return res.status(503).json({ success: false, error: 'Transfer handler not available' });
 
       const result = await transferHandler.apiTransfer(req.params.callId, target, type || 'blind');
+      res.json(result);
+    } catch (err) {
+      res.status(err.message.includes('not found') ? 404 : 500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.post('/calls/:callId/hold', async (req, res) => {
+    try {
+      if (!holdHandler) return res.status(503).json({ success: false, error: 'Hold handler not available' });
+      const result = await holdHandler.apiHold(req.params.callId);
+      res.json(result);
+    } catch (err) {
+      res.status(err.message.includes('not found') ? 404 : 500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.post('/calls/:callId/resume', async (req, res) => {
+    try {
+      if (!holdHandler) return res.status(503).json({ success: false, error: 'Hold handler not available' });
+      const result = await holdHandler.apiResume(req.params.callId);
       res.json(result);
     } catch (err) {
       res.status(err.message.includes('not found') ? 404 : 500).json({ success: false, error: err.message });
