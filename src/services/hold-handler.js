@@ -179,7 +179,7 @@ class HoldHandler {
       // RTPEngine "play media" command injects audio into the call
       // We play to the party that was NOT the one who pressed hold
       // (i.e., the held party should hear MOH)
-      const response = await this.rtpengine['play media'](this.rtpengineConfig, {
+      const response = await this.rtpengine.playMedia(this.rtpengineConfig, {
         'call-id': sipCallId,
         'from-tag': this._getFromTag(activeCall, heldBy),
         file: mohFile,
@@ -210,7 +210,7 @@ class HoldHandler {
     const sipCallId = activeCall.cdr.sipCallId;
 
     try {
-      const response = await this.rtpengine['stop media'](this.rtpengineConfig, {
+      const response = await this.rtpengine.stopMedia(this.rtpengineConfig, {
         'call-id': sipCallId,
         'from-tag': this._getFromTag(activeCall, state.heldBy)
       });

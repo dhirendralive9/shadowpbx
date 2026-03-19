@@ -486,7 +486,7 @@ class ParkHandler {
       let fromTag = '';
       try { fromTag = parked.uas.sip.remoteTag || parked.uas.sip.localTag || ''; } catch (e) {}
 
-      const response = await rtpengine['play media'](this.holdHandler.rtpengineConfig, {
+      const response = await rtpengine.playMedia(this.holdHandler.rtpengineConfig, {
         'call-id': parked.cdr.sipCallId,
         'from-tag': fromTag,
         file: mohFile,
@@ -512,7 +512,7 @@ class ParkHandler {
       let fromTag = '';
       try { fromTag = parked.uas.sip.remoteTag || parked.uas.sip.localTag || ''; } catch (e) {}
 
-      await rtpengine['stop media'](this.holdHandler.rtpengineConfig, {
+      await rtpengine.stopMedia(this.holdHandler.rtpengineConfig, {
         'call-id': parked.cdr.sipCallId,
         'from-tag': fromTag
       });

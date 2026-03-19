@@ -226,7 +226,7 @@ class VoicemailHandler {
     if (greetingFile && this.rtpengine) {
       logger.info(`VM: playing greeting ${greetingFile} for ${targetExt} (call-id=${sipCallId} from-tag=${fromTag})`);
       try {
-        const playResp = await this.rtpengine['play media'](this.rtpengineConfig, {
+        const playResp = await this.rtpengine.playMedia(this.rtpengineConfig, {
           'call-id': sipCallId,
           'from-tag': fromTag,
           file: greetingFile
@@ -250,7 +250,7 @@ class VoicemailHandler {
     if (beepFile && this.rtpengine) {
       logger.info(`VM: playing beep ${beepFile}`);
       try {
-        const beepResp = await this.rtpengine['play media'](this.rtpengineConfig, {
+        const beepResp = await this.rtpengine.playMedia(this.rtpengineConfig, {
           'call-id': sipCallId,
           'from-tag': fromTag,
           file: beepFile
@@ -267,7 +267,7 @@ class VoicemailHandler {
     // Step 3: Start recording via RTPEngine
     if (this.rtpengine) {
       try {
-        const recResponse = await this.rtpengine['start recording'](this.rtpengineConfig, {
+        const recResponse = await this.rtpengine.startRecording(this.rtpengineConfig, {
           'call-id': sipCallId,
           'from-tag': fromTag,
           'output-file': recordingPath
@@ -370,7 +370,7 @@ class VoicemailHandler {
   async _rtpengineStopRecording(callId, fromTag) {
     if (!this.rtpengine) return;
     try {
-      await this.rtpengine['stop recording'](this.rtpengineConfig, {
+      await this.rtpengine.stopRecording(this.rtpengineConfig, {
         'call-id': callId,
         'from-tag': fromTag
       });
