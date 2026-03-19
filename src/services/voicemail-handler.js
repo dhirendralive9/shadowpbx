@@ -106,6 +106,30 @@ class VoicemailHandler {
 
       logger.info(`VM: call answered for voicemail [${cdr.callId}]`);
 
+      // Complete the RTPEngine session by sending the answer
+      // This is critical — without this, RTPEngine doesn't know both sides
+      // and can't inject audio via play media
+      const toTag = uas.sip ? uas.sip.localTag : '';
+      if (toTag) {
+        try {
+          await this.rtpengine.answer(this.rtpengineConfig, {
+            'call-id': sipCallId,
+            'from-tag': fromTag,
+            'to-tag': toTag,
+            sdp: rtpOffer.sdp,
+            'flags': ['trust-address'],
+            'replace': ['origin', 'session-connection'],
+            'ICE': 'remove'
+          });
+          logger.info(`VM: RTPEngine answer completed (from-tag=${fromTag} to-tag=${toTag})`);
+        } catch (ansErr) {
+          logger.warn(`VM: RTPEngine answer failed: ${ansErr.message}`);
+        }
+      }
+
+      // Wait for RTP session to stabilize before playing audio
+      await this._sleep(500);
+
       // Update CDR
       cdr.status = 'voicemail';
       cdr.answerTime = new Date();
@@ -200,31 +224,38 @@ class VoicemailHandler {
     // Step 1: Play greeting (if available)
     const greetingFile = this._getGreetingFile(targetExt);
     if (greetingFile && this.rtpengine) {
-      logger.info(`VM: playing greeting for ${targetExt}`);
+      logger.info(`VM: playing greeting ${greetingFile} for ${targetExt} (call-id=${sipCallId} from-tag=${fromTag})`);
       try {
-        await this.rtpengine['play media'](this.rtpengineConfig, {
+        const playResp = await this.rtpengine['play media'](this.rtpengineConfig, {
           'call-id': sipCallId,
           'from-tag': fromTag,
           file: greetingFile
         });
-        // Wait for greeting to finish (estimate based on file, or fixed delay)
-        await this._sleep(3000);
+        logger.info(`VM: greeting play response: ${JSON.stringify(playResp)}`);
+        // Wait for greeting to finish
+        await this._sleep(4000);
       } catch (err) {
         logger.warn(`VM: greeting playback failed: ${err.message}`);
       }
 
       if (callerHungUp) return;
+    } else {
+      logger.info(`VM: no greeting file for ${targetExt} (checked: ${greetingFile || 'none'})`);
+      // Short pause before beep even without greeting
+      await this._sleep(1000);
     }
 
     // Step 2: Play beep (if available)
     const beepFile = this._getBeepFile();
     if (beepFile && this.rtpengine) {
+      logger.info(`VM: playing beep ${beepFile}`);
       try {
-        await this.rtpengine['play media'](this.rtpengineConfig, {
+        const beepResp = await this.rtpengine['play media'](this.rtpengineConfig, {
           'call-id': sipCallId,
           'from-tag': fromTag,
           file: beepFile
         });
+        logger.info(`VM: beep play response: ${JSON.stringify(beepResp)}`);
         await this._sleep(1000);
       } catch (err) {
         logger.debug(`VM: beep playback failed: ${err.message}`);

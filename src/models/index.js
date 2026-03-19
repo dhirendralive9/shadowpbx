@@ -118,7 +118,7 @@ const cdrSchema = new mongoose.Schema({
   direction: { type: String, enum: ['internal', 'inbound', 'outbound'], default: 'internal' },
   status: {
     type: String,
-    enum: ['ringing', 'answered', 'completed', 'missed', 'failed', 'busy'],
+    enum: ['ringing', 'answered', 'completed', 'missed', 'failed', 'busy', 'voicemail'],
     default: 'ringing'
   },
   startTime: { type: Date, default: Date.now },
