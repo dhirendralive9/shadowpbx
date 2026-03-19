@@ -146,9 +146,28 @@ const cdrSchema = new mongoose.Schema({
   parkedAt: Date,
   pickedUpBy: String,
   pickedUpAt: Date,
+  voicemailId: String,
 });
 
 cdrSchema.index({ startTime: -1 });
+
+// ============================================================
+// Voicemail Message
+// ============================================================
+const voicemailMessageSchema = new mongoose.Schema({
+  messageId: { type: String, required: true, unique: true, index: true },
+  extension: { type: String, required: true, index: true },
+  callerID: { type: String, required: true },
+  duration: { type: Number, default: 0 },
+  recordingPath: { type: String },
+  fileSize: { type: Number, default: 0 },
+  read: { type: Boolean, default: false },
+  readAt: Date,
+  createdAt: { type: Date, default: Date.now }
+});
+
+voicemailMessageSchema.index({ extension: 1, createdAt: -1 });
+voicemailMessageSchema.index({ extension: 1, read: 1 });
 
 // ============================================================
 // Active Call
@@ -170,6 +189,7 @@ const Trunk = mongoose.model('Trunk', trunkSchema);
 const InboundRoute = mongoose.model('InboundRoute', inboundRouteSchema);
 const OutboundRoute = mongoose.model('OutboundRoute', outboundRouteSchema);
 const CDR = mongoose.model('CDR', cdrSchema);
+const VoicemailMessage = mongoose.model('VoicemailMessage', voicemailMessageSchema);
 const ActiveCall = mongoose.model('ActiveCall', activeCallSchema);
 
-module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, CDR, ActiveCall };
+module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, CDR, VoicemailMessage, ActiveCall };

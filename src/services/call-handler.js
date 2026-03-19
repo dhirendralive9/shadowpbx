@@ -16,6 +16,7 @@ class CallHandler {
     this.transferHandler = null; // set after construction
     this.holdHandler = null;     // set after construction
     this.parkHandler = null;     // set after construction
+    this.voicemailHandler = null; // set after construction
     this.rtpengineConfig = {
       host: process.env.RTPENGINE_HOST || '127.0.0.1',
       port: parseInt(process.env.RTPENGINE_PORT) || 22222
@@ -187,6 +188,11 @@ class CallHandler {
       const contacts = await this.registrar.getContacts(target);
       if (contacts.length === 0) {
         logger.warn(`INBOUND: extension ${target} not registered`);
+        // Try voicemail
+        if (this.voicemailHandler) {
+          const handled = await this.voicemailHandler.handleVoicemail(req, res, callerID, target, cdr);
+          if (handled) return;
+        }
         cdr.status = 'missed';
         await cdr.save();
         return res.send(480);
@@ -217,6 +223,11 @@ class CallHandler {
         uac.on('destroy', () => { uas.destroy(); onDestroy('callee'); });
       } catch (err) {
         logger.error(`INBOUND DIAL FAILED: ${target} error=${err.message} status=${err.status}`);
+        // On no-answer/timeout/busy → try voicemail
+        if (this.voicemailHandler && !res.finalResponseSent) {
+          const handled = await this.voicemailHandler.handleVoicemail(req, res, callerID, target, cdr);
+          if (handled) return;
+        }
         await this._failCall(cdr, err, callerID, target);
       }
 
@@ -242,8 +253,23 @@ class CallHandler {
           result.uas.on('destroy', () => { result.uac.destroy(); onDestroy('caller'); });
           result.uac.on('destroy', () => { result.uas.destroy(); onDestroy('callee'); });
           this.activeCalls.set(callId, { uas: result.uas, uac: result.uac, cdr, fromExt: callerID, toExt: result.answeredBy });
+        } else {
+          // Ring group returned null — nobody answered → try voicemail
+          // Use first ring group member as voicemail target
+          const vmTarget = ringGroup.members && ringGroup.members[0] ? ringGroup.members[0] : target;
+          if (this.voicemailHandler && !res.finalResponseSent) {
+            logger.info(`INBOUND RG NO ANSWER: trying voicemail for ${vmTarget}`);
+            const handled = await this.voicemailHandler.handleVoicemail(req, res, callerID, vmTarget, cdr);
+            if (handled) return;
+          }
         }
       } catch (err) {
+        // Ring group threw an error → try voicemail
+        const vmTarget = ringGroup.members && ringGroup.members[0] ? ringGroup.members[0] : target;
+        if (this.voicemailHandler && !res.finalResponseSent) {
+          const handled = await this.voicemailHandler.handleVoicemail(req, res, callerID, vmTarget, cdr);
+          if (handled) return;
+        }
         await this._failCall(cdr, err, callerID, `RG:${target}`);
       }
 

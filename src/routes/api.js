@@ -2,7 +2,7 @@ const express = require('express');
 const { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, CDR } = require('../models');
 const logger = require('../utils/logger');
 
-function createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler) {
+function createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler) {
   const router = express.Router();
 
   // ============================================================
@@ -271,6 +271,62 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
       res.json(result);
     } catch (err) {
       res.status(err.message.includes('empty') ? 404 : 500).json({ success: false, error: err.message });
+    }
+  });
+
+  // ============================================================
+  // Voicemail
+  // ============================================================
+  router.get('/voicemail/:ext', async (req, res) => {
+    try {
+      if (!voicemailHandler) return res.status(503).json({ success: false, error: 'Voicemail not available' });
+      const options = {
+        limit: parseInt(req.query.limit) || 50,
+        page: parseInt(req.query.page) || 1,
+        unreadOnly: req.query.unread === 'true'
+      };
+      const result = await voicemailHandler.getMessages(req.params.ext, options);
+      res.json({ success: true, ...result });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.get('/voicemail/:ext/summary', async (req, res) => {
+    try {
+      if (!voicemailHandler) return res.status(503).json({ success: false, error: 'Voicemail not available' });
+      const summary = await voicemailHandler.getSummary(req.params.ext);
+      res.json({ success: true, ...summary });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.post('/voicemail/:ext/:messageId/read', async (req, res) => {
+    try {
+      if (!voicemailHandler) return res.status(503).json({ success: false, error: 'Voicemail not available' });
+      const msg = await voicemailHandler.markRead(req.params.ext, req.params.messageId);
+      res.json({ success: true, message: msg });
+    } catch (err) {
+      res.status(err.message.includes('not found') ? 404 : 500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.delete('/voicemail/:ext/:messageId', async (req, res) => {
+    try {
+      if (!voicemailHandler) return res.status(503).json({ success: false, error: 'Voicemail not available' });
+      await voicemailHandler.deleteMessage(req.params.ext, req.params.messageId);
+      res.json({ success: true, message: 'Voicemail deleted' });
+    } catch (err) {
+      res.status(err.message.includes('not found') ? 404 : 500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.get('/voicemail/:ext/:messageId/audio', async (req, res) => {
+    try {
+      if (!voicemailHandler) return res.status(503).json({ success: false, error: 'Voicemail not available' });
+      const audioPath = await voicemailHandler.getAudioPathAsync(req.params.ext, req.params.messageId);
+      res.setHeader('Content-Type', 'audio/wav');
+      res.setHeader('Content-Disposition', `inline; filename="${require('path').basename(audioPath)}"`);
+      require('fs').createReadStream(audioPath).pipe(res);
+    } catch (err) {
+      res.status(err.message.includes('not found') ? 404 : 500).json({ success: false, error: err.message });
     }
   });
 
