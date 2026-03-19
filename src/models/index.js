@@ -141,6 +141,11 @@ const cdrSchema = new mongoose.Schema({
   transferredTo: String,
   transferType: { type: String, enum: ['blind', 'attended'] },
   transferTime: Date,
+  parkedSlot: String,
+  parkedBy: String,
+  parkedAt: Date,
+  pickedUpBy: String,
+  pickedUpAt: Date,
 });
 
 cdrSchema.index({ startTime: -1 });

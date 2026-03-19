@@ -2,7 +2,7 @@ const express = require('express');
 const { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, CDR } = require('../models');
 const logger = require('../utils/logger');
 
-function createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler) {
+function createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler) {
   const router = express.Router();
 
   // ============================================================
@@ -238,6 +238,39 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
       res.json(result);
     } catch (err) {
       res.status(err.message.includes('not found') ? 404 : 500).json({ success: false, error: err.message });
+    }
+  });
+
+  // ============================================================
+  // Call Park / Pickup
+  // ============================================================
+  router.get('/calls/parked', async (req, res) => {
+    try {
+      if (!parkHandler) return res.status(503).json({ success: false, error: 'Park handler not available' });
+      const calls = parkHandler.getParkedCalls();
+      res.json({ success: true, parked: calls });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.post('/calls/:callId/park', async (req, res) => {
+    try {
+      if (!parkHandler) return res.status(503).json({ success: false, error: 'Park handler not available' });
+      const result = await parkHandler.apiPark(req.params.callId, req.body.slot);
+      res.json(result);
+    } catch (err) {
+      res.status(err.message.includes('not found') ? 404 : 500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.post('/calls/pickup/:slot', async (req, res) => {
+    try {
+      if (!parkHandler) return res.status(503).json({ success: false, error: 'Park handler not available' });
+      const { extension } = req.body;
+      if (!extension) return res.status(400).json({ success: false, error: 'extension required' });
+      const result = await parkHandler.apiPickup(req.params.slot, extension);
+      res.json(result);
+    } catch (err) {
+      res.status(err.message.includes('empty') ? 404 : 500).json({ success: false, error: err.message });
     }
   });
 

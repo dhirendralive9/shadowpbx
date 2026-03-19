@@ -15,6 +15,7 @@ class CallHandler {
     this.activeCalls = new Map();
     this.transferHandler = null; // set after construction
     this.holdHandler = null;     // set after construction
+    this.parkHandler = null;     // set after construction
     this.rtpengineConfig = {
       host: process.env.RTPENGINE_HOST || '127.0.0.1',
       port: parseInt(process.env.RTPENGINE_PORT) || 22222
@@ -69,6 +70,11 @@ class CallHandler {
     if (!toExt) {
       logger.warn(`INVITE rejected: invalid to=${toExt}`);
       return res.send(404);
+    }
+
+    // Check if dialing a park slot (pickup)
+    if (this.parkHandler && this.parkHandler.isParkSlot(toExt)) {
+      return this.parkHandler.handlePickupDial(req, res, fromExt, toExt, callId);
     }
 
     const ringGroup = await this.ringGroupHandler.isRingGroup(toExt);
