@@ -123,7 +123,8 @@ class RingGroupHandler {
 
     try {
       const opts = {
-        localSdpB: req.body
+        localSdpB: req.body,
+        passFailure: false  // Don't send failure to caller — let call-handler handle voicemail
       };
 
       // simring signature: doSimring(req, res, uris, opts)
@@ -149,12 +150,11 @@ class RingGroupHandler {
 
       return { uas, uac, answeredBy };
     } catch (err) {
-      logger.error(`SIMRING: failed - ${err.message} (status=${err.status || 'N/A'})`);
+      logger.info(`SIMRING: no answer - ${err.message || 'timeout'} (status=${err.status || 'N/A'})`);
       cdr.status = 'missed';
       await cdr.save();
-      if (!res.finalResponseSent) {
-        try { res.send(480); } catch (e) {}
-      }
+      // Do NOT send a response here — return null so call-handler
+      // can try voicemail before giving up
       return null;
     }
   }
@@ -176,7 +176,7 @@ class RingGroupHandler {
       try {
         const { uas, uac } = await this.srf.createB2BUA(req, res, targetUri, {
           localSdpB: req.body,
-          passFailure: isLast,  // only pass failure on the last attempt
+          passFailure: false,  // Never pass failure — voicemail needs the req/res
           headers: {},
           finalTimeout: `${ringTimePerMember || 15}s`
         });
@@ -218,6 +218,7 @@ class RingGroupHandler {
     try {
       const { uas, uac } = await this.srf.createB2BUA(req, res, targetUri, {
         localSdpB: req.body,
+        passFailure: false,
         headers: {},
         finalTimeout: `${ringTime || 30}s`
       });

@@ -204,7 +204,8 @@ class CallHandler {
 
       try {
         const { uas, uac } = await this.srf.createB2BUA(req, res, targetUri, {
-          localSdpB: req.body
+          localSdpB: req.body,
+          passFailure: false  // Don't send failure — voicemail needs req/res
         });
 
         cdr.status = 'answered';
