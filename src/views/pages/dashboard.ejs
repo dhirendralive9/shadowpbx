@@ -1,0 +1,214 @@
+<%- include('../partials/head', { title: 'Dashboard', active: 'dashboard' }) %>
+
+<div class="kpi-row">
+  <div class="kpi">
+    <div class="kpi-top"><span class="kpi-label">Active</span></div>
+    <div class="kpi-val" id="kpi-active">0</div>
+    <div class="kpi-sub" id="kpi-active-sub">loading...</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-top"><span class="kpi-label">Online</span></div>
+    <div class="kpi-val" id="kpi-online">0</div>
+    <div class="kpi-sub" id="kpi-online-sub">extensions</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-top"><span class="kpi-label">Today</span></div>
+    <div class="kpi-val" id="kpi-today">0</div>
+    <div class="kpi-sub" id="kpi-today-sub">calls</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-top"><span class="kpi-label">Voicemail</span></div>
+    <div class="kpi-val" id="kpi-vm">0</div>
+    <div class="kpi-sub" id="kpi-vm-sub">unread</div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="sec-head">
+    <span class="sec-title">Active calls</span>
+    <a href="/calls" class="sec-link">manage all</a>
+  </div>
+  <table class="tbl">
+    <thead><tr><th>Status</th><th>From</th><th>To</th><th>Duration</th><th></th></tr></thead>
+    <tbody id="active-calls-body">
+      <tr><td colspan="5" class="empty">Loading...</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="grid-3">
+  <div class="mini-card">
+    <div class="mc-title">Extensions</div>
+    <div id="ext-list">
+      <div class="mc-row"><span class="muted">Loading...</span></div>
+    </div>
+  </div>
+  <div class="mini-card">
+    <div class="mc-title">Trunks</div>
+    <div id="trunk-list">
+      <div class="mc-row"><span class="muted">Loading...</span></div>
+    </div>
+  </div>
+  <div class="mini-card">
+    <div class="mc-title">System</div>
+    <div id="system-status">
+      <div class="mc-row"><span class="mc-name">Drachtio</span><span class="pill p-ok">connected</span></div>
+      <div class="mc-row"><span class="mc-name">RTPEngine</span><span class="pill p-ok">running</span></div>
+      <div class="mc-row"><span class="mc-name">MongoDB</span><span class="pill p-ok">connected</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="sec-head">
+    <span class="sec-title">Recent calls</span>
+    <a href="/cdr" class="sec-link">view all</a>
+  </div>
+  <table class="tbl">
+    <thead><tr><th></th><th>From</th><th>To</th><th>Duration</th><th>Status</th><th>Time</th></tr></thead>
+    <tbody id="recent-cdr-body">
+      <tr><td colspan="6" class="empty">Loading...</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+const API = '/api';
+const KEY = '<%= apiKey %>';
+const headers = { 'X-API-Key': KEY };
+
+async function fetchJSON(url) {
+  const r = await fetch(API + url, { headers });
+  return r.json();
+}
+
+function pillClass(status) {
+  if (['answered','completed','active'].includes(status)) return 'p-ok';
+  if (['voicemail'].includes(status)) return 'p-vm';
+  if (['missed','failed','busy'].includes(status)) return 'p-miss';
+  if (['ringing'].includes(status)) return 'p-ring';
+  if (['onHold','hold'].includes(status)) return 'p-hold';
+  return 'p-gray';
+}
+
+function fmtDur(s) {
+  if (!s || s < 0) return '00:00';
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  return String(m).padStart(2,'0') + ':' + String(sec).padStart(2,'0');
+}
+
+function fmtTime(t) {
+  if (!t) return '';
+  const d = new Date(t);
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+async function refreshDashboard() {
+  try {
+    // Active calls
+    const calls = await fetchJSON('/calls/active');
+    const tbody = document.getElementById('active-calls-body');
+    if (calls.success && calls.calls && calls.calls.length > 0) {
+      tbody.innerHTML = calls.calls.map(c => `
+        <tr>
+          <td><span class="pill ${c.onHold ? 'p-hold' : 'p-ok'}">${c.onHold ? 'on hold' : 'active'}</span></td>
+          <td>${c.from || '?'}</td>
+          <td class="mono">${c.to || '?'}</td>
+          <td class="mono">${fmtDur(c.duration || 0)}</td>
+          <td>
+            <button class="act-btn" title="Hold" onclick="callAction('${c.callId}','hold')">
+              <svg viewBox="0 0 24 24" stroke-width="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+            </button>
+            <button class="act-btn" title="Transfer" onclick="promptTransfer('${c.callId}')">
+              <svg viewBox="0 0 24 24" stroke-width="2"><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            </button>
+          </td>
+        </tr>
+      `).join('');
+      document.getElementById('kpi-active').textContent = calls.calls.length;
+      const held = calls.calls.filter(c => c.onHold).length;
+      document.getElementById('kpi-active-sub').textContent = held ? held + ' on hold' : 'all active';
+    } else {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty">No active calls</td></tr>';
+      document.getElementById('kpi-active').textContent = '0';
+      document.getElementById('kpi-active-sub').textContent = 'idle';
+    }
+
+    // Extensions
+    const exts = await fetchJSON('/extensions');
+    if (exts.success) {
+      const el = document.getElementById('ext-list');
+      let online = 0;
+      el.innerHTML = exts.extensions.map(e => {
+        const isOnline = e.registrations && e.registrations.length > 0;
+        if (isOnline) online++;
+        return `<div class="mc-row">
+          <span class="mc-name"><span class="dot ${isOnline ? 'dot-green' : 'dot-gray'}" style="margin-right:6px"></span>${e.name || e.extension}</span>
+          <span class="pill ${isOnline ? 'p-ok' : 'p-gray'}">${e.extension} ${isOnline ? 'online' : 'offline'}</span>
+        </div>`;
+      }).join('');
+      document.getElementById('kpi-online').textContent = online + '/' + exts.extensions.length;
+      document.getElementById('kpi-online-sub').textContent = 'extensions';
+    }
+
+    // Trunks
+    const trunks = await fetchJSON('/trunks');
+    if (trunks.success) {
+      const el = document.getElementById('trunk-list');
+      el.innerHTML = trunks.trunks.map(t => `
+        <div class="mc-row">
+          <span class="mc-name">${t.name}</span>
+          <span class="pill ${t.registered ? 'p-ok' : 'p-err'}">${t.registered ? 'registered' : 'unregistered'}</span>
+        </div>
+      `).join('');
+    }
+
+    // Recent CDR
+    const cdr = await fetchJSON('/cdr?limit=5');
+    if (cdr.success && cdr.cdrs && cdr.cdrs.length > 0) {
+      document.getElementById('recent-cdr-body').innerHTML = cdr.cdrs.map(c => `
+        <tr>
+          <td><span style="color:${c.direction === 'inbound' ? 'var(--green)' : 'var(--blue)'}">${c.direction === 'inbound' ? '↓' : '↑'}</span></td>
+          <td>${c.from || '?'}</td>
+          <td>${c.to || '?'}</td>
+          <td class="mono">${fmtDur(c.duration || 0)}</td>
+          <td><span class="pill ${pillClass(c.status)}">${c.status}</span></td>
+          <td class="muted">${fmtTime(c.startTime)}</td>
+        </tr>
+      `).join('');
+
+      // Count today
+      const today = new Date().toISOString().split('T')[0];
+      const todayCount = cdr.pagination ? cdr.pagination.total : cdr.cdrs.length;
+      document.getElementById('kpi-today').textContent = todayCount;
+      document.getElementById('kpi-today-sub').textContent = 'calls';
+    }
+
+  } catch (err) {
+    console.error('Dashboard refresh error:', err);
+  }
+}
+
+async function callAction(callId, action) {
+  try {
+    await fetch(API + '/calls/' + callId + '/' + action, { method: 'POST', headers });
+    refreshDashboard();
+  } catch (e) { console.error(e); }
+}
+
+function promptTransfer(callId) {
+  const target = prompt('Transfer to extension:');
+  if (target) {
+    fetch(API + '/calls/' + callId + '/transfer', {
+      method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target, type: 'blind' })
+    }).then(() => refreshDashboard());
+  }
+}
+
+refreshDashboard();
+setInterval(refreshDashboard, 5000);
+</script>
+
+<%- include('../partials/foot') %>

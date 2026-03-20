@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign in — ShadowPBX</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <% if (typeof turnstileSiteKey !== 'undefined' && turnstileSiteKey) { %>
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+  <% } %>
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-box">
+      <div class="login-brand">
+        <div class="brand-mark"></div>
+        <span class="brand-name">ShadowPBX</span>
+        <span class="brand-tag">v2.0</span>
+      </div>
+      <p class="login-title">Sign in to your PBX</p>
+
+      <% if (typeof error !== 'undefined' && error) { %>
+        <div class="login-error"><%= error %></div>
+      <% } %>
+
+      <form method="POST" action="/login">
+        <div class="form-group">
+          <label class="form-label" for="username">Username</label>
+          <input class="form-input" type="text" id="username" name="username" value="admin" placeholder="admin" autocomplete="username" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="password">Password</label>
+          <input class="form-input" type="password" id="password" name="password" placeholder="Enter password" autocomplete="current-password" required autofocus>
+        </div>
+
+        <% if (typeof turnstileSiteKey !== 'undefined' && turnstileSiteKey) { %>
+          <div class="cf-turnstile" data-sitekey="<%= turnstileSiteKey %>" data-theme="auto" style="margin: 14px 0;"></div>
+        <% } %>
+
+        <button type="submit" class="btn btn-primary login-btn">Sign in</button>
+      </form>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,24 @@
+<% const tabs = [
+  { id: 'dashboard', label: 'Overview', icon: 'grid', href: '/' },
+  { id: 'extensions', label: 'Extensions', href: '/extensions' },
+  { id: 'calls', label: 'Calls', href: '/calls', alert: true },
+  { id: 'cdr', label: 'CDR', href: '/cdr' },
+  { id: 'voicemail', label: 'Voicemail', href: '/voicemail', alert: true },
+  { id: 'ringgroups', label: 'Ring groups', href: '/ringgroups' },
+  { id: 'trunks', label: 'Trunks', href: '/trunks' },
+  { id: 'routes', label: 'Routes', href: '/routes' },
+  { id: 'ivr', label: 'IVR', href: '/ivr' },
+  { id: 'settings', label: '', icon: 'settings', href: '/settings' },
+]; %>
+<nav class="tabs">
+  <% tabs.forEach(t => { %>
+    <a href="<%= t.href %>" class="tab <%= active === t.id ? 'active' : '' %>">
+      <% if (t.icon === 'grid') { %>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+      <% } else if (t.icon === 'settings') { %>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9c-.12-.62-.05-1.27.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06c.55.38 1.2.45 1.82.33.62-.12 1.14-.51 1.39-1.07V3a2 2 0 014 0v.09c.25.56.77.95 1.39 1.07.62.12 1.27.05 1.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06c-.38.55-.45 1.2-.33 1.82.12.62.51 1.14 1.07 1.39H21a2 2 0 010 4h-.09c-.56.25-.95.77-1.07 1.39z"/></svg>
+      <% } %>
+      <%= t.label %>
+    </a>
+  <% }); %>
+</nav>

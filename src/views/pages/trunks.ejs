@@ -1,0 +1,51 @@
+<%- include('../partials/head', { title: 'Trunks', active: 'trunks' }) %>
+<div class="sec-head">
+  <span class="sec-title">SIP trunks</span>
+  <button class="btn btn-sm" onclick="document.getElementById('add-trunk').style.display='block'">+ Add trunk</button>
+</div>
+<div id="add-trunk" style="display:none;margin-bottom:16px" class="card">
+  <form onsubmit="addTrunk(event)">
+    <div class="grid-3" style="margin-bottom:0">
+      <div class="form-group"><label class="form-label">Name</label><input class="form-input" id="t-name" required></div>
+      <div class="form-group"><label class="form-label">Provider</label><select class="form-select" id="t-provider"><option>signalwire</option><option>twilio</option><option>telnyx</option><option>plivo</option><option>other</option></select></div>
+      <div class="form-group"><label class="form-label">Host</label><input class="form-input" id="t-host" placeholder="sip.provider.com" required></div>
+    </div>
+    <div class="grid-3" style="margin-bottom:0">
+      <div class="form-group"><label class="form-label">Username</label><input class="form-input" id="t-user" required></div>
+      <div class="form-group"><label class="form-label">Password</label><input class="form-input" id="t-pass" type="password" required></div>
+      <div class="form-group"><label class="form-label">Port</label><input class="form-input" id="t-port" value="5060"></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button type="submit" class="btn btn-primary btn-sm">Create</button>
+      <button type="button" class="btn btn-sm" onclick="document.getElementById('add-trunk').style.display='none'">Cancel</button>
+    </div>
+  </form>
+</div>
+<table class="tbl">
+  <thead><tr><th>Status</th><th>Name</th><th>Provider</th><th>Host</th><th>Registered</th><th></th></tr></thead>
+  <tbody id="trunk-body"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody>
+</table>
+<script>
+const API='/api',KEY='<%= apiKey %>',H={'X-API-Key':KEY};
+async function load(){
+  const d=await(await fetch(API+'/trunks',{headers:H})).json();
+  const b=document.getElementById('trunk-body');
+  if(d.success&&d.trunks&&d.trunks.length){
+    b.innerHTML=d.trunks.map(t=>`<tr>
+      <td><span class="dot ${t.registered?'dot-green':'dot-red'}"></span></td>
+      <td>${t.name}</td><td class="muted">${t.provider}</td><td class="mono" style="font-size:11px">${t.host}</td>
+      <td><span class="pill ${t.registered?'p-ok':'p-err'}">${t.registered?'registered':'offline'}</span></td>
+      <td><button class="act-btn" title="Delete" onclick="del('${t._id}','${t.name}')"><svg viewBox="0 0 24 24" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg></button></td>
+    </tr>`).join('');
+  }else{b.innerHTML='<tr><td colspan="6" class="empty">No trunks configured</td></tr>';}
+}
+async function addTrunk(e){
+  e.preventDefault();
+  await fetch(API+'/trunks',{method:'POST',headers:{...H,'Content-Type':'application/json'},
+    body:JSON.stringify({name:document.getElementById('t-name').value,provider:document.getElementById('t-provider').value,host:document.getElementById('t-host').value,username:document.getElementById('t-user').value,password:document.getElementById('t-pass').value,port:parseInt(document.getElementById('t-port').value)||5060})});
+  document.getElementById('add-trunk').style.display='none';load();
+}
+async function del(id,name){if(confirm('Delete trunk '+name+'?'))await fetch(API+'/trunks/'+id,{method:'DELETE',headers:H});load()}
+load();
+</script>
+<%- include('../partials/foot') %>

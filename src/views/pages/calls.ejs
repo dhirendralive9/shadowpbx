@@ -1,0 +1,36 @@
+<%- include('../partials/head', { title: 'Active calls', active: 'calls' }) %>
+<div class="sec-head">
+  <span class="sec-title">Active calls</span>
+  <span class="muted" style="font-size:11px" id="call-count">Loading...</span>
+</div>
+<table class="tbl">
+  <thead><tr><th>Status</th><th>From</th><th>To</th><th>Duration</th><th>Actions</th></tr></thead>
+  <tbody id="calls-body"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody>
+</table>
+<div style="margin-top:20px"><div class="sec-head"><span class="sec-title">Parked calls</span></div>
+<table class="tbl">
+  <thead><tr><th>Slot</th><th>Caller</th><th>Duration</th><th></th></tr></thead>
+  <tbody id="parked-body"><tr><td colspan="4" class="empty">Loading...</td></tr></tbody>
+</table></div>
+<script>
+const API='/api',KEY='<%= apiKey %>',H={'X-API-Key':KEY};
+function dur(s){if(!s)return'00:00';return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0')}
+async function load(){
+  const r=await(await fetch(API+'/calls/active',{headers:H})).json();
+  const b=document.getElementById('calls-body');
+  if(r.success&&r.calls&&r.calls.length){
+    document.getElementById('call-count').textContent=r.calls.length+' active';
+    b.innerHTML=r.calls.map(c=>`<tr><td><span class="pill ${c.onHold?'p-hold':'p-ok'}">${c.onHold?'on hold':'active'}</span></td><td>${c.from||'?'}</td><td class="mono">${c.to||'?'}</td><td class="mono">${dur(c.duration||0)}</td><td><button class="btn btn-sm" onclick="act('${c.callId}','${c.onHold?'resume':'hold'}')">${c.onHold?'Resume':'Hold'}</button> <button class="btn btn-sm" onclick="xfer('${c.callId}')">Transfer</button> <button class="btn btn-sm" onclick="park('${c.callId}')">Park</button></td></tr>`).join('');
+  }else{document.getElementById('call-count').textContent='idle';b.innerHTML='<tr><td colspan="5" class="empty">No active calls</td></tr>';}
+  const p=await(await fetch(API+'/calls/parked',{headers:H})).json();
+  const pb=document.getElementById('parked-body');
+  if(p.success&&p.parkedCalls&&p.parkedCalls.length){pb.innerHTML=p.parkedCalls.map(c=>`<tr><td class="mono">${c.slot}</td><td>${c.callerID||'?'}</td><td class="mono">${dur(c.duration||0)}</td><td><button class="btn btn-sm" onclick="pickup('${c.slot}')">Pickup</button></td></tr>`).join('');}
+  else{pb.innerHTML='<tr><td colspan="4" class="empty">No parked calls</td></tr>';}
+}
+async function act(id,a){await fetch(API+'/calls/'+id+'/'+a,{method:'POST',headers:H});load()}
+function xfer(id){const t=prompt('Transfer to:');if(t)fetch(API+'/calls/'+id+'/transfer',{method:'POST',headers:{...H,'Content-Type':'application/json'},body:JSON.stringify({target:t,type:'blind'})}).then(load)}
+function park(id){fetch(API+'/calls/'+id+'/park',{method:'POST',headers:{...H,'Content-Type':'application/json'},body:JSON.stringify({})}).then(load)}
+function pickup(s){const e=prompt('Pickup with ext:');if(e)fetch(API+'/calls/pickup/'+s,{method:'POST',headers:{...H,'Content-Type':'application/json'},body:JSON.stringify({extension:e})}).then(load)}
+load();setInterval(load,3000);
+</script>
+<%- include('../partials/foot') %>

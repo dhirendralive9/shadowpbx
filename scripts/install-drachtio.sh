@@ -222,6 +222,9 @@ else
   warn "No source files found in ${SCRIPT_DIR} - copy them manually to ${APP_DIR}"
 fi
 
+# Generate admin GUI password
+ADMIN_PASSWORD=$(cat /dev/urandom | tr -dc 'A-HJ-NP-Za-hj-np-z2-9' | fold -w 16 | head -n 1)
+
 # Write .env
 cat > ${APP_DIR}/.env << EOF
 # ShadowPBX - Generated $(date)
@@ -238,6 +241,8 @@ RECORDINGS_DIR=${REC_DIR}
 RECORDING_FORMAT=wav
 API_PORT=3000
 ADMIN_SECRET=${API_SECRET}
+ADMIN_USER=admin
+ADMIN_PASSWORD=${ADMIN_PASSWORD}
 MAX_REGISTER_ATTEMPTS=5
 REGISTER_BAN_DURATION=300
 SIP_RATE_LIMIT=20
@@ -263,6 +268,7 @@ log ".env created"
 if [ -f "${APP_DIR}/package.json" ]; then
   cd ${APP_DIR}
   npm install --production 2>&1 | tail -5
+  npm install cookie-parser ejs --save 2>&1 | tail -3
   log "npm dependencies installed"
 else
   warn "package.json not found - run 'npm install' manually in ${APP_DIR}"
@@ -410,6 +416,12 @@ echo -e "  ${BOLD}ShadowPBX API${NC}"
 echo "    URL:      http://localhost:3000/api"
 echo "    API Key:  ${API_SECRET}"
 echo "    Remote:   ssh -L 3000:localhost:3000 root@${EXTERNAL_IP}"
+echo ""
+echo -e "  ${BOLD}Web GUI${NC}"
+echo "    URL:      http://${EXTERNAL_IP}:3000/"
+echo "    Username: admin"
+echo "    Password: ${ADMIN_PASSWORD}"
+echo "    Reset:    node ${APP_DIR}/scripts/reset-password.js"
 echo ""
 echo -e "  ${BOLD}SIP Server${NC}"
 echo "    Address:  ${EXTERNAL_IP}:5060 (UDP)"

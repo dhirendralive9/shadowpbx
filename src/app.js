@@ -121,10 +121,20 @@ async function main() {
 
   srf.options((req, res) => res.send(200));
 
-  // 8. Express API
+  // 8. Express API + Web GUI
   const app = express();
-  app.use(express.json());
+  const cookieParser = require('cookie-parser');
+  const path = require('path');
+  const createWebRouter = require('./routes/web');
 
+  app.set('view engine', 'ejs');
+  app.set('views', path.join(__dirname, 'views'));
+  app.use(express.json());
+  app.use(express.urlencoded({ extended: true }));
+  app.use(cookieParser());
+  app.use(express.static(path.join(__dirname, 'public')));
+
+  // API auth middleware
   app.use('/api', (req, res, next) => {
     const token = req.headers['x-api-key'] || req.query.apikey;
     if (token !== process.env.ADMIN_SECRET) {
@@ -135,6 +145,9 @@ async function main() {
 
   app.use('/api', createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler));
   app.get('/health', (req, res) => res.json({ status: 'ok', service: 'ShadowPBX', version: '2.0.0' }));
+
+  // Web GUI routes
+  app.use('/', createWebRouter(process.env.ADMIN_SECRET));
 
   const apiPort = parseInt(process.env.API_PORT) || 3000;
   app.listen(apiPort, () => logger.info(`API on port ${apiPort}`));
