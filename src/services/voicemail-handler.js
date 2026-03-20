@@ -207,16 +207,23 @@ class VoicemailHandler {
       await this._sleep(2000);
 
       // Find the pcap recording from RTPEngine's recording dir
-      // RTPEngine writes pcap files named by call-id to its recording-dir/pcap/
+      // RTPEngine writes pcap files to recording-dir/pcaps/ (note: plural)
       let savedPath = null;
       let fileSize = 0;
       const recDir = process.env.RECORDINGS_DIR || '/var/lib/shadowpbx/recordings';
-      const pcapDir = path.join(recDir, 'pcap');
+
+      // Check both pcaps/ (RTPEngine default) and pcap/ (legacy)
+      let pcapDir = path.join(recDir, 'pcaps');
+      if (!fs.existsSync(pcapDir)) {
+        pcapDir = path.join(recDir, 'pcap');
+      }
 
       try {
         if (fs.existsSync(pcapDir)) {
+          // RTPEngine names files as: {call-id}-{hash}.pcap
+          // We match on the call-id prefix
           const pcapFiles = fs.readdirSync(pcapDir).filter(f =>
-            f.includes(sipCallId) && f.endsWith('.pcap')
+            f.startsWith(sipCallId) && f.endsWith('.pcap')
           );
 
           if (pcapFiles.length > 0) {
