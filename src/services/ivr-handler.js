@@ -170,31 +170,10 @@ class IvrHandler {
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       if (callerHungUp) return;
 
-      // Play greeting
-      const greetingFile = this._getGreetingFile(ivrConfig);
-      if (greetingFile) {
-        logger.info(`IVR: playing menu greeting (attempt ${attempt + 1}/${maxRetries})`);
-        try {
-          const playResp = await this.rtpengine.playMedia(this.rtpengineConfig, {
-            'call-id': sipCallId,
-            'from-tag': fromTag,
-            file: toContainerPath(greetingFile)
-          });
-          logger.debug(`IVR: greeting play response: ${JSON.stringify(playResp)}`);
-
-          // Wait for greeting duration
-          const duration = playResp.duration || 5000;
-          await this._sleep(Math.min(duration, 15000));
-        } catch (err) {
-          logger.warn(`IVR: greeting play failed: ${err.message}`);
-        }
-      }
-
-      if (callerHungUp) return;
-
-      // Wait for DTMF with timeout
+      // Set up DTMF capture BEFORE playing greeting
+      // This way digits pressed during the greeting are captured immediately
       dtmfDigit = null;
-      const digit = await new Promise((resolve) => {
+      const digit = await new Promise(async (resolve) => {
         let timer = null;
         let resolved = false;
 
@@ -206,9 +185,48 @@ class IvrHandler {
           resolve(d);
         };
 
-        // Set the closure variable so SIP INFO handler can trigger it
+        // Activate DTMF capture now — before greeting plays
         dtmfResolve = done;
 
+        // Play greeting (non-blocking wait — DTMF can interrupt)
+        const greetingFile = this._getGreetingFile(ivrConfig);
+        if (greetingFile && !callerHungUp) {
+          logger.info(`IVR: playing menu greeting (attempt ${attempt + 1}/${maxRetries})`);
+          try {
+            const playResp = await this.rtpengine.playMedia(this.rtpengineConfig, {
+              'call-id': sipCallId,
+              'from-tag': fromTag,
+              file: toContainerPath(greetingFile)
+            });
+            logger.debug(`IVR: greeting play response: ${JSON.stringify(playResp)}`);
+
+            // Wait for greeting to finish, but check if digit arrived
+            const greetingDuration = playResp.duration || 5000;
+            const waitStep = 500; // check every 500ms
+            let waited = 0;
+            while (waited < greetingDuration && !resolved && !callerHungUp) {
+              await this._sleep(Math.min(waitStep, greetingDuration - waited));
+              waited += waitStep;
+            }
+
+            if (resolved) {
+              // Digit arrived during greeting — stop playback
+              try {
+                await this.rtpengine.stopMedia(this.rtpengineConfig, {
+                  'call-id': sipCallId,
+                  'from-tag': fromTag
+                });
+              } catch (e) {}
+              return; // resolve already called, exit the promise
+            }
+          } catch (err) {
+            logger.warn(`IVR: greeting play failed: ${err.message}`);
+          }
+        }
+
+        if (callerHungUp) { done(null); return; }
+
+        // Greeting finished, no digit yet — start timeout wait
         timer = setTimeout(() => done(null), timeout);
       });
 
