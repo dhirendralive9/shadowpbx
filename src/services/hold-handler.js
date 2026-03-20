@@ -4,6 +4,17 @@ const logger = require('../utils/logger');
 
 const MOH_DIR = process.env.MOH_DIR || '/var/lib/shadowpbx/moh';
 
+// RTPEngine runs in Docker — translate host paths to container paths
+// Host /opt/shadowpbx/audio → Container /audio
+function toContainerPath(hostPath) {
+  if (!hostPath) return hostPath;
+  if (hostPath.startsWith(MOH_DIR)) {
+    return hostPath.replace(MOH_DIR, '/audio');
+  }
+  if (hostPath.startsWith('/audio/')) return hostPath;
+  return hostPath;
+}
+
 class HoldHandler {
   constructor(srf, rtpengine, callHandler) {
     this.srf = srf;
@@ -182,7 +193,7 @@ class HoldHandler {
       const response = await this.rtpengine.playMedia(this.rtpengineConfig, {
         'call-id': sipCallId,
         'from-tag': this._getFromTag(activeCall, heldBy),
-        file: mohFile,
+        file: toContainerPath(mohFile),
         'repeat-times': 0  // loop forever
       });
 

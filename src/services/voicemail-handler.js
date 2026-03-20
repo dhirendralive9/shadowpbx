@@ -9,6 +9,33 @@ const DEFAULT_GREETING = process.env.VM_DEFAULT_GREETING || '';
 const MAX_MESSAGE_LENGTH = parseInt(process.env.VM_MAX_MESSAGE_LENGTH) || 120; // seconds
 const BEEP_FILE = process.env.VM_BEEP_FILE || '';
 
+// RTPEngine runs in Docker — file paths in RTPEngine commands must use
+// container paths, not host paths. These are the Docker volume mounts:
+//   Host /opt/shadowpbx/audio       → Container /audio
+//   Host /var/lib/shadowpbx/voicemail → Container /voicemail
+//   Host /var/lib/shadowpbx/recordings → Container /recordings
+const AUDIO_HOST_DIR = process.env.MOH_DIR || '/opt/shadowpbx/audio';
+const PATH_MAP = [
+  { host: AUDIO_HOST_DIR, container: '/audio' },
+  { host: VM_DIR, container: '/voicemail' },
+  { host: process.env.RECORDINGS_DIR || '/var/lib/shadowpbx/recordings', container: '/recordings' }
+];
+
+// Convert a host path to the equivalent container path for RTPEngine
+function toContainerPath(hostPath) {
+  if (!hostPath) return hostPath;
+  for (const m of PATH_MAP) {
+    if (hostPath.startsWith(m.host)) {
+      return hostPath.replace(m.host, m.container);
+    }
+  }
+  // If the path already looks like a container path, use as-is
+  if (hostPath.startsWith('/audio/') || hostPath.startsWith('/voicemail/') || hostPath.startsWith('/recordings/')) {
+    return hostPath;
+  }
+  return hostPath;
+}
+
 class VoicemailHandler {
   constructor(srf, rtpengine, callHandler) {
     this.srf = srf;
@@ -176,17 +203,54 @@ class VoicemailHandler {
       // Save voicemail message to DB
       const duration = cdr.answerTime ? Math.round((Date.now() - cdr.answerTime.getTime()) / 1000) : 0;
 
-      // Check if recording file exists and has content
+      // Wait a moment for RTPEngine to flush the pcap file
+      await this._sleep(2000);
+
+      // Find the pcap recording from RTPEngine's recording dir
+      // RTPEngine writes pcap files named by call-id to its recording-dir/pcap/
       let savedPath = null;
       let fileSize = 0;
+      const recDir = process.env.RECORDINGS_DIR || '/var/lib/shadowpbx/recordings';
+      const pcapDir = path.join(recDir, 'pcap');
+
       try {
-        if (fs.existsSync(recordingPath)) {
-          fileSize = fs.statSync(recordingPath).size;
-          if (fileSize > 1000) { // minimum 1KB to be a real recording
-            savedPath = recordingPath;
+        if (fs.existsSync(pcapDir)) {
+          const pcapFiles = fs.readdirSync(pcapDir).filter(f =>
+            f.includes(sipCallId) && f.endsWith('.pcap')
+          );
+
+          if (pcapFiles.length > 0) {
+            const pcapPath = path.join(pcapDir, pcapFiles[0]);
+            const pcapSize = fs.statSync(pcapPath).size;
+            logger.info(`VM: found pcap recording ${pcapFiles[0]} (${pcapSize} bytes)`);
+
+            // Convert pcap to wav using the existing converter
+            if (pcapSize > 1000) {
+              try {
+                const { pcapToWav } = require('../utils/converter');
+                const wavPath = pcapToWav(sipCallId, `vm_${messageId}`);
+                if (wavPath && fs.existsSync(wavPath)) {
+                  // Move wav to voicemail dir
+                  const finalPath = recordingPath;
+                  fs.copyFileSync(wavPath, finalPath);
+                  savedPath = finalPath;
+                  fileSize = fs.statSync(finalPath).size;
+                  logger.info(`VM: converted pcap to wav: ${finalPath} (${fileSize} bytes)`);
+                }
+              } catch (convErr) {
+                logger.warn(`VM: pcap conversion failed: ${convErr.message}`);
+                // Fallback: save the pcap itself
+                savedPath = pcapPath;
+                fileSize = pcapSize;
+              }
+            }
+          } else {
+            logger.info(`VM: no pcap file found for call-id ${sipCallId} in ${pcapDir}`);
           }
         }
-      } catch (e) {}
+      } catch (e) {
+        logger.warn(`VM: recording lookup error: ${e.message}`);
+      }
 
       if (savedPath && duration > 2) { // at least 2 seconds
         try {
@@ -195,7 +259,7 @@ class VoicemailHandler {
             messageId,
             extension: targetExt,
             callerID,
-            duration: Math.max(0, duration - 3), // subtract greeting time estimate
+            duration: Math.max(0, duration - 5), // subtract greeting+beep time
             recordingPath: savedPath,
             fileSize,
             read: false
@@ -206,8 +270,6 @@ class VoicemailHandler {
         }
       } else {
         logger.info(`VM: message too short or no recording (${duration}s, ${fileSize} bytes) — discarded`);
-        // Clean up empty file
-        try { if (fs.existsSync(recordingPath)) fs.unlinkSync(recordingPath); } catch (e) {}
       }
 
       // Update CDR
@@ -229,7 +291,7 @@ class VoicemailHandler {
         const playResp = await this.rtpengine.playMedia(this.rtpengineConfig, {
           'call-id': sipCallId,
           'from-tag': fromTag,
-          file: greetingFile
+          file: toContainerPath(greetingFile)
         });
         logger.info(`VM: greeting play response: ${JSON.stringify(playResp)}`);
         // Wait for greeting to finish
@@ -253,7 +315,7 @@ class VoicemailHandler {
         const beepResp = await this.rtpengine.playMedia(this.rtpengineConfig, {
           'call-id': sipCallId,
           'from-tag': fromTag,
-          file: beepFile
+          file: toContainerPath(beepFile)
         });
         logger.info(`VM: beep play response: ${JSON.stringify(beepResp)}`);
         await this._sleep(1000);
@@ -265,17 +327,18 @@ class VoicemailHandler {
     }
 
     // Step 3: Start recording via RTPEngine
+    // RTPEngine records to its --recording-dir as pcap files named by call-id.
+    // After the call ends, we'll find and convert the pcap to wav.
     if (this.rtpengine) {
       try {
         const recResponse = await this.rtpengine.startRecording(this.rtpengineConfig, {
           'call-id': sipCallId,
-          'from-tag': fromTag,
-          'output-file': recordingPath
+          'from-tag': fromTag
         });
 
         if (recResponse && recResponse.result === 'ok') {
           recordingStarted = true;
-          logger.info(`VM: recording started -> ${recordingPath}`);
+          logger.info(`VM: recording started (call-id=${sipCallId})`);
         } else {
           logger.warn(`VM: start recording failed: ${JSON.stringify(recResponse)}`);
         }
@@ -324,24 +387,47 @@ class VoicemailHandler {
   // ============================================================
 
   _getGreetingFile(extension) {
-    // Check per-extension greeting first
+    // Check per-extension greeting on host filesystem
     const extGreeting = path.join(VM_GREETINGS_DIR, `${extension}.wav`);
     if (fs.existsSync(extGreeting)) return extGreeting;
 
     // Fall back to default greeting
-    if (DEFAULT_GREETING && fs.existsSync(DEFAULT_GREETING)) return DEFAULT_GREETING;
+    // DEFAULT_GREETING may be a container path (/audio/vm-greeting.wav)
+    // or a host path (/opt/shadowpbx/audio/vm-greeting.wav)
+    if (DEFAULT_GREETING) {
+      // If it's a container path, check the corresponding host path
+      const hostPath = this._toHostPath(DEFAULT_GREETING);
+      if (fs.existsSync(hostPath)) return DEFAULT_GREETING; // return original (container or host)
+      // Try as-is
+      if (fs.existsSync(DEFAULT_GREETING)) return DEFAULT_GREETING;
+    }
 
     return null;
   }
 
   _getBeepFile() {
-    if (BEEP_FILE && fs.existsSync(BEEP_FILE)) return BEEP_FILE;
+    if (BEEP_FILE) {
+      const hostPath = this._toHostPath(BEEP_FILE);
+      if (fs.existsSync(hostPath)) return BEEP_FILE;
+      if (fs.existsSync(BEEP_FILE)) return BEEP_FILE;
+    }
 
-    // Check common location
-    const defaultBeep = path.join(VM_DIR, 'beep.wav');
+    // Check common locations
+    const defaultBeep = path.join(AUDIO_HOST_DIR, 'beep.wav');
     if (fs.existsSync(defaultBeep)) return defaultBeep;
 
     return null;
+  }
+
+  // Convert container path to host path for fs.existsSync checks
+  _toHostPath(filePath) {
+    if (!filePath) return filePath;
+    for (const m of PATH_MAP) {
+      if (filePath.startsWith(m.container + '/') || filePath === m.container) {
+        return filePath.replace(m.container, m.host);
+      }
+    }
+    return filePath;
   }
 
   _sleep(ms) {

@@ -177,13 +177,20 @@ docker pull drachtio/rtpengine:latest
 docker stop rtpengine 2>/dev/null || true
 docker rm rtpengine 2>/dev/null || true
 
-mkdir -p ${REC_DIR}
+AUDIO_DIR="${APP_DIR}/audio"
+VM_DIR="/var/lib/shadowpbx/voicemail"
+
+mkdir -p ${REC_DIR} ${REC_DIR}/pcap ${REC_DIR}/metadata
+mkdir -p ${AUDIO_DIR}
+mkdir -p ${VM_DIR}/greetings
 
 docker run -d \
   --name rtpengine \
   --restart unless-stopped \
   --net host \
   -v ${REC_DIR}:/recordings \
+  -v ${AUDIO_DIR}:/audio:ro \
+  -v ${VM_DIR}:/voicemail \
   drachtio/rtpengine:latest \
   rtpengine \
     --interface="${EXTERNAL_IP}" \
@@ -234,6 +241,19 @@ MAX_REGISTER_ATTEMPTS=5
 REGISTER_BAN_DURATION=300
 SIP_RATE_LIMIT=20
 LOG_LEVEL=info
+
+# Music on Hold
+MOH_DIR=${AUDIO_DIR}
+
+# Voicemail
+VOICEMAIL_DIR=${VM_DIR}
+VM_BEEP_FILE=/audio/beep.wav
+VM_DEFAULT_GREETING=/audio/vm-greeting.wav
+VM_MAX_MESSAGE_LENGTH=120
+
+# Call Park
+PARK_SLOT_MIN=70
+PARK_SLOT_MAX=79
 EOF
 
 log ".env created"

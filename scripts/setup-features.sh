@@ -133,8 +133,8 @@ add_env() {
 
 echo ""
 add_env "MOH_DIR" "${AUDIO_DIR}"
-add_env "VM_BEEP_FILE" "${AUDIO_DIR}/beep.wav"
-add_env "VM_DEFAULT_GREETING" "${AUDIO_DIR}/vm-greeting.wav"
+add_env "VM_BEEP_FILE" "/audio/beep.wav"
+add_env "VM_DEFAULT_GREETING" "/audio/vm-greeting.wav"
 add_env "VM_MAX_MESSAGE_LENGTH" "120"
 add_env "VOICEMAIL_DIR" "${VM_DIR}"
 add_env "RECORDINGS_DIR" "${REC_DIR}"
@@ -142,41 +142,42 @@ add_env "PARK_SLOT_MIN" "70"
 add_env "PARK_SLOT_MAX" "79"
 echo ""
 log ".env updated with all feature configs"
+log "Note: VM_BEEP_FILE and VM_DEFAULT_GREETING use Docker container paths (/audio/)"
 
 # ============================================================
-step "4/6 - Checking RTPEngine recording directory..."
+step "4/6 - Verifying RTPEngine Docker mounts..."
 # ============================================================
 
-# RTPEngine must have --recording-dir pointing to a writable directory
-# Check if it's running with the right recording dir
-RTPENGINE_PID=$(pgrep -f rtpengine 2>/dev/null | head -1)
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -q rtpengine; then
+  MOUNTS=$(docker inspect rtpengine --format '{{range .Mounts}}{{.Destination}} {{end}}' 2>/dev/null)
+  HAS_AUDIO=$(echo "${MOUNTS}" | grep -c "/audio")
+  HAS_VM=$(echo "${MOUNTS}" | grep -c "/voicemail")
+  HAS_REC=$(echo "${MOUNTS}" | grep -c "/recordings")
 
-if [ -n "${RTPENGINE_PID}" ]; then
-  RTPENGINE_CMD=$(ps -p ${RTPENGINE_PID} -o args= 2>/dev/null)
-  CURRENT_REC_DIR=$(echo "${RTPENGINE_CMD}" | grep -oP '(?<=--recording-dir=)\S+' || echo "")
-
-  if [ -n "${CURRENT_REC_DIR}" ]; then
-    # Ensure the recording dir exists on the host
-    mkdir -p "${CURRENT_REC_DIR}/pcap" "${CURRENT_REC_DIR}/metadata" 2>/dev/null
-    chmod -R 777 "${CURRENT_REC_DIR}" 2>/dev/null
-    log "RTPEngine recording dir: ${CURRENT_REC_DIR}"
+  if [ "${HAS_AUDIO}" -gt 0 ] && [ "${HAS_VM}" -gt 0 ] && [ "${HAS_REC}" -gt 0 ]; then
+    log "RTPEngine Docker mounts OK: /audio /voicemail /recordings"
   else
-    warn "RTPEngine running without --recording-dir"
+    warn "RTPEngine is missing mounts. Run install-drachtio.sh or recreate manually:"
+    echo ""
+    echo "    docker stop rtpengine && docker rm rtpengine"
+    echo "    EXTERNAL_IP=\$(curl -4 -s ifconfig.me)"
+    echo "    docker run -d --name rtpengine --restart unless-stopped --net host \\"
+    echo "      -v /var/lib/shadowpbx/recordings:/recordings \\"
+    echo "      -v /opt/shadowpbx/audio:/audio:ro \\"
+    echo "      -v /var/lib/shadowpbx/voicemail:/voicemail \\"
+    echo "      drachtio/rtpengine:latest rtpengine \\"
+    echo "      --interface=\"\${EXTERNAL_IP}\" --listen-ng=127.0.0.1:22222 \\"
+    echo "      --port-min=10000 --port-max=20000 \\"
+    echo "      --recording-dir=/recordings --recording-method=pcap \\"
+    echo "      --recording-format=eth --log-level=5"
+    echo ""
   fi
 
-  # Check if running in Docker
-  if docker ps --format '{{.Names}}' 2>/dev/null | grep -q rtpengine; then
-    DOCKER_REC_MOUNT=$(docker inspect rtpengine --format '{{range .Mounts}}{{.Source}}:{{.Destination}} {{end}}' 2>/dev/null)
-    if [ -n "${DOCKER_REC_MOUNT}" ]; then
-      log "RTPEngine Docker mount: ${DOCKER_REC_MOUNT}"
-      # Ensure host-side dir is writable
-      HOST_REC=$(echo "${DOCKER_REC_MOUNT}" | awk -F: '{print $1}')
-      mkdir -p "${HOST_REC}/pcap" "${HOST_REC}/metadata" 2>/dev/null
-      chmod -R 777 "${HOST_REC}" 2>/dev/null
-    fi
-  fi
+  # Ensure recording dirs are writable
+  mkdir -p "${RTPENGINE_REC_DIR}/pcap" "${RTPENGINE_REC_DIR}/metadata" 2>/dev/null
+  chmod -R 777 "${RTPENGINE_REC_DIR}" 2>/dev/null
 else
-  warn "RTPEngine not running — start it before using recording features"
+  warn "RTPEngine not running. Run install-drachtio.sh to set it up."
 fi
 
 # ============================================================

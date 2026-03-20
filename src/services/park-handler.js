@@ -489,7 +489,7 @@ class ParkHandler {
       const response = await rtpengine.playMedia(this.holdHandler.rtpengineConfig, {
         'call-id': parked.cdr.sipCallId,
         'from-tag': fromTag,
-        file: mohFile,
+        file: this._toContainerPath(mohFile),
         'repeat-times': 0
       });
 
@@ -531,6 +531,15 @@ class ParkHandler {
       if (!this.parkedCalls.has(String(i))) return String(i);
     }
     return null;
+  }
+
+  // Translate host path to Docker container path for RTPEngine
+  _toContainerPath(hostPath) {
+    if (!hostPath) return hostPath;
+    const mohDir = process.env.MOH_DIR || '/opt/shadowpbx/audio';
+    if (hostPath.startsWith(mohDir)) return hostPath.replace(mohDir, '/audio');
+    if (hostPath.startsWith('/audio/')) return hostPath;
+    return hostPath;
   }
 
   _findCallByCdrId(cdrCallId) {
