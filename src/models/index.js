@@ -84,8 +84,32 @@ const inboundRouteSchema = new mongoose.Schema({
   name: { type: String, required: true },
   trunk: { type: String },
   destination: {
-    type: { type: String, enum: ['extension', 'ringgroup', 'hangup'], required: true },
+    type: { type: String, enum: ['extension', 'ringgroup', 'ivr', 'hangup'], required: true },
     target: { type: String, required: true }
+  },
+  enabled: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now }
+});
+
+// ============================================================
+// IVR / Auto Attendant
+// ============================================================
+const ivrSchema = new mongoose.Schema({
+  number: { type: String, required: true, unique: true, index: true },
+  name: { type: String, required: true },
+  greeting: { type: String, default: '' },  // path to greeting WAV (container path)
+  options: [{
+    digit: { type: String, required: true },  // '0'-'9', '*', '#'
+    destination: {
+      type: { type: String, enum: ['extension', 'ringgroup', 'ivr', 'voicemail', 'external', 'hangup'], required: true },
+      target: { type: String, required: true }
+    }
+  }],
+  timeout: { type: Number, default: 10 },       // seconds to wait for input
+  maxRetries: { type: Number, default: 3 },      // times to replay before timeout
+  timeoutDest: {
+    type: { type: String, enum: ['extension', 'ringgroup', 'ivr', 'voicemail', 'hangup'], default: 'hangup' },
+    target: { type: String, default: '' }
   },
   enabled: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now }
@@ -188,8 +212,9 @@ const RingGroup = mongoose.model('RingGroup', ringGroupSchema);
 const Trunk = mongoose.model('Trunk', trunkSchema);
 const InboundRoute = mongoose.model('InboundRoute', inboundRouteSchema);
 const OutboundRoute = mongoose.model('OutboundRoute', outboundRouteSchema);
+const IVR = mongoose.model('IVR', ivrSchema);
 const CDR = mongoose.model('CDR', cdrSchema);
 const VoicemailMessage = mongoose.model('VoicemailMessage', voicemailMessageSchema);
 const ActiveCall = mongoose.model('ActiveCall', activeCallSchema);
 
-module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, CDR, VoicemailMessage, ActiveCall };
+module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, IVR, CDR, VoicemailMessage, ActiveCall };

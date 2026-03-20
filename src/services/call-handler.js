@@ -17,6 +17,7 @@ class CallHandler {
     this.holdHandler = null;     // set after construction
     this.parkHandler = null;     // set after construction
     this.voicemailHandler = null; // set after construction
+    this.ivrHandler = null;       // set after construction
     this.rtpengineConfig = {
       host: process.env.RTPENGINE_HOST || '127.0.0.1',
       port: parseInt(process.env.RTPENGINE_PORT) || 22222
@@ -273,6 +274,19 @@ class CallHandler {
         }
         await this._failCall(cdr, err, callerID, `RG:${target}`);
       }
+
+    } else if (type === 'ivr') {
+      if (this.ivrHandler) {
+        const { IVR } = require('../models');
+        const ivrConfig = await IVR.findOne({ number: target, enabled: true });
+        if (ivrConfig) {
+          return this.ivrHandler.handleIvr(req, res, ivrConfig, cdr);
+        }
+        logger.warn(`INBOUND: IVR ${target} not found`);
+      } else {
+        logger.warn(`INBOUND: IVR handler not available`);
+      }
+      return res.send(404);
 
     } else {
       logger.info(`INBOUND: destination is hangup for DID ${did}`);

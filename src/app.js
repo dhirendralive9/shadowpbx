@@ -12,6 +12,7 @@ const TransferHandler = require('./services/transfer-handler');
 const HoldHandler = require('./services/hold-handler');
 const ParkHandler = require('./services/park-handler');
 const VoicemailHandler = require('./services/voicemail-handler');
+const IvrHandler = require('./services/ivr-handler');
 const createApiRouter = require('./routes/api');
 const { convertAllPending } = require('./utils/converter');
 
@@ -83,10 +84,12 @@ async function main() {
   const holdHandler = new HoldHandler(srf, rtpengine, callHandler);
   const parkHandler = new ParkHandler(srf, registrar, callHandler, holdHandler);
   const voicemailHandler = new VoicemailHandler(srf, rtpengine, callHandler);
+  const ivrHandler = new IvrHandler(srf, rtpengine, callHandler, registrar, ringGroupHandler, trunkManager, callRouter, voicemailHandler);
   callHandler.transferHandler = transferHandler;
   callHandler.holdHandler = holdHandler;
   callHandler.parkHandler = parkHandler;
   callHandler.voicemailHandler = voicemailHandler;
+  callHandler.ivrHandler = ivrHandler;
 
   // 5. Initialize trunks (register with providers)
   try {
@@ -127,7 +130,7 @@ async function main() {
     next();
   });
 
-  app.use('/api', createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler));
+  app.use('/api', createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler));
   app.get('/health', (req, res) => res.json({ status: 'ok', service: 'ShadowPBX', version: '2.0.0' }));
 
   const apiPort = parseInt(process.env.API_PORT) || 3000;

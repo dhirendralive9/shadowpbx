@@ -2,7 +2,7 @@ const express = require('express');
 const { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, CDR } = require('../models');
 const logger = require('../utils/logger');
 
-function createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler) {
+function createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler) {
   const router = express.Router();
 
   // ============================================================
@@ -195,6 +195,53 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
     try {
       await OutboundRoute.findByIdAndDelete(req.params.id);
       res.json({ success: true, message: 'Route deleted' });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // ============================================================
+  // IVR / Auto Attendant
+  // ============================================================
+  const { IVR } = require('../models');
+
+  router.get('/ivr', async (req, res) => {
+    try {
+      const ivrs = await IVR.find({}).sort('number');
+      res.json({ success: true, ivrs });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.get('/ivr/:number', async (req, res) => {
+    try {
+      const ivr = await IVR.findOne({ number: req.params.number });
+      if (!ivr) return res.status(404).json({ success: false, error: 'IVR not found' });
+      res.json({ success: true, ivr });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.post('/ivr', async (req, res) => {
+    try {
+      const { number, name, greeting, options, timeout, maxRetries, timeoutDest } = req.body;
+      if (!number || !name || !options) return res.status(400).json({ success: false, error: 'number, name, options required' });
+      if (await IVR.findOne({ number })) return res.status(409).json({ success: false, error: 'IVR number already exists' });
+      const ivr = await IVR.create({ number, name, greeting, options, timeout, maxRetries, timeoutDest });
+      logger.info(`IVR created: ${number} (${name}) with ${options.length} option(s)`);
+      res.status(201).json({ success: true, ivr });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.put('/ivr/:number', async (req, res) => {
+    try {
+      const ivr = await IVR.findOneAndUpdate({ number: req.params.number }, req.body, { new: true });
+      if (!ivr) return res.status(404).json({ success: false, error: 'IVR not found' });
+      res.json({ success: true, ivr });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.delete('/ivr/:number', async (req, res) => {
+    try {
+      const ivr = await IVR.findOneAndDelete({ number: req.params.number });
+      if (!ivr) return res.status(404).json({ success: false, error: 'IVR not found' });
+      res.json({ success: true, message: `IVR ${req.params.number} deleted` });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
 
