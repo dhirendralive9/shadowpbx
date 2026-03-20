@@ -385,7 +385,17 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
       const limit = parseInt(req.query.limit) || 50;
       const page = parseInt(req.query.page) || 1;
       const filter = {};
-      if (req.query.extension) filter.$or = [{ from: req.query.extension }, { to: req.query.extension }];
+      if (req.query.search) {
+        const s = req.query.search;
+        filter.$or = [
+          { from: { $regex: s, $options: 'i' } },
+          { to: { $regex: s, $options: 'i' } },
+          { didNumber: { $regex: s, $options: 'i' } }
+        ];
+      }
+      if (req.query.extension) {
+        filter.$or = [{ from: req.query.extension }, { to: req.query.extension }];
+      }
       if (req.query.status) filter.status = req.query.status;
       if (req.query.direction) filter.direction = req.query.direction;
       if (req.query.from) filter.startTime = { $gte: new Date(req.query.from) };
@@ -394,7 +404,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
         CDR.find(filter).sort({ startTime: -1 }).skip((page - 1) * limit).limit(limit),
         CDR.countDocuments(filter)
       ]);
-      res.json({ success: true, cdr: records, pagination: { total, page, limit, pages: Math.ceil(total / limit) } });
+      res.json({ success: true, cdrs: records, pagination: { total, page, limit, pages: Math.ceil(total / limit) } });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
 

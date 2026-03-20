@@ -217,6 +217,14 @@ class Registrar {
     return contacts.length > 0;
   }
 
+  // Synchronous contact lookup from in-memory cache only (for dashboard)
+  getContactsSync(ext) {
+    const cached = this.contactCache.get(ext);
+    if (!cached || cached.length === 0) return [];
+    const now = new Date();
+    return cached.filter(c => c.expires > now);
+  }
+
   // ============================================================
   // User-Agent normalization
   //

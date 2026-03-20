@@ -150,7 +150,65 @@ async function main() {
   app.use('/', createWebRouter(process.env.ADMIN_SECRET));
 
   const apiPort = parseInt(process.env.API_PORT) || 3000;
-  app.listen(apiPort, () => logger.info(`API on port ${apiPort}`));
+  const http = require('http');
+  const { Server: SocketIO } = require('socket.io');
+  const server = http.createServer(app);
+  const io = new SocketIO(server);
+
+  // Socket.IO real-time updates
+  io.on('connection', (socket) => {
+    logger.debug(`GUI: socket connected ${socket.id}`);
+    // Send initial state immediately
+    emitDashboardState(socket);
+
+    socket.on('disconnect', () => {
+      logger.debug(`GUI: socket disconnected ${socket.id}`);
+    });
+  });
+
+  // Broadcast dashboard state every 3 seconds
+  async function emitDashboardState(target) {
+    try {
+      const { Extension, Trunk, CDR, VoicemailMessage } = require('./models');
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+
+      const [extensions, trunks, activeCalls, todayCalls, recentCDR, unreadVM] = await Promise.all([
+        Extension.find({}).lean(),
+        Trunk.find({}, '-password').lean(),
+        Promise.resolve(callHandler.getActiveCalls()),
+        CDR.countDocuments({ startTime: { $gte: today } }),
+        CDR.find({}).sort({ startTime: -1 }).limit(8).lean(),
+        VoicemailMessage.countDocuments({ read: false })
+      ]);
+
+      // Enrich extensions with registration data
+      const enrichedExts = extensions.map(e => {
+        const contacts = registrar.getContactsSync ? registrar.getContactsSync(e.extension) : [];
+        return { ...e, registrations: contacts, online: contacts.length > 0 };
+      });
+
+      const state = {
+        activeCalls: activeCalls || [],
+        extensions: enrichedExts,
+        trunks,
+        todayCalls,
+        recentCDR,
+        unreadVM
+      };
+
+      if (target.emit) {
+        target.emit('dashboard', state);
+      } else {
+        target.emit('dashboard', state);
+      }
+    } catch (err) {
+      logger.debug(`Dashboard state error: ${err.message}`);
+    }
+  }
+
+  setInterval(() => emitDashboardState(io), 3000);
+
+  server.listen(apiPort, () => logger.info(`API + GUI on port ${apiPort}`));
 
   // 9. Graceful shutdown
   const shutdown = async () => {

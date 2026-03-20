@@ -3,22 +3,22 @@
 <div class="kpi-row">
   <div class="kpi">
     <div class="kpi-top"><span class="kpi-label">Active</span></div>
-    <div class="kpi-val" id="kpi-active">0</div>
-    <div class="kpi-sub" id="kpi-active-sub">loading...</div>
+    <div class="kpi-val" id="kpi-active">—</div>
+    <div class="kpi-sub" id="kpi-active-sub">connecting...</div>
   </div>
   <div class="kpi">
     <div class="kpi-top"><span class="kpi-label">Online</span></div>
-    <div class="kpi-val" id="kpi-online">0</div>
+    <div class="kpi-val" id="kpi-online">—</div>
     <div class="kpi-sub" id="kpi-online-sub">extensions</div>
   </div>
   <div class="kpi">
     <div class="kpi-top"><span class="kpi-label">Today</span></div>
-    <div class="kpi-val" id="kpi-today">0</div>
+    <div class="kpi-val" id="kpi-today">—</div>
     <div class="kpi-sub" id="kpi-today-sub">calls</div>
   </div>
   <div class="kpi">
     <div class="kpi-top"><span class="kpi-label">Voicemail</span></div>
-    <div class="kpi-val" id="kpi-vm">0</div>
+    <div class="kpi-val" id="kpi-vm">—</div>
     <div class="kpi-sub" id="kpi-vm-sub">unread</div>
   </div>
 </div>
@@ -31,7 +31,7 @@
   <table class="tbl">
     <thead><tr><th>Status</th><th>From</th><th>To</th><th>Duration</th><th></th></tr></thead>
     <tbody id="active-calls-body">
-      <tr><td colspan="5" class="empty">Loading...</td></tr>
+      <tr><td colspan="5" class="empty">Connecting...</td></tr>
     </tbody>
   </table>
 </div>
@@ -39,15 +39,11 @@
 <div class="grid-3">
   <div class="mini-card">
     <div class="mc-title">Extensions</div>
-    <div id="ext-list">
-      <div class="mc-row"><span class="muted">Loading...</span></div>
-    </div>
+    <div id="ext-list"><div class="mc-row"><span class="muted">Connecting...</span></div></div>
   </div>
   <div class="mini-card">
     <div class="mc-title">Trunks</div>
-    <div id="trunk-list">
-      <div class="mc-row"><span class="muted">Loading...</span></div>
-    </div>
+    <div id="trunk-list"><div class="mc-row"><span class="muted">Connecting...</span></div></div>
   </div>
   <div class="mini-card">
     <div class="mc-title">System</div>
@@ -67,148 +63,129 @@
   <table class="tbl">
     <thead><tr><th></th><th>From</th><th>To</th><th>Duration</th><th>Status</th><th>Time</th></tr></thead>
     <tbody id="recent-cdr-body">
-      <tr><td colspan="6" class="empty">Loading...</td></tr>
+      <tr><td colspan="6" class="empty">Connecting...</td></tr>
     </tbody>
   </table>
 </div>
 
+<script src="/socket.io/socket.io.js"></script>
 <script>
-const API = '/api';
-const KEY = '<%= apiKey %>';
-const headers = { 'X-API-Key': KEY };
+const API = '/api', KEY = '<%= apiKey %>', H = { 'X-API-Key': KEY };
+const socket = io();
 
-async function fetchJSON(url) {
-  const r = await fetch(API + url, { headers });
-  return r.json();
+function dur(s) {
+  if (!s || s < 0) return '00:00';
+  return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(Math.round(s) % 60).padStart(2, '0');
 }
-
-function pillClass(status) {
-  if (['answered','completed','active'].includes(status)) return 'p-ok';
-  if (['voicemail'].includes(status)) return 'p-vm';
-  if (['missed','failed','busy'].includes(status)) return 'p-miss';
-  if (['ringing'].includes(status)) return 'p-ring';
-  if (['onHold','hold'].includes(status)) return 'p-hold';
+function fmtTime(t) {
+  if (!t) return '';
+  const d = new Date(t), now = new Date();
+  if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+function pillCls(s) {
+  if (['answered', 'completed', 'active'].includes(s)) return 'p-ok';
+  if (s === 'voicemail') return 'p-vm';
+  if (['missed', 'failed', 'busy', 'no_answer'].includes(s)) return 'p-miss';
+  if (s === 'ringing') return 'p-ring';
   return 'p-gray';
 }
 
-function fmtDur(s) {
-  if (!s || s < 0) return '00:00';
-  const m = Math.floor(s / 60);
-  const sec = s % 60;
-  return String(m).padStart(2,'0') + ':' + String(sec).padStart(2,'0');
-}
+socket.on('dashboard', function(data) {
+  var ac = data.activeCalls || [];
+  document.getElementById('kpi-active').textContent = ac.length;
+  var held = 0; for (var i = 0; i < ac.length; i++) if (ac[i].onHold) held++;
+  document.getElementById('kpi-active-sub').textContent = ac.length === 0 ? 'idle' : (held ? held + ' on hold' : 'all active');
 
-function fmtTime(t) {
-  if (!t) return '';
-  const d = new Date(t);
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
+  var exts = data.extensions || [], onlineCount = 0;
+  for (var i = 0; i < exts.length; i++) if (exts[i].online) onlineCount++;
+  document.getElementById('kpi-online').textContent = onlineCount + '/' + exts.length;
+  document.getElementById('kpi-online-sub').textContent = 'extensions';
 
-async function refreshDashboard() {
-  try {
-    // Active calls
-    const calls = await fetchJSON('/calls/active');
-    const tbody = document.getElementById('active-calls-body');
-    if (calls.success && calls.calls && calls.calls.length > 0) {
-      tbody.innerHTML = calls.calls.map(c => `
-        <tr>
-          <td><span class="pill ${c.onHold ? 'p-hold' : 'p-ok'}">${c.onHold ? 'on hold' : 'active'}</span></td>
-          <td>${c.from || '?'}</td>
-          <td class="mono">${c.to || '?'}</td>
-          <td class="mono">${fmtDur(c.duration || 0)}</td>
-          <td>
-            <button class="act-btn" title="Hold" onclick="callAction('${c.callId}','hold')">
-              <svg viewBox="0 0 24 24" stroke-width="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
-            </button>
-            <button class="act-btn" title="Transfer" onclick="promptTransfer('${c.callId}')">
-              <svg viewBox="0 0 24 24" stroke-width="2"><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-            </button>
-          </td>
-        </tr>
-      `).join('');
-      document.getElementById('kpi-active').textContent = calls.calls.length;
-      const held = calls.calls.filter(c => c.onHold).length;
-      document.getElementById('kpi-active-sub').textContent = held ? held + ' on hold' : 'all active';
-    } else {
-      tbody.innerHTML = '<tr><td colspan="5" class="empty">No active calls</td></tr>';
-      document.getElementById('kpi-active').textContent = '0';
-      document.getElementById('kpi-active-sub').textContent = 'idle';
+  document.getElementById('kpi-today').textContent = data.todayCalls || 0;
+  document.getElementById('kpi-today-sub').textContent = 'calls';
+  document.getElementById('kpi-vm').textContent = data.unreadVM || 0;
+  document.getElementById('kpi-vm-sub').textContent = 'unread';
+
+  // Active calls table
+  var tbody = document.getElementById('active-calls-body');
+  if (ac.length > 0) {
+    var html = '';
+    for (var i = 0; i < ac.length; i++) {
+      var c = ac[i];
+      html += '<tr><td><span class="pill ' + (c.onHold ? 'p-hold' : 'p-ok') + '">' + (c.onHold ? 'on hold' : 'active') + '</span></td>';
+      html += '<td>' + (c.from || '?') + '</td>';
+      html += '<td class="mono">' + (c.to || '?') + '</td>';
+      html += '<td class="mono">' + dur(c.duration || 0) + '</td>';
+      html += '<td>';
+      html += '<button class="act-btn" title="' + (c.onHold ? 'Resume' : 'Hold') + '" onclick="callAct(\'' + c.callId + '\',\'' + (c.onHold ? 'resume' : 'hold') + '\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' + (c.onHold ? '<polygon points="5 3 19 12 5 21 5 3"/>' : '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>') + '</svg></button>';
+      html += ' <button class="act-btn" title="Transfer" onclick="xfer(\'' + c.callId + '\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></button>';
+      html += ' <button class="act-btn" title="Park" onclick="park(\'' + c.callId + '\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg></button>';
+      html += '</td></tr>';
     }
-
-    // Extensions
-    const exts = await fetchJSON('/extensions');
-    if (exts.success) {
-      const el = document.getElementById('ext-list');
-      let online = 0;
-      el.innerHTML = exts.extensions.map(e => {
-        const isOnline = e.registrations && e.registrations.length > 0;
-        if (isOnline) online++;
-        return `<div class="mc-row">
-          <span class="mc-name"><span class="dot ${isOnline ? 'dot-green' : 'dot-gray'}" style="margin-right:6px"></span>${e.name || e.extension}</span>
-          <span class="pill ${isOnline ? 'p-ok' : 'p-gray'}">${e.extension} ${isOnline ? 'online' : 'offline'}</span>
-        </div>`;
-      }).join('');
-      document.getElementById('kpi-online').textContent = online + '/' + exts.extensions.length;
-      document.getElementById('kpi-online-sub').textContent = 'extensions';
-    }
-
-    // Trunks
-    const trunks = await fetchJSON('/trunks');
-    if (trunks.success) {
-      const el = document.getElementById('trunk-list');
-      el.innerHTML = trunks.trunks.map(t => `
-        <div class="mc-row">
-          <span class="mc-name">${t.name}</span>
-          <span class="pill ${t.registered ? 'p-ok' : 'p-err'}">${t.registered ? 'registered' : 'unregistered'}</span>
-        </div>
-      `).join('');
-    }
-
-    // Recent CDR
-    const cdr = await fetchJSON('/cdr?limit=5');
-    if (cdr.success && cdr.cdrs && cdr.cdrs.length > 0) {
-      document.getElementById('recent-cdr-body').innerHTML = cdr.cdrs.map(c => `
-        <tr>
-          <td><span style="color:${c.direction === 'inbound' ? 'var(--green)' : 'var(--blue)'}">${c.direction === 'inbound' ? '↓' : '↑'}</span></td>
-          <td>${c.from || '?'}</td>
-          <td>${c.to || '?'}</td>
-          <td class="mono">${fmtDur(c.duration || 0)}</td>
-          <td><span class="pill ${pillClass(c.status)}">${c.status}</span></td>
-          <td class="muted">${fmtTime(c.startTime)}</td>
-        </tr>
-      `).join('');
-
-      // Count today
-      const today = new Date().toISOString().split('T')[0];
-      const todayCount = cdr.pagination ? cdr.pagination.total : cdr.cdrs.length;
-      document.getElementById('kpi-today').textContent = todayCount;
-      document.getElementById('kpi-today-sub').textContent = 'calls';
-    }
-
-  } catch (err) {
-    console.error('Dashboard refresh error:', err);
+    tbody.innerHTML = html;
+  } else {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">No active calls</td></tr>';
   }
-}
 
-async function callAction(callId, action) {
-  try {
-    await fetch(API + '/calls/' + callId + '/' + action, { method: 'POST', headers });
-    refreshDashboard();
-  } catch (e) { console.error(e); }
-}
-
-function promptTransfer(callId) {
-  const target = prompt('Transfer to extension:');
-  if (target) {
-    fetch(API + '/calls/' + callId + '/transfer', {
-      method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ target, type: 'blind' })
-    }).then(() => refreshDashboard());
+  // Extensions
+  var el = document.getElementById('ext-list');
+  if (exts.length > 0) {
+    var html = '';
+    for (var i = 0; i < exts.length; i++) {
+      var e = exts[i], regs = e.registrations || [], isOn = regs.length > 0;
+      var ua = isOn && regs[0] && regs[0].userAgent ? ' · ' + regs[0].userAgent.split('/')[0] : '';
+      html += '<div class="mc-row"><span class="mc-name"><span class="dot ' + (isOn ? 'dot-green' : 'dot-gray') + '" style="margin-right:6px"></span>' + (e.name || e.extension) + ua + '</span>';
+      html += '<span class="pill ' + (isOn ? 'p-ok' : 'p-gray') + '">' + e.extension + ' ' + (isOn ? 'online' : 'offline') + '</span></div>';
+    }
+    el.innerHTML = html;
+  } else {
+    el.innerHTML = '<div class="mc-row"><span class="muted">No extensions</span></div>';
   }
-}
 
-refreshDashboard();
-setInterval(refreshDashboard, 5000);
+  // Trunks
+  var tl = document.getElementById('trunk-list'), trunks = data.trunks || [];
+  if (trunks.length > 0) {
+    var html = '';
+    for (var i = 0; i < trunks.length; i++) {
+      var t = trunks[i];
+      html += '<div class="mc-row"><span class="mc-name">' + t.name + '</span>';
+      html += '<span class="pill ' + (t.registered ? 'p-ok' : 'p-err') + '">' + (t.registered ? 'registered' : 'offline') + '</span></div>';
+    }
+    tl.innerHTML = html;
+  } else {
+    tl.innerHTML = '<div class="mc-row"><span class="muted">No trunks</span></div>';
+  }
+
+  // Recent CDR
+  var cdrBody = document.getElementById('recent-cdr-body'), cdrs = data.recentCDR || [];
+  if (cdrs.length > 0) {
+    var html = '';
+    for (var i = 0; i < cdrs.length; i++) {
+      var c = cdrs[i], dirColor = c.direction === 'inbound' ? 'var(--green)' : c.direction === 'outbound' ? 'var(--blue)' : 'var(--text-secondary)';
+      var dirArrow = c.direction === 'inbound' ? '↓' : c.direction === 'outbound' ? '↑' : '↔';
+      html += '<tr><td><span style="color:' + dirColor + '">' + dirArrow + '</span></td>';
+      html += '<td>' + (c.from || '?') + '</td><td>' + (c.to || '?') + '</td>';
+      html += '<td class="mono">' + dur(c.duration) + '</td>';
+      html += '<td><span class="pill ' + pillCls(c.status) + '">' + c.status + '</span></td>';
+      html += '<td class="muted" style="font-size:11px">' + fmtTime(c.startTime) + '</td></tr>';
+    }
+    cdrBody.innerHTML = html;
+  } else {
+    cdrBody.innerHTML = '<tr><td colspan="6" class="empty">No call records yet</td></tr>';
+  }
+});
+
+socket.on('connect', function() {
+  document.querySelector('.header-status').innerHTML = '<span class="header-dot"></span> Online';
+});
+socket.on('disconnect', function() {
+  document.querySelector('.header-status').innerHTML = '<span class="dot dot-red" style="width:6px;height:6px"></span> <span style="color:var(--red)">Disconnected</span>';
+});
+
+function callAct(id, a) { fetch(API + '/calls/' + id + '/' + a, { method: 'POST', headers: H }); }
+function xfer(id) { var t = prompt('Transfer to extension:'); if (t) fetch(API + '/calls/' + id + '/transfer', { method: 'POST', headers: Object.assign({}, H, { 'Content-Type': 'application/json' }), body: JSON.stringify({ target: t, type: 'blind' }) }); }
+function park(id) { fetch(API + '/calls/' + id + '/park', { method: 'POST', headers: Object.assign({}, H, { 'Content-Type': 'application/json' }), body: JSON.stringify({}) }); }
 </script>
 
 <%- include('../partials/foot') %>
