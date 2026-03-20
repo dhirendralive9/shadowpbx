@@ -78,7 +78,9 @@ class IvrHandler {
       }
 
       // Wait for RTP session to stabilize
-      await this._sleep(500);
+      // Twilio takes ~3s to confirm peer address, so we need a longer wait
+      // to ensure RTPEngine knows where to send media before playMedia
+      await this._sleep(2000);
 
       // Update CDR
       cdr.status = 'answered';

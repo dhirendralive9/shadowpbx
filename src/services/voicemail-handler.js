@@ -155,7 +155,8 @@ class VoicemailHandler {
       }
 
       // Wait for RTP session to stabilize before playing audio
-      await this._sleep(500);
+      // Some trunks (e.g. Twilio) take ~3s to confirm peer address
+      await this._sleep(2000);
 
       // Update CDR
       cdr.status = 'voicemail';
