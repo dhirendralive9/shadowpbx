@@ -200,6 +200,7 @@ docker run -d \
     --recording-dir=/recordings \
     --recording-method=pcap \
     --recording-format=eth \
+    --dtmf-log-dest=127.0.0.1:22223 \
     --log-level=5
 
 sleep 2

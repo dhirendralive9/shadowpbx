@@ -12,7 +12,7 @@ function toContainerPath(hostPath) {
 }
 
 class IvrHandler {
-  constructor(srf, rtpengine, callHandler, registrar, ringGroupHandler, trunkManager, callRouter, voicemailHandler) {
+  constructor(srf, rtpengine, callHandler, registrar, ringGroupHandler, trunkManager, callRouter, voicemailHandler, dtmfListener) {
     this.srf = srf;
     this.rtpengine = rtpengine;
     this.callHandler = callHandler;
@@ -21,6 +21,7 @@ class IvrHandler {
     this.trunkManager = trunkManager;
     this.callRouter = callRouter;
     this.voicemailHandler = voicemailHandler;
+    this.dtmfListener = dtmfListener;
     this.rtpengineConfig = {
       host: process.env.RTPENGINE_HOST || '127.0.0.1',
       port: parseInt(process.env.RTPENGINE_PORT) || 22222
@@ -105,6 +106,7 @@ class IvrHandler {
     uas.on('destroy', () => {
       callerHungUp = true;
       if (dtmfResolve) dtmfResolve(null);
+      if (this.dtmfListener) this.dtmfListener.unregister(sipCallId);
       this._rtpengineDelete(sipCallId, fromTag);
       cdr.status = 'completed';
       cdr.endTime = new Date();
@@ -116,7 +118,7 @@ class IvrHandler {
       logger.info(`IVR: caller hung up [${sipCallId}]`);
     });
 
-    // Listen for DTMF via SIP INFO
+    // Listen for DTMF via SIP INFO (some endpoints use this)
     uas.on('info', (infoReq, infoRes) => {
       const contentType = infoReq.get('Content-Type') || '';
       const body = infoReq.body || '';
@@ -143,12 +145,26 @@ class IvrHandler {
       infoRes.send(200);
     });
 
-    // Subscribe to RTPEngine DTMF events if available
-    this._subscribeDtmf(sipCallId, fromTag, (digit) => {
-      logger.info(`IVR: DTMF detected via RTPEngine: ${digit}`);
-      dtmfDigit = digit;
-      if (dtmfResolve) dtmfResolve(digit);
-    });
+    // Register with DTMF listener for RFC 2833 events from RTPEngine
+    // This is the primary detection method for trunk calls (Twilio, SignalWire)
+    if (this.dtmfListener) {
+      this.dtmfListener.register(sipCallId, (digit, tag, callId) => {
+        logger.info(`IVR: DTMF detected via RTPEngine UDP: digit=${digit} [${callId}]`);
+        dtmfDigit = digit;
+        if (dtmfResolve) dtmfResolve(digit);
+      });
+    }
+
+    // Also pass DTMF log dest in the RTPEngine offer for per-call DTMF logging
+    const dtmfPort = parseInt(process.env.DTMF_LISTEN_PORT) || 22223;
+    try {
+      await this.rtpengine.subscribeDTMF && await this.rtpengine.subscribeDTMF(this.rtpengineConfig, {
+        'call-id': sipCallId,
+        'from-tag': fromTag
+      });
+    } catch (e) {
+      logger.debug(`IVR: subscribeDTMF not available: ${e.message}`);
+    }
 
     // Menu loop
     for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -237,7 +253,8 @@ class IvrHandler {
   async _routeToDestination(uas, destination, sipCallId, fromTag, callerID, cdr, originalReq) {
     const { type, target } = destination;
 
-    // Clean up RTPEngine IVR session before bridging
+    // Clean up IVR session
+    if (this.dtmfListener) this.dtmfListener.unregister(sipCallId);
     await this._rtpengineDelete(sipCallId, fromTag);
 
     switch (type) {
@@ -454,27 +471,6 @@ class IvrHandler {
       default:
         logger.warn(`IVR ROUTE: unknown destination type ${type}`);
         try { uas.destroy(); } catch (e) {}
-    }
-  }
-
-  // ============================================================
-  // RTPEngine DTMF subscription
-  //
-  // RTPEngine can detect RFC 2833 DTMF events and notify us.
-  // This is more reliable than SIP INFO for in-band DTMF.
-  // ============================================================
-  async _subscribeDtmf(sipCallId, fromTag, callback) {
-    if (!this.rtpengine) return;
-
-    try {
-      // Subscribe to DTMF events from RTPEngine
-      // RTPEngine will send DTMF notifications via the ng protocol
-      await this.rtpengine.subscribeDTMF && this.rtpengine.subscribeDTMF(this.rtpengineConfig, {
-        'call-id': sipCallId,
-        'from-tag': fromTag
-      });
-    } catch (err) {
-      logger.debug(`IVR: DTMF subscription not available: ${err.message}`);
     }
   }
 

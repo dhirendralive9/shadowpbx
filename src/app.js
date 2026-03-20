@@ -13,6 +13,7 @@ const HoldHandler = require('./services/hold-handler');
 const ParkHandler = require('./services/park-handler');
 const VoicemailHandler = require('./services/voicemail-handler');
 const IvrHandler = require('./services/ivr-handler');
+const DtmfListener = require('./services/dtmf-listener');
 const createApiRouter = require('./routes/api');
 const { convertAllPending } = require('./utils/converter');
 
@@ -84,7 +85,9 @@ async function main() {
   const holdHandler = new HoldHandler(srf, rtpengine, callHandler);
   const parkHandler = new ParkHandler(srf, registrar, callHandler, holdHandler);
   const voicemailHandler = new VoicemailHandler(srf, rtpengine, callHandler);
-  const ivrHandler = new IvrHandler(srf, rtpengine, callHandler, registrar, ringGroupHandler, trunkManager, callRouter, voicemailHandler);
+  const dtmfListener = new DtmfListener();
+  dtmfListener.start();
+  const ivrHandler = new IvrHandler(srf, rtpengine, callHandler, registrar, ringGroupHandler, trunkManager, callRouter, voicemailHandler, dtmfListener);
   callHandler.transferHandler = transferHandler;
   callHandler.holdHandler = holdHandler;
   callHandler.parkHandler = parkHandler;
