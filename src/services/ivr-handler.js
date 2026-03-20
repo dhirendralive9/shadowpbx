@@ -57,22 +57,28 @@ class IvrHandler {
       const uas = await this.srf.createUAS(req, res, { localSdp: rtpOffer.sdp });
       logger.info(`IVR: call answered [${sipCallId}]`);
 
-      // Complete RTPEngine session
+      // Complete RTPEngine session with the actual answer SDP
+      // We need to tell RTPEngine about both legs of the session
       const toTag = uas.sip ? uas.sip.localTag : '';
       if (toTag) {
-        await this.rtpengine.answer(this.rtpengineConfig, {
-          'call-id': sipCallId,
-          'from-tag': fromTag,
-          'to-tag': toTag,
-          sdp: rtpOffer.sdp,
-          'flags': ['trust-address'],
-          'replace': ['origin', 'session-connection'],
-          'ICE': 'remove'
-        });
+        try {
+          await this.rtpengine.answer(this.rtpengineConfig, {
+            'call-id': sipCallId,
+            'from-tag': fromTag,
+            'to-tag': toTag,
+            sdp: rtpOffer.sdp,
+            'flags': ['trust-address'],
+            'replace': ['origin', 'session-connection'],
+            'ICE': 'remove'
+          });
+          logger.info(`IVR: RTPEngine answer completed (from-tag=${fromTag} to-tag=${toTag})`);
+        } catch (ansErr) {
+          logger.warn(`IVR: RTPEngine answer failed: ${ansErr.message}`);
+        }
       }
 
-      // Wait for RTP to stabilize
-      await this._sleep(300);
+      // Wait for RTP session to stabilize
+      await this._sleep(500);
 
       // Update CDR
       cdr.status = 'answered';
