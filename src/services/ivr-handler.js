@@ -149,10 +149,10 @@ class IvrHandler {
     // This is the primary detection method for trunk calls (Twilio, SignalWire)
     if (this.dtmfListener) {
       this.dtmfListener.register(sipCallId, (digit, tag, callId) => {
-        logger.info(`IVR: DTMF detected via RTPEngine UDP: digit=${digit} [${callId}]`);
+        logger.info(`IVR: DTMF detected via RTPEngine UDP: digit=${digit} [${callId || sipCallId}]`);
         dtmfDigit = digit;
         if (dtmfResolve) dtmfResolve(digit);
-      });
+      }, fromTag);
     }
 
     // Also pass DTMF log dest in the RTPEngine offer for per-call DTMF logging

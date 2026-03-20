@@ -20,6 +20,7 @@ class DtmfListener {
     this.host = host || '127.0.0.1';
     this.server = null;
     this.callbacks = new Map(); // call-id -> callback function
+    this.tagMap = new Map();    // from-tag -> call-id (for lookup when call-id missing)
   }
 
   start() {
@@ -27,24 +28,45 @@ class DtmfListener {
 
     this.server.on('message', (msg, rinfo) => {
       try {
-        const data = this._parseBencode(msg.toString());
+        const raw = msg.toString();
+        logger.debug(`DTMF RAW: ${raw}`);
+
+        const data = this._parseBencode(raw);
         if (!data) return;
 
-        const callId = data['call-id'] || '';
+        const callId = data['call-id'] || data['callid'] || '';
         const event = data['event'] || data['digit'] || '';
-        const fromTag = data['source_tag'] || data['from-tag'] || data['tag'] || '';
+        const fromTag = data['source_tag'] || data['source-tag'] || data['from-tag'] || data['tag'] || '';
         const type = data['type'] || '';
 
         if (type === 'DTMF' || event) {
           const digit = String(event).trim();
           logger.info(`DTMF EVENT: digit=${digit} call-id=${callId} from-tag=${fromTag}`);
 
-          // Dispatch to registered callback
-          const cb = this.callbacks.get(callId);
+          // Try exact call-id match first
+          let cb = this.callbacks.get(callId);
+
+          // If call-id is empty or no match, try matching by from-tag
+          if (!cb) {
+            for (const [registeredCallId, registeredCb] of this.callbacks) {
+              // The from-tag from RTPEngine should match one of the tags we know about
+              if (fromTag && this.tagMap && this.tagMap.get(fromTag) === registeredCallId) {
+                cb = registeredCb;
+                break;
+              }
+            }
+          }
+
+          // Last resort: if only one callback is registered, use it
+          if (!cb && this.callbacks.size === 1) {
+            cb = this.callbacks.values().next().value;
+            logger.debug(`DTMF: using single registered handler as fallback`);
+          }
+
           if (cb) {
             cb(digit, fromTag, callId);
           } else {
-            logger.debug(`DTMF EVENT: no handler registered for call-id ${callId}`);
+            logger.debug(`DTMF EVENT: no handler registered for call-id=${callId} from-tag=${fromTag}`);
           }
         }
       } catch (err) {
@@ -62,14 +84,22 @@ class DtmfListener {
   }
 
   // Register a callback for DTMF events on a specific call-id
-  register(callId, callback) {
+  // Also register from-tag for fallback lookup when RTPEngine sends empty call-id
+  register(callId, callback, fromTag) {
     this.callbacks.set(callId, callback);
-    logger.debug(`DTMF: registered listener for call-id ${callId}`);
+    if (fromTag) {
+      this.tagMap.set(fromTag, callId);
+    }
+    logger.debug(`DTMF: registered listener for call-id=${callId} from-tag=${fromTag || 'none'}`);
   }
 
   // Unregister callback
   unregister(callId) {
     this.callbacks.delete(callId);
+    // Clean up tagMap entries for this call-id
+    for (const [tag, cid] of this.tagMap) {
+      if (cid === callId) this.tagMap.delete(tag);
+    }
   }
 
   stop() {
