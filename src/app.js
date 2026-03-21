@@ -71,9 +71,40 @@ async function main() {
 
   // 3. RTPEngine
   let rtpengine = null;
+  // Map to track RTPEngine call-ids: fromTag -> rtpCallId
+  const rtpCallIdMap = new Map();
+
   if (RtpEngineClient) {
     rtpengine = new RtpEngineClient();
-    logger.info(`RTPEngine client ready`);
+
+    // Wrap offer/answer to capture RTPEngine call-ids
+    const origOffer = rtpengine.offer.bind(rtpengine);
+    rtpengine.offer = async function(...args) {
+      const result = await origOffer(...args);
+      // args: [config, params] — params has 'call-id' and 'from-tag'
+      const params = args.length > 1 ? args[1] : args[0];
+      if (params && params['call-id'] && params['from-tag']) {
+        rtpCallIdMap.set(params['from-tag'], params['call-id']);
+        logger.debug(`RTP-TRACK: offer call-id=${params['call-id']} from-tag=${params['from-tag']}`);
+      }
+      return result;
+    };
+
+    const origAnswer = rtpengine.answer.bind(rtpengine);
+    rtpengine.answer = async function(...args) {
+      const result = await origAnswer(...args);
+      const params = args.length > 1 ? args[1] : args[0];
+      if (params && params['call-id'] && params['to-tag']) {
+        rtpCallIdMap.set(params['to-tag'], params['call-id']);
+        logger.debug(`RTP-TRACK: answer call-id=${params['call-id']} to-tag=${params['to-tag']}`);
+      }
+      return result;
+    };
+
+    // Expose the map for MonitorHandler
+    rtpengine.callIdMap = rtpCallIdMap;
+
+    logger.info(`RTPEngine client ready (with call-id tracking)`);
   }
 
   // 4. Initialize services

@@ -191,6 +191,27 @@ class MonitorHandler {
       if (id) allCallIds.add(id);
     });
 
+    // CRITICAL: Look up RTPEngine call-id from the tracked map
+    // The B2BUA (simring) generates its own call-id for RTPEngine
+    // which is different from any SIP call-id. We intercept offer/answer
+    // calls and store the mapping: fromTag -> rtpCallId
+    if (this.rtpengine && this.rtpengine.callIdMap) {
+      const map = this.rtpengine.callIdMap;
+      // Try to find RTPEngine call-id using any known tags from the dialogs
+      const uasLocalTag = uas.sip ? uas.sip.localTag : null;
+      const uasRemoteTag = uas.sip ? uas.sip.remoteTag : null;
+      const uacLocalTag = uac.sip ? uac.sip.localTag : null;
+      const uacRemoteTag = uac.sip ? uac.sip.remoteTag : null;
+
+      for (const tag of [uasLocalTag, uasRemoteTag, uacLocalTag, uacRemoteTag]) {
+        if (tag && map.has(tag)) {
+          const rtpId = map.get(tag);
+          allCallIds.add(rtpId);
+          logger.info(`MONITOR: found RTPEngine call-id via tag ${tag}: ${rtpId}`);
+        }
+      }
+    }
+
     logger.info(`MONITOR: ${mode} on [${sipCallId}] supervisor=${supervisorExt}`);
     logger.info(`MONITOR: candidate call-ids: ${[...allCallIds].join(', ')}`);
 
