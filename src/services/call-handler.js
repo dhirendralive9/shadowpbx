@@ -254,8 +254,29 @@ class CallHandler {
           if (result.answeredBy) cdr.to = result.answeredBy;
           await cdr.save();
           logger.info(`INBOUND ANSWERED via RG: ${callerID} -> ${result.answeredBy || target} [${callId}]`);
+
+          // Get the RTPEngine call-id and from-tag stored by the ring group
+          const rtpCallId = result.uas._rtpCallId || null;
+          const rtpFromTag = result.uas._rtpFromTag || null;
+
           const onDestroy = async (hangupBy) => {
             await this._endCall(cdr, hangupBy);
+            // Clean up RTPEngine session and convert recording
+            if (rtpCallId && rtpFromTag) {
+              await this._rtpengineDelete(rtpCallId, rtpFromTag);
+              setTimeout(() => {
+                try {
+                  const wavPath = pcapToWav(rtpCallId, cdr.callId);
+                  if (wavPath) {
+                    cdr.recordingPath = wavPath;
+                    cdr.recordingSize = require('fs').statSync(wavPath).size;
+                    cdr.recorded = true;
+                    cdr.save().catch(e => logger.error(`CDR recording update: ${e.message}`));
+                    logger.info(`RECORDING: saved ${wavPath} for [${cdr.callId}]`);
+                  }
+                } catch (err) { logger.error(`Recording conversion: ${err.message}`); }
+              }, 2000);
+            }
             this.activeCalls.delete(callId);
           };
           result.uas.on('destroy', () => { result.uac.destroy(); onDestroy('caller'); });

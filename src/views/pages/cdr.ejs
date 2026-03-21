@@ -21,8 +21,8 @@
   <button class="btn btn-sm" onclick="loadCDR()">Search</button>
 </div>
 <table class="tbl">
-  <thead><tr><th></th><th>From</th><th>To</th><th>Duration</th><th>Talk</th><th>Status</th><th>Time</th></tr></thead>
-  <tbody id="cdr-body"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody>
+  <thead><tr><th></th><th>From</th><th>To</th><th>Duration</th><th>Talk</th><th>Status</th><th>Recording</th><th>Time</th></tr></thead>
+  <tbody id="cdr-body"><tr><td colspan="8" class="empty">Loading...</td></tr></tbody>
 </table>
 <div style="display:flex;justify-content:space-between;margin-top:12px;font-size:12px;color:var(--text-tertiary)">
   <span id="cdr-info">-</span>
@@ -50,13 +50,22 @@ async function loadCDR(){
       <td>${c.from||'?'}</td><td>${c.to||'?'}</td>
       <td class="mono">${dur(c.duration)}</td><td class="mono">${dur(c.talkTime)}</td>
       <td><span class="pill ${pillCls(c.status)}">${c.status}</span></td>
+      <td>${c.recordingPath ? '<button class="btn btn-sm" onclick="playRec(\''+c.callId+'\',this)" title="Play recording">&#9654;</button>' : '<span class="muted" style="font-size:10px">-</span>'}</td>
       <td class="muted" style="font-size:11px">${fmtTime(c.startTime)}</td>
     </tr>`).join('');
     const p=d.pagination;
     document.getElementById('cdr-info').textContent=`Showing ${(p.page-1)*limit+1}-${Math.min(p.page*limit,p.total)} of ${p.total}`;
     document.getElementById('prev-btn').disabled=p.page<=1;
     document.getElementById('next-btn').disabled=p.page>=p.pages;
-  }else{b.innerHTML='<tr><td colspan="7" class="empty">No records found</td></tr>';document.getElementById('cdr-info').textContent='0 records';}
+  }else{b.innerHTML='<tr><td colspan="8" class="empty">No records found</td></tr>';document.getElementById('cdr-info').textContent='0 records';}
+}
+let currentAudio=null;
+function playRec(callId,btn){
+  if(currentAudio){currentAudio.pause();currentAudio=null;}
+  const a=new Audio(API+'/cdr/'+callId+'/recording?_key='+KEY);
+  a.onended=function(){btn.textContent='\u25B6';currentAudio=null;};
+  a.onerror=function(){btn.textContent='\u25B6';alert('Recording not available');currentAudio=null;};
+  a.play();btn.textContent='\u25A0';currentAudio=a;
 }
 function prevPage(){page--;loadCDR()}
 function nextPage(){page++;loadCDR()}

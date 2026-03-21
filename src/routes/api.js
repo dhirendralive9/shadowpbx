@@ -472,6 +472,21 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
     res.json({ success: true, service: 'ShadowPBX', version: '2.0.0', uptime: process.uptime() });
   });
 
+  // ============================================================
+  // CDR Recording playback
+  // ============================================================
+  router.get('/cdr/:callId/recording', async (req, res) => {
+    try {
+      const cdr = await CDR.findOne({ callId: req.params.callId });
+      if (!cdr || !cdr.recordingPath) return res.status(404).json({ success: false, error: 'Recording not found' });
+      const fs = require('fs');
+      if (!fs.existsSync(cdr.recordingPath)) return res.status(404).json({ success: false, error: 'Recording file missing' });
+      res.setHeader('Content-Type', 'audio/wav');
+      res.setHeader('Content-Disposition', `inline; filename="${require('path').basename(cdr.recordingPath)}"`);
+      fs.createReadStream(cdr.recordingPath).pipe(res);
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
   return router;
 }
 

@@ -204,14 +204,42 @@ class RingGroupHandler {
       }
 
       // Try to determine which member answered
+      // Check the UAC dialog's remote contact or URI to find the matching extension
       let answeredBy = null;
       const remoteUri = uac.remote ? uac.remote.uri : '';
+      const remoteContact = uac.remote ? (uac.remote.contact || '') : '';
+
+      // First try: match by contact or URI which includes the extension
       for (const m of members) {
-        if (remoteUri.includes(m.extension) || remoteUri.includes(m.contact.ip)) {
+        const extPattern = `sip:${m.extension}@`;
+        if (remoteUri.includes(extPattern) || remoteContact.includes(extPattern)) {
           answeredBy = m.extension;
           break;
         }
       }
+
+      // Second try: match by port (each softphone has a unique port)
+      if (!answeredBy) {
+        for (const m of members) {
+          const portStr = `:${m.contact.port}`;
+          if (remoteUri.includes(portStr) || remoteContact.includes(portStr)) {
+            answeredBy = m.extension;
+            break;
+          }
+        }
+      }
+
+      // Third try: match by just the extension number anywhere in the URI
+      if (!answeredBy) {
+        for (const m of members) {
+          if (remoteUri.includes(m.extension)) {
+            answeredBy = m.extension;
+            break;
+          }
+        }
+      }
+
+      logger.info(`SIMRING: answeredBy=${answeredBy} (remoteUri=${remoteUri})`);
 
       cdr.status = 'answered';
       cdr.answerTime = new Date();
