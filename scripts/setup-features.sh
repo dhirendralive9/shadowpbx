@@ -165,11 +165,13 @@ if docker ps --format '{{.Names}}' 2>/dev/null | grep -q rtpengine; then
     echo "      -v /var/lib/shadowpbx/recordings:/recordings \\"
     echo "      -v /opt/shadowpbx/audio:/audio:ro \\"
     echo "      -v /var/lib/shadowpbx/voicemail:/voicemail \\"
-    echo "      drachtio/rtpengine:latest rtpengine \\"
+    echo "      --entrypoint /usr/local/bin/rtpengine \\"
+    echo "      jambonz/rtpengine:latest \\"
     echo "      --interface=\"\${EXTERNAL_IP}\" --listen-ng=127.0.0.1:22222 \\"
     echo "      --port-min=10000 --port-max=20000 \\"
     echo "      --recording-dir=/recordings --recording-method=pcap \\"
-    echo "      --recording-format=eth --log-level=5"
+    echo "      --recording-format=eth --dtmf-log-dest=127.0.0.1:22223 \\"
+    echo "      --log-level=4 --log-stderr --foreground --delete-delay=0"
     echo ""
   fi
 

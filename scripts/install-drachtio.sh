@@ -173,16 +173,29 @@ docker ps | grep -q drachtio && log "Drachtio running on :5060" || err "Drachtio
 # ============================================================
 step "5/8 - Installing RTPEngine (media + recording)..."
 # ============================================================
-docker pull drachtio/rtpengine:latest
+docker pull jambonz/rtpengine:latest
 docker stop rtpengine 2>/dev/null || true
 docker rm rtpengine 2>/dev/null || true
 
 AUDIO_DIR="${APP_DIR}/audio"
 VM_DIR="/var/lib/shadowpbx/voicemail"
 
-mkdir -p ${REC_DIR} ${REC_DIR}/pcap ${REC_DIR}/metadata
+mkdir -p ${REC_DIR} ${REC_DIR}/pcap ${REC_DIR}/pcaps ${REC_DIR}/metadata
 mkdir -p ${AUDIO_DIR}
 mkdir -p ${VM_DIR}/greetings
+
+# Configure Docker log rotation to prevent disk fill
+mkdir -p /etc/docker
+cat > /etc/docker/daemon.json << DOCKEREOF
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "50m",
+    "max-file": "3"
+  }
+}
+DOCKEREOF
+systemctl restart docker 2>/dev/null || true
 
 docker run -d \
   --name rtpengine \
@@ -191,8 +204,8 @@ docker run -d \
   -v ${REC_DIR}:/recordings \
   -v ${AUDIO_DIR}:/audio:ro \
   -v ${VM_DIR}:/voicemail \
-  drachtio/rtpengine:latest \
-  rtpengine \
+  --entrypoint /usr/local/bin/rtpengine \
+  jambonz/rtpengine:latest \
     --interface="${EXTERNAL_IP}" \
     --listen-ng=127.0.0.1:22222 \
     --port-min=10000 \
@@ -201,10 +214,13 @@ docker run -d \
     --recording-method=pcap \
     --recording-format=eth \
     --dtmf-log-dest=127.0.0.1:22223 \
-    --log-level=5
+    --log-level=4 \
+    --log-stderr \
+    --foreground \
+    --delete-delay=0
 
-sleep 2
-docker ps | grep -q rtpengine && log "RTPEngine running (ports 10000-20000)" || err "RTPEngine failed - check: docker logs rtpengine"
+sleep 3
+docker ps | grep -q rtpengine && log "RTPEngine v12 running (ports 10000-20000)" || err "RTPEngine failed - check: docker logs rtpengine"
 
 # ============================================================
 step "6/8 - Setting up ShadowPBX application..."
