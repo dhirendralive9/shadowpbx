@@ -1,62 +1,22 @@
+const dgram = require('dgram');
 const logger = require('../utils/logger');
 const { v4: uuidv4 } = require('uuid');
 
 // ============================================================
 // MonitorHandler — Listen / Whisper / Barge
-// 
-// RTPEngine v9.4 compatible approach:
 //
-// The B2BUA (simring) creates its own RTPEngine call-id that we
-// don't have access to. Instead, we:
+// RTPEngine v12+ with 'subscribe request' support.
 //
-//   1. Get the agent's SDP from the active UAS/UAC dialog
-//   2. Re-INVITE the agent's leg with a modified SDP that includes
-//      a new RTP port for mixing
-//   3. Create a new call to the supervisor using the agent's audio
+// The rtpengine-client npm package doesn't have subscribe methods,
+// so we send the ng command directly via UDP bencode.
 //
-// Simpler approach used here:
-//   1. Get the remote SDP from the agent's dialog (uac)
-//   2. Create a brand new RTPEngine session for the monitor
-//   3. Call the supervisor with that session's SDP
-//   4. The supervisor receives audio — but from a new RTP stream
-//
-// For true media mixing, we re-INVITE the agent's dialog to point
-// its media through our new RTPEngine session, which then forks
-// to both the original caller and the supervisor.
-//
-// ACTUAL WORKING APPROACH:
-//   Just create a simple B2BUA call from the system to the
-//   supervisor, and use the agent leg's SDP as the offer.
-//   Then modify the agent's dialog to send media to BOTH the
-//   original destination AND the monitor.
-//
-// SIMPLEST RELIABLE APPROACH (used here):
-//   Call the supervisor. On answer, do a re-INVITE on the agent's
-//   leg (uac) with the supervisor's media port included. The 
-//   agent's softphone then sends audio to the new port too.
-//   
-//   Actually — the simplest approach that works: Record the call
-//   and stream it. But for real-time monitoring, we use the 
-//   RTPEngine on the ORIGINAL call's tags.
-//
-// FINAL APPROACH:
-//   The B2BUA dialogs (uas/uac) have SDP with the RTPEngine ports.
-//   The uas.local.sdp contains the RTPEngine address that the
-//   caller sends to. The uac.local.sdp contains the RTPEngine
-//   address that the agent sends to. 
-//   We need to tell RTPEngine to also send copies of this audio
-//   to the supervisor. Since subscribe isn't available in v9.4,
-//   we'll use a hack: create the supervisor call, then send
-//   RTPEngine a new offer/answer using the B2BUA's EXISTING tags
-//   plus the supervisor as an additional participant.
-//   But we need the B2BUA's call-id...
-//
-//   GETTING THE B2BUA CALL-ID:
-//   The uas.sip and uac.sip objects contain the SIP headers.
-//   uas.sip.callId gives us the SIP Call-ID used by the B2BUA.
-//   But simring might use a different call-id for RTPEngine.
-//   
-//   Let's just read it from the dialog object.
+// Flow:
+//   1. Send 'subscribe request' to RTPEngine with the active call's
+//      SIP call-id (from UAS dialog) + 'all' flag
+//   2. RTPEngine returns an offer SDP with forked audio
+//   3. Call supervisor's softphone with that SDP
+//   4. Send 'subscribe answer' with supervisor's answer SDP
+//   5. Supervisor receives mixed audio from both call legs
 // ============================================================
 
 class MonitorHandler {
@@ -65,13 +25,125 @@ class MonitorHandler {
     this.rtpengine = rtpengine;
     this.callHandler = callHandler;
     this.registrar = registrar;
-    this.rtpengineConfig = {
-      host: process.env.RTPENGINE_HOST || '127.0.0.1',
-      port: parseInt(process.env.RTPENGINE_PORT) || 22222
-    };
+    this.ngHost = process.env.RTPENGINE_HOST || '127.0.0.1';
+    this.ngPort = parseInt(process.env.RTPENGINE_PORT) || 22222;
     this.monitors = new Map();
+    this._cookie = 0;
   }
 
+  // ============================================================
+  // Send raw ng protocol command via UDP
+  // RTPEngine ng protocol: cookie<space>bencode_dict
+  // ============================================================
+  _sendNg(command, params) {
+    return new Promise((resolve, reject) => {
+      const cookie = `spbx_${++this._cookie}`;
+      const bencode = this._bencode({ command, ...params });
+      const msg = `${cookie} ${bencode}`;
+
+      const client = dgram.createSocket('udp4');
+      const timer = setTimeout(() => {
+        client.close();
+        reject(new Error('RTPEngine ng timeout'));
+      }, 5000);
+
+      client.on('message', (data) => {
+        clearTimeout(timer);
+        const str = data.toString();
+        // Response format: cookie<space>bencode_dict
+        const spaceIdx = str.indexOf(' ');
+        if (spaceIdx > 0) {
+          const respBencode = str.substring(spaceIdx + 1);
+          const parsed = this._bdecode(respBencode);
+          client.close();
+          resolve(parsed);
+        } else {
+          client.close();
+          reject(new Error('Invalid ng response'));
+        }
+      });
+
+      client.on('error', (err) => {
+        clearTimeout(timer);
+        client.close();
+        reject(err);
+      });
+
+      client.send(msg, this.ngPort, this.ngHost);
+    });
+  }
+
+  // ============================================================
+  // Bencode encoder (dict only, supports strings and integers)
+  // ============================================================
+  _bencode(obj) {
+    if (typeof obj === 'string') return `${obj.length}:${obj}`;
+    if (typeof obj === 'number') return `i${Math.floor(obj)}e`;
+    if (Array.isArray(obj)) return 'l' + obj.map(v => this._bencode(v)).join('') + 'e';
+    if (typeof obj === 'object' && obj !== null) {
+      let s = 'd';
+      for (const [k, v] of Object.entries(obj)) {
+        if (v === undefined || v === null) continue;
+        s += this._bencode(k) + this._bencode(v);
+      }
+      return s + 'e';
+    }
+    return `${String(obj).length}:${String(obj)}`;
+  }
+
+  // ============================================================
+  // Bencode decoder (basic — handles strings, ints, lists, dicts)
+  // ============================================================
+  _bdecode(str) {
+    let pos = 0;
+
+    function decode() {
+      if (pos >= str.length) return null;
+      const ch = str[pos];
+
+      if (ch === 'd') {
+        pos++;
+        const dict = {};
+        while (pos < str.length && str[pos] !== 'e') {
+          const key = decode();
+          const val = decode();
+          if (key !== null) dict[key] = val;
+        }
+        pos++; // skip 'e'
+        return dict;
+      }
+      if (ch === 'l') {
+        pos++;
+        const list = [];
+        while (pos < str.length && str[pos] !== 'e') {
+          list.push(decode());
+        }
+        pos++;
+        return list;
+      }
+      if (ch === 'i') {
+        pos++;
+        const end = str.indexOf('e', pos);
+        const num = parseInt(str.substring(pos, end));
+        pos = end + 1;
+        return num;
+      }
+      // String: length:data
+      const colonIdx = str.indexOf(':', pos);
+      if (colonIdx < 0) { pos = str.length; return null; }
+      const len = parseInt(str.substring(pos, colonIdx));
+      pos = colonIdx + 1;
+      const s = str.substring(pos, pos + len);
+      pos += len;
+      return s;
+    }
+
+    return decode();
+  }
+
+  // ============================================================
+  // Start monitoring
+  // ============================================================
   async startMonitor(callId, supervisorExt, mode = 'listen') {
     mode = ['listen', 'whisper', 'barge'].includes(mode) ? mode : 'listen';
 
@@ -99,65 +171,51 @@ class MonitorHandler {
     const monitorId = uuidv4();
     const { uas, uac, cdr } = activeCall;
 
+    // Get the B2BUA's actual SIP call-id from the dialog
+    // This is what RTPEngine knows the call as
+    const uasCallId = uas.sip ? uas.sip.callId : sipCallId;
+    const uacCallId = uac.sip ? uac.sip.callId : sipCallId;
+
     logger.info(`MONITOR: ${mode} on [${sipCallId}] supervisor=${supervisorExt}`);
+    logger.info(`MONITOR: UAS call-id=${uasCallId} UAC call-id=${uacCallId}`);
 
     try {
-      // Try to extract the actual call-id used in the SIP dialog
-      // The B2BUA dialog objects have the SIP Call-ID
-      let rtpCallId = null;
+      // Step 1: Send subscribe request to RTPEngine
+      // Try with both call-ids — one of them will match
+      let subscribeResp = null;
+      let usedCallId = null;
 
-      // Try uac (agent leg) call-id — this is what the B2BUA used with RTPEngine
-      if (uac && uac.sip && uac.sip.callId) {
-        rtpCallId = uac.sip.callId;
-        logger.info(`MONITOR: found UAC SIP call-id: ${rtpCallId}`);
-      } else if (uas && uas.sip && uas.sip.callId) {
-        rtpCallId = uas.sip.callId;
-        logger.info(`MONITOR: found UAS SIP call-id: ${rtpCallId}`);
+      for (const tryCallId of [uacCallId, uasCallId, sipCallId]) {
+        try {
+          logger.info(`MONITOR: trying subscribe request with call-id=${tryCallId}`);
+          subscribeResp = await this._sendNg('subscribe request', {
+            'call-id': tryCallId,
+            flags: ['all']
+          });
+
+          if (subscribeResp && subscribeResp.sdp) {
+            usedCallId = tryCallId;
+            logger.info(`MONITOR: subscribe request OK with call-id=${tryCallId}`);
+            break;
+          } else if (subscribeResp && subscribeResp.result === 'error') {
+            logger.debug(`MONITOR: subscribe failed for ${tryCallId}: ${subscribeResp['error-reason'] || 'unknown'}`);
+            subscribeResp = null;
+          }
+        } catch (e) {
+          logger.debug(`MONITOR: subscribe attempt failed for ${tryCallId}: ${e.message}`);
+        }
       }
 
-      // If we got a real call-id, try to query RTPEngine for it
-      if (rtpCallId && rtpCallId !== sipCallId) {
-        logger.info(`MONITOR: B2BUA call-id differs from SIP call-id: ${rtpCallId} vs ${sipCallId}`);
+      if (!subscribeResp || !subscribeResp.sdp) {
+        throw new Error('Subscribe request failed — no matching RTPEngine session found');
       }
 
-      // The simring B2BUA generates call-ids internally.
-      // We don't know it. But we can get the SDP from the dialogs.
-      // The agent's SDP tells us what RTP port the agent sends to.
-      // We'll create a new session and call the supervisor.
+      const subscribeTag = subscribeResp['to-tag'] || subscribeResp['tag'] || monitorId;
+      logger.info(`MONITOR: got subscribe SDP, to-tag=${subscribeTag}`);
 
-      // Get the caller's SDP (what the trunk sends to our RTPEngine)
-      const callerSdp = uas.remote ? uas.remote.sdp : null;
-      const agentSdp = uac.remote ? uac.remote.sdp : null;
-      // Our local SDPs (what RTPEngine advertises)
-      const ourSdpToAgent = uac.local ? uac.local.sdp : null;
-
-      if (!agentSdp && !callerSdp) {
-        throw new Error('No SDP available from active call');
-      }
-
-      // Use the agent's remote SDP as template — this has the codec info
-      const templateSdp = agentSdp || callerSdp;
-
-      // Create a completely new RTPEngine session for the monitor
-      const monitorCallId = `spbx-mon-${monitorId.substring(0, 8)}`;
-      const monitorTag = 'monitor-src';
-
-      const offerResp = await this.rtpengine.offer(this.rtpengineConfig, {
-        'call-id': monitorCallId,
-        'from-tag': monitorTag,
-        sdp: templateSdp,
-        'flags': ['trust-address'],
-        'replace': ['origin', 'session-connection'],
-        'ICE': 'remove'
-      });
-
-      if (!offerResp || offerResp.result !== 'ok') {
-        throw new Error('RTPEngine offer failed');
-      }
-
-      // Call supervisor with this SDP
+      // Step 2: Call supervisor's softphone with the subscribe SDP
       const supervisorDialog = await this.srf.createUAC(supervisorUri, {
-        localSdp: offerResp.sdp,
+        localSdp: subscribeResp.sdp,
         headers: {
           'Alert-Info': '<http://www.notused.com>;info=alert-autoanswer',
           'Call-Info': '<sip:monitor>;answer-after=0',
@@ -167,133 +225,49 @@ class MonitorHandler {
 
       logger.info(`MONITOR: supervisor ${supervisorExt} answered`);
 
-      // Complete RTPEngine answer
-      const supTag = supervisorDialog.sip ? supervisorDialog.sip.remoteTag : `sup-${monitorId.substring(0, 8)}`;
-      
-      await this.rtpengine.answer(this.rtpengineConfig, {
-        'call-id': monitorCallId,
-        'from-tag': monitorTag,
-        'to-tag': supTag,
+      // Step 3: Send subscribe answer with supervisor's SDP
+      const answerResp = await this._sendNg('subscribe answer', {
+        'call-id': usedCallId,
+        'to-tag': subscribeTag,
         sdp: supervisorDialog.remote.sdp,
-        'flags': ['trust-address'],
-        'replace': ['origin', 'session-connection'],
-        'ICE': 'remove'
+        flags: ['trust-address', 'allow-transcoding'],
+        replace: ['origin', 'session-connection'],
+        ICE: 'remove'
       });
 
-      logger.info(`MONITOR: RTPEngine session established [${monitorCallId}]`);
-
-      // Now the key part: bridge audio from the active call to the monitor.
-      // We do this by re-INVITEing the agent's dialog so their softphone
-      // sends a copy of its RTP to our monitor's RTPEngine port.
-      // 
-      // Extract the monitor's RTP port from the offer SDP
-      const monitorRtpPort = this._extractPort(offerResp.sdp);
-      const monitorRtpIp = this._extractIP(offerResp.sdp);
-
-      if (monitorRtpPort && monitorRtpIp) {
-        // Re-INVITE the agent's dialog to also include the monitor port
-        // Actually, we can't do multicast via re-INVITE easily.
-        // Instead, let's have the monitor RTPEngine session SEND packets
-        // to the agent's RTP address — effectively bridging audio.
-        
-        // Get agent's actual RTP endpoint from its SDP
-        const agentRtpPort = this._extractPort(agentSdp);
-        const agentRtpIp = this._extractIP(agentSdp);
-        
-        // And the caller's RTP endpoint
-        const callerRtpPort = callerSdp ? this._extractPort(callerSdp) : null;
-        const callerRtpIp = callerSdp ? this._extractIP(callerSdp) : null;
-
-        logger.info(`MONITOR: agent RTP=${agentRtpIp}:${agentRtpPort}, caller RTP=${callerRtpIp}:${callerRtpPort}, monitor RTP=${monitorRtpIp}:${monitorRtpPort}`);
+      if (answerResp && answerResp.result === 'ok') {
+        logger.info(`MONITOR: subscribe answer OK — media forking active`);
+      } else {
+        logger.warn(`MONITOR: subscribe answer response: ${JSON.stringify(answerResp)}`);
       }
 
-      // Since we can't easily fork RTP in v9.4, use the RECORDING feature
-      // as a workaround: start recording on the active call, and play
-      // the recording file to the supervisor in real-time.
-      //
-      // Actually, the simplest working approach for v9.4:
-      // Use playMedia on the monitor session with the call's recording.
-      // But that's not real-time.
-      //
-      // THE REAL SOLUTION: re-INVITE both legs of the active call
-      // through our monitor's RTPEngine session. This makes the monitor
-      // session the media anchor, and it can fork to the supervisor.
-
-      // Re-INVITE the caller (uas) to send media through our monitor session
-      try {
-        // Create a new offer for the caller through the monitor session
-        const reInviteOffer = await this.rtpengine.offer(this.rtpengineConfig, {
-          'call-id': monitorCallId,
-          'from-tag': 'caller-leg',
-          sdp: callerSdp || templateSdp,
-          'flags': ['trust-address'],
-          'replace': ['origin', 'session-connection'],
-          'ICE': 'remove'
-        });
-
-        if (reInviteOffer && reInviteOffer.result === 'ok') {
-          // Re-INVITE the caller's dialog with the new RTP address
-          await uas.modify(reInviteOffer.sdp);
-          logger.info(`MONITOR: re-INVITE caller to monitor RTPEngine`);
-
-          // Now re-INVITE the agent through the same session
-          const agentReInvite = await this.rtpengine.answer(this.rtpengineConfig, {
-            'call-id': monitorCallId,
-            'from-tag': 'caller-leg',
-            'to-tag': 'agent-leg',
-            sdp: agentSdp || templateSdp,
-            'flags': ['trust-address'],
-            'replace': ['origin', 'session-connection'],
-            'ICE': 'remove'
-          });
-
-          if (agentReInvite && agentReInvite.result === 'ok') {
-            await uac.modify(agentReInvite.sdp);
-            logger.info(`MONITOR: re-INVITE agent to monitor RTPEngine`);
-          }
-        }
-
-        logger.info(`MONITOR: media path now flows through monitor session — supervisor should hear audio`);
-      } catch (reInvErr) {
-        logger.warn(`MONITOR: re-INVITE failed (${reInvErr.message}) — supervisor may not hear audio`);
-      }
-
-      // For listen mode, block supervisor's outgoing audio
+      // Step 4: For listen mode, block supervisor's outgoing audio
       if (mode === 'listen') {
         try {
-          await this.rtpengine.blockMedia(this.rtpengineConfig, {
-            'call-id': monitorCallId,
-            'from-tag': monitorTag
+          await this._sendNg('block media', {
+            'call-id': usedCallId,
+            'from-tag': subscribeTag
           });
           logger.info(`MONITOR: supervisor audio blocked (listen mode)`);
         } catch (e) {
-          try {
-            await this.rtpengine.silenceMedia(this.rtpengineConfig, {
-              'call-id': monitorCallId,
-              'from-tag': monitorTag
-            });
-          } catch (e2) {}
+          logger.debug(`MONITOR: block media failed: ${e.message}`);
         }
       }
 
       // Track session
       const session = {
-        monitorId, monitorCallId, monitorTag, supTag,
+        monitorId, usedCallId, subscribeTag,
         sipCallId, supervisorExt, supervisorDialog, mode,
-        startTime: new Date(), cdr,
-        originalUas: uas, originalUac: uac,
-        originalCallerSdp: callerSdp,
-        originalAgentSdp: agentSdp
+        startTime: new Date(), cdr
       };
       this.monitors.set(monitorId, session);
 
-      // Cleanup on supervisor hangup
+      // Cleanup handlers
       supervisorDialog.on('destroy', () => {
         logger.info(`MONITOR: supervisor disconnected [${monitorId}]`);
         this._cleanup(monitorId);
       });
 
-      // Cleanup on call end
       const callEndHandler = () => {
         if (this.monitors.has(monitorId)) {
           logger.info(`MONITOR: call ended, disconnecting supervisor`);
@@ -317,6 +291,9 @@ class MonitorHandler {
     }
   }
 
+  // ============================================================
+  // Change mode
+  // ============================================================
   async changeMode(monitorId, newMode) {
     const session = this.monitors.get(monitorId);
     if (!session) throw new Error('Monitor session not found');
@@ -325,19 +302,18 @@ class MonitorHandler {
     logger.info(`MONITOR: mode ${session.mode} -> ${newMode}`);
 
     if (newMode === 'listen') {
-      try { await this.rtpengine.blockMedia(this.rtpengineConfig, { 'call-id': session.monitorCallId, 'from-tag': session.monitorTag }); } catch (e) {
-        try { await this.rtpengine.silenceMedia(this.rtpengineConfig, { 'call-id': session.monitorCallId, 'from-tag': session.monitorTag }); } catch (e2) {}
-      }
+      try { await this._sendNg('block media', { 'call-id': session.usedCallId, 'from-tag': session.subscribeTag }); } catch (e) {}
     } else {
-      try { await this.rtpengine.unblockMedia(this.rtpengineConfig, { 'call-id': session.monitorCallId, 'from-tag': session.monitorTag }); } catch (e) {
-        try { await this.rtpengine.unsilenceMedia(this.rtpengineConfig, { 'call-id': session.monitorCallId, 'from-tag': session.monitorTag }); } catch (e2) {}
-      }
+      try { await this._sendNg('unblock media', { 'call-id': session.usedCallId, 'from-tag': session.subscribeTag }); } catch (e) {}
     }
 
     session.mode = newMode;
     return { monitorId, mode: newMode, supervisorExt: session.supervisorExt, targetCallId: session.sipCallId };
   }
 
+  // ============================================================
+  // Stop / cleanup
+  // ============================================================
   async stopMonitor(monitorId) { this._cleanup(monitorId); }
 
   _cleanup(monitorId) {
@@ -346,31 +322,21 @@ class MonitorHandler {
 
     try { session.supervisorDialog.destroy(); } catch (e) {}
 
-    // Restore original media path — re-INVITE back to original SDPs
+    // Unsubscribe from RTPEngine
     try {
-      if (session.originalCallerSdp && session.originalUas) {
-        // Re-INVITE caller back to original B2BUA RTPEngine
-        session.originalUas.modify(session.originalCallerSdp).catch(() => {});
-      }
-      if (session.originalAgentSdp && session.originalUac) {
-        session.originalUac.modify(session.originalAgentSdp).catch(() => {});
-      }
-    } catch (e) {
-      logger.warn(`MONITOR: failed to restore original media path: ${e.message}`);
-    }
-
-    // Delete monitor RTPEngine session
-    try {
-      this.rtpengine.delete(this.rtpengineConfig, {
-        'call-id': session.monitorCallId,
-        'from-tag': session.monitorTag
-      });
+      this._sendNg('unsubscribe', {
+        'call-id': session.usedCallId,
+        'to-tag': session.subscribeTag
+      }).catch(() => {});
     } catch (e) {}
 
     this.monitors.delete(monitorId);
     logger.info(`MONITOR: session ${monitorId} ended`);
   }
 
+  // ============================================================
+  // Dial codes: *11{ext}=listen, *12{ext}=whisper, *13{ext}=barge
+  // ============================================================
   async handleMonitorDial(req, res, fromExt, dialedNumber) {
     const match = dialedNumber.match(/^\*1([123])(\d+)$/);
     if (!match) return false;
@@ -415,18 +381,6 @@ class MonitorHandler {
       });
     }
     return monitors;
-  }
-
-  _extractPort(sdp) {
-    if (!sdp) return null;
-    const m = sdp.match(/m=audio\s+(\d+)/);
-    return m ? parseInt(m[1]) : null;
-  }
-
-  _extractIP(sdp) {
-    if (!sdp) return null;
-    const m = sdp.match(/c=IN\s+IP4\s+(\S+)/);
-    return m ? m[1] : null;
   }
 }
 
