@@ -172,12 +172,35 @@ class MonitorHandler {
     const { uas, uac, cdr } = activeCall;
 
     // Get the B2BUA's actual SIP call-id from the dialog
-    // This is what RTPEngine knows the call as
-    const uasCallId = uas.sip ? uas.sip.callId : sipCallId;
-    const uacCallId = uac.sip ? uac.sip.callId : sipCallId;
+    // The B2BUA creates new SIP dialogs with their own call-ids
+    // We need to find ALL possible call-ids
+    const uasCallId = uas.sip ? uas.sip.callId : null;
+    const uacCallId = uac.sip ? uac.sip.callId : null;
+
+    // Also try to get call-id from other dialog properties
+    const uasCallId2 = uas.callId || null;
+    const uacCallId2 = uac.callId || null;
+
+    // Try dialog.meta or dialog.req for stored call-id
+    const uasMeta = (uas.req && uas.req.get) ? uas.req.get('Call-Id') : null;
+    const uacMeta = (uac.req && uac.req.get) ? uac.req.get('Call-Id') : null;
+
+    // Collect all unique call-ids to try
+    const allCallIds = new Set();
+    [uasCallId, uacCallId, uasCallId2, uacCallId2, uasMeta, uacMeta, sipCallId].forEach(id => {
+      if (id) allCallIds.add(id);
+    });
 
     logger.info(`MONITOR: ${mode} on [${sipCallId}] supervisor=${supervisorExt}`);
-    logger.info(`MONITOR: UAS call-id=${uasCallId} UAC call-id=${uacCallId}`);
+    logger.info(`MONITOR: candidate call-ids: ${[...allCallIds].join(', ')}`);
+
+    // Also dump all dialog properties that might contain the call-id
+    try {
+      const uasKeys = Object.keys(uas.sip || {}).filter(k => k.toLowerCase().includes('call') || k.toLowerCase().includes('id'));
+      const uacKeys = Object.keys(uac.sip || {}).filter(k => k.toLowerCase().includes('call') || k.toLowerCase().includes('id'));
+      if (uasKeys.length) logger.debug(`MONITOR: UAS sip keys with 'call/id': ${uasKeys.join(', ')} = ${uasKeys.map(k => uas.sip[k]).join(', ')}`);
+      if (uacKeys.length) logger.debug(`MONITOR: UAC sip keys with 'call/id': ${uacKeys.join(', ')} = ${uacKeys.map(k => uac.sip[k]).join(', ')}`);
+    } catch (e) {}
 
     try {
       // Step 1: Send subscribe request to RTPEngine
@@ -185,7 +208,7 @@ class MonitorHandler {
       let subscribeResp = null;
       let usedCallId = null;
 
-      for (const tryCallId of [uacCallId, uasCallId, sipCallId]) {
+      for (const tryCallId of allCallIds) {
         try {
           logger.info(`MONITOR: trying subscribe request with call-id=${tryCallId}`);
           subscribeResp = await this._sendNg('subscribe request', {
