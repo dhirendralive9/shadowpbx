@@ -197,7 +197,6 @@ class MonitorHandler {
     // calls and store the mapping: fromTag -> rtpCallId
     if (this.rtpengine && this.rtpengine.callIdMap) {
       const map = this.rtpengine.callIdMap;
-      // Try to find RTPEngine call-id using any known tags from the dialogs
       const uasLocalTag = uas.sip ? uas.sip.localTag : null;
       const uasRemoteTag = uas.sip ? uas.sip.remoteTag : null;
       const uacLocalTag = uac.sip ? uac.sip.localTag : null;
@@ -210,6 +209,29 @@ class MonitorHandler {
           logger.info(`MONITOR: found RTPEngine call-id via tag ${tag}: ${rtpId}`);
         }
       }
+    }
+
+    // Drachtio server manages RTPEngine directly for B2BUA calls.
+    // Our Node.js wrapper never sees the call-id. Query RTPEngine
+    // for all active sessions and try each one.
+    try {
+      const listResp = await this._sendNg('list', {
+        limit: 32
+      });
+      if (listResp && listResp.calls) {
+        const calls = Array.isArray(listResp.calls) ? listResp.calls : [];
+        logger.info(`MONITOR: RTPEngine has ${calls.length} active session(s)`);
+        for (const rtpCid of calls) {
+          if (rtpCid && !allCallIds.has(rtpCid)) {
+            // Skip monitor sessions we created
+            if (!rtpCid.startsWith('spbx-mon-') && !rtpCid.startsWith('mon-')) {
+              allCallIds.add(rtpCid);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      logger.debug(`MONITOR: RTPEngine list failed: ${e.message}`);
     }
 
     logger.info(`MONITOR: ${mode} on [${sipCallId}] supervisor=${supervisorExt}`);
