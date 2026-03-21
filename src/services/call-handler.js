@@ -74,6 +74,12 @@ class CallHandler {
       return res.send(404);
     }
 
+    // Check if dialing monitor codes: *11{ext}=listen, *12{ext}=whisper, *13{ext}=barge
+    if (this.monitorHandler && toExt && /^\*1[123]\d+$/.test(toExt)) {
+      const handled = await this.monitorHandler.handleMonitorDial(req, res, fromExt, toExt);
+      if (handled) return;
+    }
+
     // Check if dialing a park slot (pickup)
     if (this.parkHandler && this.parkHandler.isParkSlot(toExt)) {
       return this.parkHandler.handlePickupDial(req, res, fromExt, toExt, callId);

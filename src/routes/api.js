@@ -2,7 +2,7 @@ const express = require('express');
 const { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, CDR } = require('../models');
 const logger = require('../utils/logger');
 
-function createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler) {
+function createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler, monitorHandler) {
   const router = express.Router();
 
   // ============================================================
@@ -375,6 +375,44 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
     } catch (err) {
       res.status(err.message.includes('not found') ? 404 : 500).json({ success: false, error: err.message });
     }
+  });
+
+  // ============================================================
+  // Supervisor Monitoring (Listen / Whisper / Barge)
+  // ============================================================
+  router.post('/calls/:callId/monitor', async (req, res) => {
+    try {
+      if (!monitorHandler) return res.status(503).json({ success: false, error: 'Monitor not available' });
+      const { supervisorExt, mode } = req.body;
+      if (!supervisorExt) return res.status(400).json({ success: false, error: 'supervisorExt required' });
+      const result = await monitorHandler.startMonitor(req.params.callId, supervisorExt, mode || 'listen');
+      res.json({ success: true, ...result });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.post('/monitors/:monitorId/mode', async (req, res) => {
+    try {
+      if (!monitorHandler) return res.status(503).json({ success: false, error: 'Monitor not available' });
+      const { mode } = req.body;
+      if (!mode) return res.status(400).json({ success: false, error: 'mode required' });
+      const result = await monitorHandler.changeMode(req.params.monitorId, mode);
+      res.json({ success: true, ...result });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.delete('/monitors/:monitorId', async (req, res) => {
+    try {
+      if (!monitorHandler) return res.status(503).json({ success: false, error: 'Monitor not available' });
+      await monitorHandler.stopMonitor(req.params.monitorId);
+      res.json({ success: true, message: 'Monitor session ended' });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.get('/monitors', async (req, res) => {
+    try {
+      if (!monitorHandler) return res.json({ success: true, monitors: [] });
+      res.json({ success: true, monitors: monitorHandler.getActiveMonitors() });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
 
   // ============================================================

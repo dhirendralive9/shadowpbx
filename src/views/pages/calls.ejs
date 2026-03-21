@@ -7,30 +7,121 @@
   <thead><tr><th>Status</th><th>From</th><th>To</th><th>Duration</th><th>Actions</th></tr></thead>
   <tbody id="calls-body"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody>
 </table>
-<div style="margin-top:20px"><div class="sec-head"><span class="sec-title">Parked calls</span></div>
-<table class="tbl">
-  <thead><tr><th>Slot</th><th>Caller</th><th>Duration</th><th></th></tr></thead>
-  <tbody id="parked-body"><tr><td colspan="4" class="empty">Loading...</td></tr></tbody>
-</table></div>
+
+<div style="margin-top:24px">
+  <div class="sec-head"><span class="sec-title">Active monitors</span></div>
+  <table class="tbl">
+    <thead><tr><th>Mode</th><th>Supervisor</th><th>Target call</th><th>Duration</th><th></th></tr></thead>
+    <tbody id="monitors-body"><tr><td colspan="5" class="empty">No active monitors</td></tr></tbody>
+  </table>
+</div>
+
+<div style="margin-top:24px">
+  <div class="sec-head"><span class="sec-title">Parked calls</span></div>
+  <table class="tbl">
+    <thead><tr><th>Slot</th><th>Caller</th><th>Duration</th><th></th></tr></thead>
+    <tbody id="parked-body"><tr><td colspan="4" class="empty">Loading...</td></tr></tbody>
+  </table>
+</div>
+
 <script>
-const API='/api',KEY='<%= apiKey %>',H={'X-API-Key':KEY};
-function dur(s){if(!s)return'00:00';return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0')}
-async function load(){
-  const r=await(await fetch(API+'/calls/active',{headers:H})).json();
-  const b=document.getElementById('calls-body');
-  if(r.success&&r.calls&&r.calls.length){
-    document.getElementById('call-count').textContent=r.calls.length+' active';
-    b.innerHTML=r.calls.map(c=>`<tr><td><span class="pill ${c.onHold?'p-hold':'p-ok'}">${c.onHold?'on hold':'active'}</span></td><td>${c.from||'?'}</td><td class="mono">${c.to||'?'}</td><td class="mono">${dur(c.duration||0)}</td><td><button class="btn btn-sm" onclick="act('${c.callId}','${c.onHold?'resume':'hold'}')">${c.onHold?'Resume':'Hold'}</button> <button class="btn btn-sm" onclick="xfer('${c.callId}')">Transfer</button> <button class="btn btn-sm" onclick="park('${c.callId}')">Park</button></td></tr>`).join('');
-  }else{document.getElementById('call-count').textContent='idle';b.innerHTML='<tr><td colspan="5" class="empty">No active calls</td></tr>';}
-  const p=await(await fetch(API+'/calls/parked',{headers:H})).json();
-  const pb=document.getElementById('parked-body');
-  if(p.success&&p.parkedCalls&&p.parkedCalls.length){pb.innerHTML=p.parkedCalls.map(c=>`<tr><td class="mono">${c.slot}</td><td>${c.callerID||'?'}</td><td class="mono">${dur(c.duration||0)}</td><td><button class="btn btn-sm" onclick="pickup('${c.slot}')">Pickup</button></td></tr>`).join('');}
-  else{pb.innerHTML='<tr><td colspan="4" class="empty">No parked calls</td></tr>';}
+const API = '/api', KEY = '<%= apiKey %>', H = { 'X-API-Key': KEY };
+function dur(s) { if (!s) return '00:00'; return String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0'); }
+
+async function load() {
+  try {
+    // Active calls
+    const r = await (await fetch(API + '/calls/active', { headers: H })).json();
+    const b = document.getElementById('calls-body');
+    if (r.success && r.calls && r.calls.length) {
+      document.getElementById('call-count').textContent = r.calls.length + ' active';
+      b.innerHTML = r.calls.map(function(c) {
+        return '<tr>' +
+          '<td><span class="pill ' + (c.onHold ? 'p-hold' : 'p-ok') + '">' + (c.onHold ? 'on hold' : 'active') + '</span></td>' +
+          '<td>' + (c.from || '?') + '</td>' +
+          '<td class="mono">' + (c.to || '?') + '</td>' +
+          '<td class="mono">' + dur(c.duration || 0) + '</td>' +
+          '<td>' +
+            '<button class="btn btn-sm" onclick="act(\'' + c.callId + '\',\'' + (c.onHold ? 'resume' : 'hold') + '\')">' + (c.onHold ? 'Resume' : 'Hold') + '</button> ' +
+            '<button class="btn btn-sm" onclick="xfer(\'' + c.callId + '\')">Transfer</button> ' +
+            '<button class="btn btn-sm" onclick="park(\'' + c.callId + '\')">Park</button> ' +
+            '<button class="btn btn-sm" style="color:var(--green)" onclick="monitor(\'' + c.callId + '\',\'listen\')" title="Silent listen">Listen</button> ' +
+            '<button class="btn btn-sm" style="color:var(--amber)" onclick="monitor(\'' + c.callId + '\',\'whisper\')" title="Talk to agent only">Whisper</button> ' +
+            '<button class="btn btn-sm" style="color:var(--red)" onclick="monitor(\'' + c.callId + '\',\'barge\')" title="Join call">Barge</button>' +
+          '</td></tr>';
+      }).join('');
+    } else {
+      document.getElementById('call-count').textContent = 'idle';
+      b.innerHTML = '<tr><td colspan="5" class="empty">No active calls</td></tr>';
+    }
+
+    // Active monitors
+    const m = await (await fetch(API + '/monitors', { headers: H })).json();
+    const mb = document.getElementById('monitors-body');
+    if (m.success && m.monitors && m.monitors.length) {
+      mb.innerHTML = m.monitors.map(function(mon) {
+        var modeColor = mon.mode === 'listen' ? 'p-ok' : mon.mode === 'whisper' ? 'p-warn' : 'p-miss';
+        return '<tr>' +
+          '<td><span class="pill ' + modeColor + '">' + mon.mode + '</span></td>' +
+          '<td class="mono">' + mon.supervisorExt + '</td>' +
+          '<td class="mono" style="font-size:11px">' + mon.targetCallId.substring(0, 20) + '...</td>' +
+          '<td class="mono">' + dur(mon.duration || 0) + '</td>' +
+          '<td>' +
+            '<button class="btn btn-sm" onclick="changeMode(\'' + mon.monitorId + '\',\'listen\')">Listen</button> ' +
+            '<button class="btn btn-sm" onclick="changeMode(\'' + mon.monitorId + '\',\'whisper\')">Whisper</button> ' +
+            '<button class="btn btn-sm" onclick="changeMode(\'' + mon.monitorId + '\',\'barge\')">Barge</button> ' +
+            '<button class="btn btn-sm btn-danger" onclick="stopMon(\'' + mon.monitorId + '\')">Stop</button>' +
+          '</td></tr>';
+      }).join('');
+    } else {
+      mb.innerHTML = '<tr><td colspan="5" class="empty">No active monitors</td></tr>';
+    }
+
+    // Parked calls
+    const p = await (await fetch(API + '/calls/parked', { headers: H })).json();
+    const pb = document.getElementById('parked-body');
+    if (p.success && p.parkedCalls && p.parkedCalls.length) {
+      pb.innerHTML = p.parkedCalls.map(function(c) {
+        return '<tr><td class="mono">' + c.slot + '</td><td>' + (c.callerID || '?') + '</td><td class="mono">' + dur(c.duration || 0) + '</td>' +
+          '<td><button class="btn btn-sm" onclick="pickup(\'' + c.slot + '\')">Pickup</button></td></tr>';
+      }).join('');
+    } else {
+      pb.innerHTML = '<tr><td colspan="4" class="empty">No parked calls</td></tr>';
+    }
+  } catch (e) { console.error(e); }
 }
-async function act(id,a){await fetch(API+'/calls/'+id+'/'+a,{method:'POST',headers:H});load()}
-function xfer(id){const t=prompt('Transfer to:');if(t)fetch(API+'/calls/'+id+'/transfer',{method:'POST',headers:{...H,'Content-Type':'application/json'},body:JSON.stringify({target:t,type:'blind'})}).then(load)}
-function park(id){fetch(API+'/calls/'+id+'/park',{method:'POST',headers:{...H,'Content-Type':'application/json'},body:JSON.stringify({})}).then(load)}
-function pickup(s){const e=prompt('Pickup with ext:');if(e)fetch(API+'/calls/pickup/'+s,{method:'POST',headers:{...H,'Content-Type':'application/json'},body:JSON.stringify({extension:e})}).then(load)}
-load();setInterval(load,3000);
+
+async function act(id, a) { await fetch(API + '/calls/' + id + '/' + a, { method: 'POST', headers: H }); load(); }
+function xfer(id) { var t = prompt('Transfer to extension:'); if (t) fetch(API + '/calls/' + id + '/transfer', { method: 'POST', headers: Object.assign({}, H, { 'Content-Type': 'application/json' }), body: JSON.stringify({ target: t, type: 'blind' }) }).then(load); }
+function park(id) { fetch(API + '/calls/' + id + '/park', { method: 'POST', headers: Object.assign({}, H, { 'Content-Type': 'application/json' }), body: JSON.stringify({}) }).then(load); }
+function pickup(s) { var e = prompt('Pickup with ext:'); if (e) fetch(API + '/calls/pickup/' + s, { method: 'POST', headers: Object.assign({}, H, { 'Content-Type': 'application/json' }), body: JSON.stringify({ extension: e }) }).then(load); }
+
+function monitor(callId, mode) {
+  var ext = prompt('Supervisor extension to ' + mode + ' on:');
+  if (!ext) return;
+  fetch(API + '/calls/' + callId + '/monitor', {
+    method: 'POST',
+    headers: Object.assign({}, H, { 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ supervisorExt: ext, mode: mode })
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.success) { alert(mode.charAt(0).toUpperCase() + mode.slice(1) + ' started on ext ' + ext); load(); }
+    else alert('Error: ' + (d.error || 'unknown'));
+  });
+}
+
+function changeMode(monitorId, mode) {
+  fetch(API + '/monitors/' + monitorId + '/mode', {
+    method: 'POST',
+    headers: Object.assign({}, H, { 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ mode: mode })
+  }).then(load);
+}
+
+function stopMon(monitorId) {
+  fetch(API + '/monitors/' + monitorId, { method: 'DELETE', headers: H }).then(load);
+}
+
+load();
+setInterval(load, 3000);
 </script>
 <%- include('../partials/foot') %>
