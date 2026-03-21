@@ -17,8 +17,8 @@ class Registrar {
 
     // Clean expired nonces every 5 min
     setInterval(() => this._cleanNonces(), 300000);
-    // Clean expired registrations every 30 sec
-    setInterval(() => this._cleanExpiredRegistrations(), 30000);
+    // Clean expired registrations every 10 sec (fast detection of offline devices)
+    setInterval(() => this._cleanExpiredRegistrations(), 10000);
     // Clean expired bans every 60 sec
     setInterval(() => this._cleanBans(), 60000);
     // Rebuild cache from MongoDB on startup (after 2 sec delay for DB connect)
@@ -89,7 +89,12 @@ class Registrar {
     // Get contact and expires
     const contact = req.get('Contact');
     const expiresHeader = req.get('Expires');
-    const expires = parseInt(expiresHeader) || 3600;
+    let expires = parseInt(expiresHeader) || 3600;
+
+    // Cap max expires to 300s — forces frequent re-registration
+    // so offline devices are detected within 5 minutes
+    const maxExpires = parseInt(process.env.MAX_REGISTRATION_EXPIRES) || 300;
+    if (expires > maxExpires) expires = maxExpires;
 
     // Unregister (expires = 0)
     if (expires === 0 || contact === '*') {
