@@ -2,21 +2,17 @@ const logger = require('../utils/logger');
 const { v4: uuidv4 } = require('uuid');
 
 // ============================================================
-// MonitorHandler — Listen / Whisper / Barge
+// MonitorHandler — Listen / Whisper / Barge (RTPEngine v9.4 compatible)
 //
-// Uses RTPEngine 'subscribe request' to fork media from an
-// active call to a supervisor's softphone.
-//
-// Flow:
-//   1. Send 'subscribe request' to RTPEngine with the active call's
-//      call-id and 'all' flag — RTPEngine returns an offer SDP
-//      containing the forked audio
-//   2. Call the supervisor's softphone with that SDP
-//   3. Send 'subscribe answer' with the supervisor's answer SDP
-//   4. Media flows: supervisor hears the call
-//
-// For whisper/barge, we additionally need to inject the supervisor's
-// audio back into the call legs.
+// Approach for v9.4 (no subscribe support):
+//   1. Query the active call in RTPEngine to get its media info
+//   2. Call the supervisor's softphone via Drachtio
+//   3. Use RTPEngine offer/answer with the SAME call-id but a NEW
+//      from-tag — this adds a third participant to the RTPEngine
+//      call session. RTPEngine treats it as another leg and mixes
+//      the audio.
+//   4. For listen mode: use blockMedia on supervisor's tag so
+//      their mic doesn't reach the other parties
 // ============================================================
 
 class MonitorHandler {
@@ -38,12 +34,10 @@ class MonitorHandler {
   async startMonitor(callId, supervisorExt, mode = 'listen') {
     mode = ['listen', 'whisper', 'barge'].includes(mode) ? mode : 'listen';
 
-    // Find the active call
     let sipCallId = callId;
     let activeCall = this.callHandler.activeCalls.get(callId);
 
     if (!activeCall) {
-      // Try finding by CDR callId
       for (const [scid, call] of this.callHandler.activeCalls) {
         if (call.cdr && call.cdr.callId === callId) {
           sipCallId = scid;
@@ -52,10 +46,8 @@ class MonitorHandler {
         }
       }
     }
-
     if (!activeCall) throw new Error('Call not found or not active');
 
-    // Get supervisor contact
     const contacts = await this.registrar.getContacts(supervisorExt);
     if (!contacts || contacts.length === 0) {
       throw new Error(`Supervisor ${supervisorExt} not registered`);
@@ -64,91 +56,95 @@ class MonitorHandler {
     const contact = contacts[0];
     const supervisorUri = `sip:${supervisorExt}@${contact.ip}:${contact.port}`;
     const monitorId = uuidv4();
+    const monitorTag = `mon-${monitorId.substring(0, 8)}`;
     const { uas, uac, cdr } = activeCall;
 
     logger.info(`MONITOR: ${mode} on [${sipCallId}] supervisor=${supervisorExt}`);
 
     try {
-      // Step 1: RTPEngine subscribe request
-      // This asks RTPEngine to fork media from the existing call
-      const subscribeOpts = {
-        'call-id': sipCallId,
-        'from-tags': ['all'],  // subscribe to audio from all parties
-        'flags': ['all']
-      };
+      // Get the caller's SDP to use as a template for the monitor offer
+      const callerSdp = uas.remote ? uas.remote.sdp : null;
+      if (!callerSdp) throw new Error('Cannot get SDP from active call');
 
-      let offerSdp;
-      try {
-        const subResp = await this._rtpengineCommand('subscribe request', subscribeOpts);
-        if (subResp && subResp.sdp) {
-          offerSdp = subResp.sdp;
-          logger.info(`MONITOR: subscribe request OK, got SDP offer`);
-        } else {
-          throw new Error('No SDP in subscribe response');
-        }
-      } catch (subErr) {
-        logger.warn(`MONITOR: subscribe request failed (${subErr.message}), using fallback`);
-        // Fallback: create a separate offer using the caller's SDP
-        offerSdp = await this._createFallbackOffer(sipCallId, uas);
+      // Step 1: Create a third RTPEngine leg on the SAME call-id
+      // By using the same call-id with a new from-tag, RTPEngine
+      // treats this as an additional participant in the call
+      const offerResp = await this.rtpengine.offer(this.rtpengineConfig, {
+        'call-id': sipCallId,
+        'from-tag': monitorTag,
+        sdp: callerSdp,
+        'flags': ['trust-address'],
+        'replace': ['origin', 'session-connection'],
+        'ICE': 'remove'
+      });
+
+      if (!offerResp || offerResp.result !== 'ok') {
+        throw new Error('RTPEngine offer failed for monitor leg');
       }
 
-      if (!offerSdp) throw new Error('Failed to get monitor SDP');
+      logger.info(`MONITOR: RTPEngine offer OK for third leg (tag=${monitorTag})`);
 
-      // Step 2: Call the supervisor's softphone
-      // Use sendrecv — the softphone needs to answer normally
-      // For listen mode, we'll mute the supervisor's audio at RTPEngine level
+      // Step 2: Call supervisor's softphone with RTPEngine's SDP
       const supervisorDialog = await this.srf.createUAC(supervisorUri, {
-        localSdp: offerSdp,
+        localSdp: offerResp.sdp,
         headers: {
           'Alert-Info': '<http://www.notused.com>;info=alert-autoanswer',
-          'X-Monitor-Mode': mode,
-          'Call-Info': '<sip:monitor>;answer-after=0'
+          'Call-Info': '<sip:monitor>;answer-after=0',
+          'X-Monitor-Mode': mode
         }
       });
 
       logger.info(`MONITOR: supervisor ${supervisorExt} answered`);
 
-      // Step 3: Send subscribe answer with supervisor's SDP
-      const supToTag = supervisorDialog.sip ? supervisorDialog.sip.remoteTag : uuidv4();
-      try {
-        await this._rtpengineCommand('subscribe answer', {
-          'call-id': sipCallId,
-          'to-tag': supToTag,
-          'sdp': supervisorDialog.remote.sdp,
-          'flags': ['trust-address'],
-          'replace': ['origin', 'session-connection'],
-          'ICE': 'remove'
-        });
-        logger.info(`MONITOR: subscribe answer completed`);
-      } catch (ansErr) {
-        logger.warn(`MONITOR: subscribe answer failed (${ansErr.message}), using fallback answer`);
-        await this._fallbackAnswer(sipCallId, monitorId, supervisorDialog);
+      // Step 3: Complete RTPEngine answer with supervisor's SDP
+      const supRemoteTag = supervisorDialog.sip ? supervisorDialog.sip.remoteTag : `sup-${monitorId.substring(0, 8)}`;
+
+      const answerResp = await this.rtpengine.answer(this.rtpengineConfig, {
+        'call-id': sipCallId,
+        'from-tag': monitorTag,
+        'to-tag': supRemoteTag,
+        sdp: supervisorDialog.remote.sdp,
+        'flags': ['trust-address'],
+        'replace': ['origin', 'session-connection'],
+        'ICE': 'remove'
+      });
+
+      if (answerResp && answerResp.result === 'ok') {
+        logger.info(`MONITOR: RTPEngine answer OK — third leg established`);
+      } else {
+        logger.warn(`MONITOR: RTPEngine answer response: ${JSON.stringify(answerResp)}`);
       }
 
-      // Step 4: For listen mode, block supervisor's audio from reaching the call
+      // Step 4: For listen mode, block supervisor's outgoing audio
       if (mode === 'listen') {
         try {
           await this.rtpengine.blockMedia(this.rtpengineConfig, {
             'call-id': sipCallId,
-            'from-tag': supToTag
+            'from-tag': monitorTag
           });
-          logger.info(`MONITOR: blocked supervisor audio (listen mode)`);
+          logger.info(`MONITOR: supervisor audio blocked (listen mode)`);
         } catch (e) {
-          logger.debug(`MONITOR: blockMedia not available: ${e.message}`);
+          // blockMedia might not work perfectly — also try silenceMedia
+          try {
+            await this.rtpengine.silenceMedia(this.rtpengineConfig, {
+              'call-id': sipCallId,
+              'from-tag': monitorTag
+            });
+            logger.info(`MONITOR: supervisor audio silenced (listen mode)`);
+          } catch (e2) {
+            logger.debug(`MONITOR: could not block/silence supervisor audio: ${e2.message}`);
+          }
         }
       }
-
-      // Step 5: For whisper, only send to agent leg
-      // For barge, audio goes to both (default behavior)
-      // These require more complex RTPEngine routing — for now whisper = barge
 
       // Track session
       const session = {
         monitorId,
         sipCallId,
+        monitorTag,
+        supRemoteTag,
         supervisorExt,
         supervisorDialog,
-        supervisorTag: supToTag,
         mode,
         startTime: new Date(),
         cdr
@@ -186,107 +182,39 @@ class MonitorHandler {
   }
 
   // ============================================================
-  // Fallback offer: use RTPEngine offer on a new call-id
-  // that mirrors the active call's media
-  // ============================================================
-  async _createFallbackOffer(sipCallId, uas) {
-    const callerSdp = uas.remote ? uas.remote.sdp : null;
-    if (!callerSdp) return null;
-
-    const monCallId = `mon-${sipCallId}`;
-    try {
-      const resp = await this.rtpengine.offer(this.rtpengineConfig, {
-        'call-id': monCallId,
-        'from-tag': 'monitor',
-        sdp: callerSdp,
-        'flags': ['trust-address'],
-        'replace': ['origin', 'session-connection'],
-        'ICE': 'remove'
-      });
-      return resp && resp.result === 'ok' ? resp.sdp : null;
-    } catch (e) { return null; }
-  }
-
-  async _fallbackAnswer(sipCallId, monitorId, supervisorDialog) {
-    const monCallId = `mon-${sipCallId}`;
-    try {
-      await this.rtpengine.answer(this.rtpengineConfig, {
-        'call-id': monCallId,
-        'from-tag': 'monitor',
-        'to-tag': 'sup-' + monitorId.substring(0, 8),
-        sdp: supervisorDialog.remote.sdp,
-        'flags': ['trust-address'],
-        'replace': ['origin', 'session-connection'],
-        'ICE': 'remove'
-      });
-    } catch (e) {
-      logger.warn(`MONITOR: fallback answer failed: ${e.message}`);
-    }
-  }
-
-  // ============================================================
-  // Send raw command to RTPEngine via ng protocol
-  // The rtpengine-client may not have subscribe methods,
-  // so we use the generic command interface
-  // ============================================================
-  async _rtpengineCommand(command, params) {
-    // Try the method directly (newer rtpengine-client versions)
-    const methodName = command.replace(/\s+/g, '_').replace('subscribe_', 'subscribe');
-    if (typeof this.rtpengine[methodName] === 'function') {
-      return this.rtpengine[methodName](this.rtpengineConfig, params);
-    }
-
-    // Try camelCase version
-    const camel = command.split(' ').map((w, i) => i === 0 ? w : w[0].toUpperCase() + w.slice(1)).join('');
-    if (typeof this.rtpengine[camel] === 'function') {
-      return this.rtpengine[camel](this.rtpengineConfig, params);
-    }
-
-    // The rtpengine-client uses a generic request method internally
-    // All ng commands go through the same UDP bencode protocol
-    // We can send any command by calling the client's internal method
-    if (typeof this.rtpengine.request === 'function') {
-      return this.rtpengine.request(this.rtpengineConfig, command, params);
-    }
-
-    throw new Error(`RTPEngine client does not support '${command}'`);
-  }
-
-  // ============================================================
   // Change mode
   // ============================================================
   async changeMode(monitorId, newMode) {
     const session = this.monitors.get(monitorId);
     if (!session) throw new Error('Monitor session not found');
+    if (session.mode === newMode) return { monitorId, mode: newMode, supervisorExt: session.supervisorExt, targetCallId: session.sipCallId };
 
-    if (session.mode === newMode) return session;
-
-    logger.info(`MONITOR: mode change ${session.mode} -> ${newMode}`);
+    logger.info(`MONITOR: mode ${session.mode} -> ${newMode}`);
 
     if (newMode === 'listen') {
       // Block supervisor audio
       try {
         await this.rtpengine.blockMedia(this.rtpengineConfig, {
           'call-id': session.sipCallId,
-          'from-tag': session.supervisorTag
+          'from-tag': session.monitorTag
         });
-      } catch (e) {}
+      } catch (e) {
+        try { await this.rtpengine.silenceMedia(this.rtpengineConfig, { 'call-id': session.sipCallId, 'from-tag': session.monitorTag }); } catch (e2) {}
+      }
     } else {
-      // Unblock supervisor audio (whisper/barge)
+      // Unblock supervisor audio for whisper/barge
       try {
         await this.rtpengine.unblockMedia(this.rtpengineConfig, {
           'call-id': session.sipCallId,
-          'from-tag': session.supervisorTag
+          'from-tag': session.monitorTag
         });
-      } catch (e) {}
+      } catch (e) {
+        try { await this.rtpengine.unsilenceMedia(this.rtpengineConfig, { 'call-id': session.sipCallId, 'from-tag': session.monitorTag }); } catch (e2) {}
+      }
     }
 
     session.mode = newMode;
-    return {
-      monitorId, mode: newMode,
-      supervisorExt: session.supervisorExt,
-      targetCallId: session.sipCallId
-    };
+    return { monitorId, mode: newMode, supervisorExt: session.supervisorExt, targetCallId: session.sipCallId };
   }
 
   // ============================================================
@@ -302,19 +230,13 @@ class MonitorHandler {
 
     try { session.supervisorDialog.destroy(); } catch (e) {}
 
-    // Unsubscribe from RTPEngine
-    try {
-      this._rtpengineCommand('unsubscribe', {
-        'call-id': session.sipCallId,
-        'to-tag': session.supervisorTag
-      }).catch(() => {});
-    } catch (e) {}
-
-    // Also clean up fallback session if used
+    // Delete the monitor leg from RTPEngine
     try {
       this.rtpengine.delete(this.rtpengineConfig, {
-        'call-id': `mon-${session.sipCallId}`,
-        'from-tag': 'monitor'
+        'call-id': session.sipCallId,
+        'from-tag': session.monitorTag,
+        'to-tag': session.supRemoteTag,
+        'delete-delay': 0
       });
     } catch (e) {}
 
@@ -335,7 +257,6 @@ class MonitorHandler {
 
     logger.info(`MONITOR: ${fromExt} dialed *1${match[1]}${targetExt} (${mode})`);
 
-    // Find active call for target extension
     let targetCallId = null;
     for (const [sipCallId, call] of this.callHandler.activeCalls) {
       if (call.toExt === targetExt || call.fromExt === targetExt) {
@@ -358,15 +279,11 @@ class MonitorHandler {
     }
   }
 
-  // ============================================================
-  // Get active monitors
-  // ============================================================
   getActiveMonitors() {
     const monitors = [];
     for (const [id, session] of this.monitors) {
       monitors.push({
-        monitorId: id,
-        mode: session.mode,
+        monitorId: id, mode: session.mode,
         supervisorExt: session.supervisorExt,
         targetCallId: session.sipCallId,
         startTime: session.startTime,
