@@ -122,16 +122,86 @@ class RingGroupHandler {
     }
 
     try {
-      const opts = {
-        localSdpB: req.body,
-        passFailure: false  // Don't send failure to caller — let call-handler handle voicemail
+      // Route media through RTPEngine for recording + monitoring support
+      // Generate a unique call-id for this RTPEngine session
+      const rtpCallId = require('uuid').v4();
+      const fromTag = req.getParsedHeader('From').params.tag;
+      const rtpConfig = {
+        host: process.env.RTPENGINE_HOST || '127.0.0.1',
+        port: parseInt(process.env.RTPENGINE_PORT) || 22222
       };
 
-      // simring signature: doSimring(req, res, uris, opts)
-      // It works like createB2BUA but forks to multiple URIs
+      let rtpOfferSdp = null;
+
+      // Step 1: Send caller's SDP to RTPEngine (offer)
+      if (this.rtpengine) {
+        try {
+          const offerResp = await this.rtpengine.offer(rtpConfig, {
+            'call-id': rtpCallId,
+            'from-tag': fromTag,
+            sdp: req.body,
+            'record call': 'yes',
+            'flags': ['trust-address'],
+            'replace': ['origin', 'session-connection'],
+            'ICE': 'remove'
+          });
+          if (offerResp && offerResp.result === 'ok') {
+            rtpOfferSdp = offerResp.sdp;
+            logger.info(`SIMRING: RTPEngine offer OK (call-id=${rtpCallId})`);
+          }
+        } catch (e) {
+          logger.warn(`SIMRING: RTPEngine offer failed: ${e.message}, using direct media`);
+        }
+      }
+
+      // Build opts for simring
+      const opts = {
+        // localSdpB: SDP to send to the B leg (softphones)
+        // If RTPEngine is available, use its SDP; otherwise pass through
+        localSdpB: rtpOfferSdp || req.body,
+        passFailure: false
+      };
+
+      // localSdpA: function that takes the B leg's answer SDP and returns
+      // the SDP to send back to the A leg (caller/trunk)
+      if (rtpOfferSdp && this.rtpengine) {
+        const rtpEngine = this.rtpengine;
+        opts.localSdpA = async (sdpB, res) => {
+          try {
+            const toTag = res.getParsedHeader('To').params.tag;
+            const answerResp = await rtpEngine.answer(rtpConfig, {
+              'call-id': rtpCallId,
+              'from-tag': fromTag,
+              'to-tag': toTag,
+              sdp: sdpB,
+              'record call': 'yes',
+              'flags': ['trust-address'],
+              'replace': ['origin', 'session-connection'],
+              'ICE': 'remove'
+            });
+            if (answerResp && answerResp.result === 'ok') {
+              logger.info(`SIMRING: RTPEngine answer OK (to-tag=${toTag})`);
+              return answerResp.sdp;
+            }
+          } catch (e) {
+            logger.warn(`SIMRING: RTPEngine answer failed: ${e.message}`);
+          }
+          return sdpB; // fallback: pass through
+        };
+      }
+
       const { uas, uac } = await doSimring(req, res, uris, opts);
 
       logger.info(`SIMRING: answered! Connected to ${uac.remote.uri || 'unknown'}`);
+
+      // Store the RTPEngine call-id on the dialog for monitor lookup
+      if (rtpOfferSdp) {
+        uas._rtpCallId = rtpCallId;
+        uac._rtpCallId = rtpCallId;
+        uas._rtpFromTag = fromTag;
+        uac._rtpFromTag = fromTag;
+        logger.info(`SIMRING: stored RTPEngine call-id=${rtpCallId} on dialogs`);
+      }
 
       // Try to determine which member answered
       let answeredBy = null;
@@ -146,6 +216,7 @@ class RingGroupHandler {
       cdr.status = 'answered';
       cdr.answerTime = new Date();
       if (answeredBy) cdr.to = answeredBy;
+      cdr.rtpCallId = rtpCallId; // Store for CDR/monitor reference
       await cdr.save();
 
       return { uas, uac, answeredBy };

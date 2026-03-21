@@ -191,10 +191,18 @@ class MonitorHandler {
       if (id) allCallIds.add(id);
     });
 
-    // CRITICAL: Look up RTPEngine call-id from the tracked map
-    // The B2BUA (simring) generates its own call-id for RTPEngine
-    // which is different from any SIP call-id. We intercept offer/answer
-    // calls and store the mapping: fromTag -> rtpCallId
+    // CRITICAL: Look up RTPEngine call-id
+    // The ring group now stores it on the dialog objects
+    if (uas._rtpCallId) {
+      allCallIds.add(uas._rtpCallId);
+      logger.info(`MONITOR: found RTPEngine call-id from UAS dialog: ${uas._rtpCallId}`);
+    }
+    if (uac._rtpCallId) {
+      allCallIds.add(uac._rtpCallId);
+      logger.info(`MONITOR: found RTPEngine call-id from UAC dialog: ${uac._rtpCallId}`);
+    }
+
+    // Also check the callIdMap from wrapped rtpengine client
     if (this.rtpengine && this.rtpengine.callIdMap) {
       const map = this.rtpengine.callIdMap;
       const uasLocalTag = uas.sip ? uas.sip.localTag : null;
@@ -206,27 +214,20 @@ class MonitorHandler {
         if (tag && map.has(tag)) {
           const rtpId = map.get(tag);
           allCallIds.add(rtpId);
-          logger.info(`MONITOR: found RTPEngine call-id via tag ${tag}: ${rtpId}`);
+          logger.info(`MONITOR: found RTPEngine call-id via tag map ${tag}: ${rtpId}`);
         }
       }
     }
 
-    // Drachtio server manages RTPEngine directly for B2BUA calls.
-    // Our Node.js wrapper never sees the call-id. Query RTPEngine
-    // for all active sessions and try each one.
+    // Fallback: query RTPEngine for active sessions
     try {
-      const listResp = await this._sendNg('list', {
-        limit: 32
-      });
+      const listResp = await this._sendNg('list', { limit: 32 });
       if (listResp && listResp.calls) {
         const calls = Array.isArray(listResp.calls) ? listResp.calls : [];
         logger.info(`MONITOR: RTPEngine has ${calls.length} active session(s)`);
         for (const rtpCid of calls) {
-          if (rtpCid && !allCallIds.has(rtpCid)) {
-            // Skip monitor sessions we created
-            if (!rtpCid.startsWith('spbx-mon-') && !rtpCid.startsWith('mon-')) {
-              allCallIds.add(rtpCid);
-            }
+          if (rtpCid && !allCallIds.has(rtpCid) && !rtpCid.startsWith('spbx-mon-') && !rtpCid.startsWith('mon-')) {
+            allCallIds.add(rtpCid);
           }
         }
       }
