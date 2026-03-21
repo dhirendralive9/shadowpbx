@@ -75,7 +75,12 @@ apt-get install -y -qq \
   build-essential git curl wget gnupg lsb-release \
   libcurl4-openssl-dev libssl-dev \
   pkg-config openssl ca-certificates \
-  software-properties-common unzip htop
+  software-properties-common unzip htop \
+  sox libsox-fmt-all
+
+# Install tshark non-interactively (for pcap→wav recording conversion)
+echo "wireshark-common wireshark-common/install-setuid boolean false" | debconf-set-selections
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tshark
 
 # Install iptables-persistent non-interactively
 echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
@@ -276,6 +281,12 @@ VM_MAX_MESSAGE_LENGTH=120
 # Call Park
 PARK_SLOT_MIN=70
 PARK_SLOT_MAX=79
+
+# DTMF Detection
+DTMF_LISTEN_PORT=22223
+
+# Registration
+MAX_REGISTRATION_EXPIRES=300
 EOF
 
 log ".env created"
