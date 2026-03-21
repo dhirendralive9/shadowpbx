@@ -280,9 +280,17 @@ class MonitorHandler {
       const subscribeTag = subscribeResp['to-tag'] || subscribeResp['tag'] || monitorId;
       logger.info(`MONITOR: got subscribe SDP, to-tag=${subscribeTag}`);
 
-      // Step 2: Call supervisor's softphone with the subscribe SDP
+      // Fix SDP direction: subscribe returns sendonly/recvonly which makes
+      // the softphone show "on hold". Change to sendrecv.
+      let offerSdp = subscribeResp.sdp;
+      offerSdp = offerSdp
+        .replace(/a=sendonly/g, 'a=sendrecv')
+        .replace(/a=recvonly/g, 'a=sendrecv')
+        .replace(/a=inactive/g, 'a=sendrecv');
+
+      // Step 2: Call supervisor's softphone with the fixed SDP
       const supervisorDialog = await this.srf.createUAC(supervisorUri, {
-        localSdp: subscribeResp.sdp,
+        localSdp: offerSdp,
         headers: {
           'Alert-Info': '<http://www.notused.com>;info=alert-autoanswer',
           'Call-Info': '<sip:monitor>;answer-after=0',
