@@ -15,6 +15,7 @@ const VoicemailHandler = require('./services/voicemail-handler');
 const IvrHandler = require('./services/ivr-handler');
 const DtmfListener = require('./services/dtmf-listener');
 const MonitorHandler = require('./services/monitor-handler');
+const TimeConditionService = require('./services/time-condition');
 const createApiRouter = require('./routes/api');
 const { convertAllPending } = require('./utils/converter');
 
@@ -111,7 +112,8 @@ async function main() {
   const registrar = new Registrar(srf);
   const ringGroupHandler = new RingGroupHandler(srf, registrar, rtpengine);
   const trunkManager = new TrunkManager(srf);
-  const callRouter = new CallRouter();
+  const timeConditionService = new TimeConditionService();
+  const callRouter = new CallRouter(timeConditionService);
   const callHandler = new CallHandler(srf, registrar, rtpengine, ringGroupHandler, trunkManager, callRouter);
   const transferHandler = new TransferHandler(srf, registrar, callHandler, trunkManager, callRouter);
   const holdHandler = new HoldHandler(srf, rtpengine, callHandler);
@@ -178,7 +180,7 @@ async function main() {
     next();
   });
 
-  app.use('/api', createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler, monitorHandler));
+  app.use('/api', createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler, monitorHandler, timeConditionService));
   app.get('/health', (req, res) => res.json({ status: 'ok', service: 'ShadowPBX', version: '2.0.0' }));
 
   // Web GUI routes

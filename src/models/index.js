@@ -84,7 +84,7 @@ const inboundRouteSchema = new mongoose.Schema({
   name: { type: String, required: true },
   trunk: { type: String },
   destination: {
-    type: { type: String, enum: ['extension', 'ringgroup', 'ivr', 'hangup'], required: true },
+    type: { type: String, enum: ['extension', 'ringgroup', 'ivr', 'timecondition', 'hangup'], required: true },
     target: { type: String, required: true }
   },
   enabled: { type: Boolean, default: true },
@@ -110,6 +110,31 @@ const ivrSchema = new mongoose.Schema({
   timeoutDest: {
     type: { type: String, enum: ['extension', 'ringgroup', 'ivr', 'voicemail', 'hangup'], default: 'hangup' },
     target: { type: String, default: '' }
+  },
+  enabled: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now }
+});
+
+// ============================================================
+// Time Condition
+// ============================================================
+const timeConditionSchema = new mongoose.Schema({
+  number: { type: String, required: true, unique: true, index: true },
+  name: { type: String, required: true },
+  timezone: { type: String, default: 'America/New_York' },
+  schedule: [{
+    dayOfWeek: { type: [Number], required: true },  // 0=Sun, 1=Mon ... 6=Sat
+    startTime: { type: String, required: true },     // "09:00"
+    endTime: { type: String, required: true }        // "17:00"
+  }],
+  holidays: [{ type: String }],  // ISO date strings: "2026-12-25"
+  matchDest: {
+    type: { type: String, enum: ['extension', 'ringgroup', 'ivr', 'voicemail', 'hangup'], required: true },
+    target: { type: String, required: true }
+  },
+  noMatchDest: {
+    type: { type: String, enum: ['extension', 'ringgroup', 'ivr', 'voicemail', 'hangup'], required: true },
+    target: { type: String, required: true }
   },
   enabled: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now }
@@ -213,8 +238,9 @@ const Trunk = mongoose.model('Trunk', trunkSchema);
 const InboundRoute = mongoose.model('InboundRoute', inboundRouteSchema);
 const OutboundRoute = mongoose.model('OutboundRoute', outboundRouteSchema);
 const IVR = mongoose.model('IVR', ivrSchema);
+const TimeCondition = mongoose.model('TimeCondition', timeConditionSchema);
 const CDR = mongoose.model('CDR', cdrSchema);
 const VoicemailMessage = mongoose.model('VoicemailMessage', voicemailMessageSchema);
 const ActiveCall = mongoose.model('ActiveCall', activeCallSchema);
 
-module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, IVR, CDR, VoicemailMessage, ActiveCall };
+module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, IVR, TimeCondition, CDR, VoicemailMessage, ActiveCall };

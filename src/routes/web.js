@@ -146,6 +146,10 @@ function createWebRouter(apiKey) {
     res.render('pages/ivr', { apiKey });
   });
 
+  router.get('/time-conditions', authMiddleware, (req, res) => {
+    res.render('pages/timeconditions', { apiKey });
+  });
+
   router.get('/settings', authMiddleware, (req, res) => {
     res.render('pages/settings', { apiKey });
   });

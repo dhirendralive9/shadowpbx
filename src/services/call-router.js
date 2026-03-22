@@ -2,7 +2,40 @@ const { InboundRoute, OutboundRoute } = require('../models');
 const logger = require('../utils/logger');
 
 class CallRouter {
-  constructor() {}
+  constructor(timeConditionService) {
+    this.timeConditionService = timeConditionService || null;
+  }
+
+  // ============================================================
+  // TIME CONDITION RESOLUTION
+  // ============================================================
+
+  /**
+   * If the destination is a time condition, evaluate it and return the
+   * resolved destination. Otherwise return the original destination.
+   * Supports up to 5 levels of nesting to prevent loops.
+   */
+  async resolveDestination(destination, depth) {
+    depth = depth || 0;
+    if (!destination || destination.type !== 'timecondition') return destination;
+    if (depth > 5) {
+      logger.warn(`TimeCondition: nesting depth exceeded for ${destination.target}`);
+      return { type: 'hangup', target: 'hangup' };
+    }
+    if (!this.timeConditionService) {
+      logger.warn('TimeCondition: service not available, passing through');
+      return destination;
+    }
+
+    const result = await this.timeConditionService.evaluate(destination.target);
+    if (!result) {
+      logger.warn(`TimeCondition ${destination.target}: not found, treating as hangup`);
+      return { type: 'hangup', target: 'hangup' };
+    }
+
+    // The resolved destination could itself be a time condition — recurse
+    return this.resolveDestination(result.destination, depth + 1);
+  }
 
   // ============================================================
   // INBOUND ROUTING

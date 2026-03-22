@@ -1,0 +1,315 @@
+<%- include('../partials/head', { title: 'Time Conditions', active: 'timeconditions' }) %>
+
+<div class="sec-head">
+  <span class="sec-title">Time conditions</span>
+  <button class="btn btn-sm" onclick="showAdd()">+ Add time condition</button>
+</div>
+
+<!-- ═══════════════════ ADD FORM ═══════════════════ -->
+<div id="add-form" style="display:none;margin-bottom:16px" class="card">
+  <form onsubmit="save(event)">
+    <input type="hidden" id="tc-edit-mode" value="">
+    <div class="grid-3" style="margin-bottom:0">
+      <div class="form-group"><label class="form-label">Number</label><input class="form-input" id="tc-number" placeholder="900" required></div>
+      <div class="form-group"><label class="form-label">Name</label><input class="form-input" id="tc-name" placeholder="Business Hours" required></div>
+      <div class="form-group"><label class="form-label">Timezone</label>
+        <select class="form-select" id="tc-tz">
+          <option value="America/New_York">US Eastern</option>
+          <option value="America/Chicago">US Central</option>
+          <option value="America/Denver">US Mountain</option>
+          <option value="America/Los_Angeles">US Pacific</option>
+          <option value="America/Anchorage">US Alaska</option>
+          <option value="Pacific/Honolulu">US Hawaii</option>
+          <option value="UTC">UTC</option>
+          <option value="Europe/London">UK (London)</option>
+          <option value="Europe/Paris">EU Central (Paris)</option>
+          <option value="Europe/Berlin">EU Central (Berlin)</option>
+          <option value="Asia/Kolkata">India (IST)</option>
+          <option value="Asia/Tokyo">Japan (JST)</option>
+          <option value="Asia/Shanghai">China (CST)</option>
+          <option value="Asia/Dubai">UAE (GST)</option>
+          <option value="Australia/Sydney">Australia (AEST)</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Schedule entries -->
+    <div style="margin-bottom:12px">
+      <label class="form-label">Schedule (business hours)</label>
+      <div id="schedule-rows"></div>
+      <button type="button" class="btn btn-sm" onclick="addScheduleRow()" style="margin-top:6px">+ Add time slot</button>
+    </div>
+
+    <!-- Holidays -->
+    <div class="form-group">
+      <label class="form-label">Holidays</label>
+      <input class="form-input" id="tc-holidays" placeholder="2026-12-25, 2026-01-01, 2026-07-04">
+      <span class="muted" style="font-size:10px">Comma-separated YYYY-MM-DD dates — calls on these days route to the "no match" destination</span>
+    </div>
+
+    <!-- Match / No-Match destinations -->
+    <div class="grid-2" style="margin-bottom:0">
+      <div class="card" style="padding:12px 14px;border-color:var(--green);background:var(--green-bg)">
+        <div style="font-size:11px;font-weight:600;color:var(--green);text-transform:uppercase;letter-spacing:0.4px;margin-bottom:8px">Match (during business hours)</div>
+        <div class="grid-2" style="margin-bottom:0">
+          <div class="form-group" style="margin-bottom:0"><label class="form-label">Type</label>
+            <select class="form-select" id="tc-match-type">
+              <option value="extension">Extension</option>
+              <option value="ringgroup">Ring group</option>
+              <option value="ivr">IVR</option>
+              <option value="voicemail">Voicemail</option>
+              <option value="hangup">Hang up</option>
+            </select>
+          </div>
+          <div class="form-group" style="margin-bottom:0"><label class="form-label">Target</label><input class="form-input" id="tc-match-target" placeholder="601"></div>
+        </div>
+      </div>
+      <div class="card" style="padding:12px 14px;border-color:var(--red);background:var(--red-bg)">
+        <div style="font-size:11px;font-weight:600;color:var(--red);text-transform:uppercase;letter-spacing:0.4px;margin-bottom:8px">No match (after hours / holidays)</div>
+        <div class="grid-2" style="margin-bottom:0">
+          <div class="form-group" style="margin-bottom:0"><label class="form-label">Type</label>
+            <select class="form-select" id="tc-nomatch-type">
+              <option value="extension">Extension</option>
+              <option value="ringgroup">Ring group</option>
+              <option value="ivr">IVR</option>
+              <option value="voicemail">Voicemail</option>
+              <option value="hangup">Hang up</option>
+            </select>
+          </div>
+          <div class="form-group" style="margin-bottom:0"><label class="form-label">Target</label><input class="form-input" id="tc-nomatch-target" placeholder="2001"></div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button type="submit" class="btn btn-primary btn-sm" id="tc-submit-btn">Create</button>
+      <button type="button" class="btn btn-sm" onclick="hideAdd()">Cancel</button>
+    </div>
+  </form>
+</div>
+
+<!-- ═══════════════════ TABLE ═══════════════════ -->
+<table class="tbl">
+  <thead><tr><th>Status</th><th>Number</th><th>Name</th><th>Timezone</th><th>Schedule</th><th>Match dest</th><th>No-match dest</th><th></th></tr></thead>
+  <tbody id="tc-body"><tr><td colspan="8" class="empty">Loading...</td></tr></tbody>
+</table>
+
+<script>
+var API = '/api', KEY = '<%= apiKey %>', H = { 'X-API-Key': KEY };
+var J = { 'X-API-Key': KEY, 'Content-Type': 'application/json' };
+var DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+var DAY_SHORT = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+
+// ─── Schedule row management ───
+var scheduleRowId = 0;
+function addScheduleRow(data) {
+  var id = scheduleRowId++;
+  var days = (data && data.dayOfWeek) || [1,2,3,4,5];
+  var start = (data && data.startTime) || '09:00';
+  var end = (data && data.endTime) || '17:00';
+
+  var html = '<div class="grid-3" style="margin-bottom:6px;align-items:end" id="sched-' + id + '">';
+  html += '<div class="form-group" style="margin-bottom:0"><div style="display:flex;gap:3px;flex-wrap:wrap">';
+  for (var d = 0; d < 7; d++) {
+    var checked = days.includes(d) ? ' checked' : '';
+    html += '<label style="font-size:10px;display:flex;align-items:center;gap:2px;cursor:pointer">' +
+      '<input type="checkbox" class="sched-day-' + id + '" value="' + d + '"' + checked + '>' + DAY_SHORT[d] +
+    '</label>';
+  }
+  html += '</div></div>';
+  html += '<div style="display:flex;gap:6px;align-items:center">';
+  html += '<input type="time" class="form-input" id="sched-start-' + id + '" value="' + start + '" style="flex:1">';
+  html += '<span class="muted">to</span>';
+  html += '<input type="time" class="form-input" id="sched-end-' + id + '" value="' + end + '" style="flex:1">';
+  html += '</div>';
+  html += '<div><button type="button" class="act-btn" title="Remove" onclick="removeScheduleRow(' + id + ')">' +
+    '<svg viewBox="0 0 24 24" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
+  '</button></div>';
+  html += '</div>';
+
+  document.getElementById('schedule-rows').insertAdjacentHTML('beforeend', html);
+}
+
+function removeScheduleRow(id) {
+  var el = document.getElementById('sched-' + id);
+  if (el) el.remove();
+}
+
+function collectSchedule() {
+  var rows = document.getElementById('schedule-rows').children;
+  var schedule = [];
+  for (var i = 0; i < rows.length; i++) {
+    var rowEl = rows[i];
+    var id = rowEl.id.replace('sched-', '');
+    var dayCheckboxes = rowEl.querySelectorAll('.sched-day-' + id + ':checked');
+    var dayOfWeek = [];
+    dayCheckboxes.forEach(function(cb) { dayOfWeek.push(parseInt(cb.value)); });
+    var startEl = document.getElementById('sched-start-' + id);
+    var endEl = document.getElementById('sched-end-' + id);
+    if (dayOfWeek.length && startEl && endEl && startEl.value && endEl.value) {
+      schedule.push({ dayOfWeek: dayOfWeek, startTime: startEl.value, endTime: endEl.value });
+    }
+  }
+  return schedule;
+}
+
+// ─── Helpers ───
+function esc(s) { if (!s) return ''; var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+function destLabel(d) {
+  if (!d || !d.type) return '<span class="muted">—</span>';
+  var cls = '';
+  if (d.type === 'extension')  cls = 'p-ok';
+  if (d.type === 'ringgroup')  cls = 'p-info';
+  if (d.type === 'ivr')        cls = 'p-warn';
+  if (d.type === 'voicemail')  cls = 'p-vm';
+  if (d.type === 'hangup')     cls = 'p-err';
+  var label = d.type === 'ringgroup' ? 'RG' : d.type === 'voicemail' ? 'VM' : d.type.charAt(0).toUpperCase() + d.type.slice(1);
+  return '<span class="pill ' + cls + '">' + label + '</span> ' +
+    (d.type === 'hangup' ? '' : '<span class="mono">' + esc(d.target || '') + '</span>');
+}
+
+function formatSchedule(schedule) {
+  if (!schedule || !schedule.length) return '<span class="muted">none</span>';
+  return schedule.map(function(s) {
+    var days = (s.dayOfWeek || []).map(function(d) { return DAY_SHORT[d]; }).join(',');
+    return '<span class="mono" style="font-size:10px">' + days + ' ' + s.startTime + '-' + s.endTime + '</span>';
+  }).join('<br>');
+}
+
+function showToast(msg, isError) {
+  var el = document.createElement('div');
+  el.className = 'toast ' + (isError ? 'toast-error' : 'toast-success');
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(function() { el.remove(); }, 3000);
+}
+
+// ─── Form show/hide ───
+function showAdd() {
+  document.getElementById('tc-edit-mode').value = '';
+  document.getElementById('tc-number').value = '';
+  document.getElementById('tc-number').disabled = false;
+  document.getElementById('tc-name').value = '';
+  document.getElementById('tc-tz').value = 'America/New_York';
+  document.getElementById('tc-holidays').value = '';
+  document.getElementById('tc-match-type').value = 'ringgroup';
+  document.getElementById('tc-match-target').value = '';
+  document.getElementById('tc-nomatch-type').value = 'voicemail';
+  document.getElementById('tc-nomatch-target').value = '';
+  document.getElementById('tc-submit-btn').textContent = 'Create';
+  document.getElementById('schedule-rows').innerHTML = '';
+  scheduleRowId = 0;
+  addScheduleRow({ dayOfWeek: [1,2,3,4,5], startTime: '09:00', endTime: '17:00' });
+  document.getElementById('add-form').style.display = 'block';
+}
+
+function showEdit(tc) {
+  document.getElementById('tc-edit-mode').value = tc.number;
+  document.getElementById('tc-number').value = tc.number;
+  document.getElementById('tc-number').disabled = true;
+  document.getElementById('tc-name').value = tc.name;
+  document.getElementById('tc-tz').value = tc.timezone || 'America/New_York';
+  document.getElementById('tc-holidays').value = (tc.holidays || []).join(', ');
+  document.getElementById('tc-match-type').value = tc.matchDest ? tc.matchDest.type : 'ringgroup';
+  document.getElementById('tc-match-target').value = tc.matchDest ? tc.matchDest.target : '';
+  document.getElementById('tc-nomatch-type').value = tc.noMatchDest ? tc.noMatchDest.type : 'voicemail';
+  document.getElementById('tc-nomatch-target').value = tc.noMatchDest ? tc.noMatchDest.target : '';
+  document.getElementById('tc-submit-btn').textContent = 'Update';
+
+  document.getElementById('schedule-rows').innerHTML = '';
+  scheduleRowId = 0;
+  if (tc.schedule && tc.schedule.length) {
+    tc.schedule.forEach(function(s) { addScheduleRow(s); });
+  } else {
+    addScheduleRow();
+  }
+  document.getElementById('add-form').style.display = 'block';
+}
+
+function hideAdd() {
+  document.getElementById('add-form').style.display = 'none';
+}
+
+// ─── CRUD ───
+async function load() {
+  try {
+    var d = await (await fetch(API + '/time-conditions', { headers: H })).json();
+    var b = document.getElementById('tc-body');
+    if (d.success && d.conditions && d.conditions.length) {
+      b.innerHTML = d.conditions.map(function(tc) {
+        var matched = tc.currentlyMatched;
+        return '<tr>' +
+          '<td><span class="pill ' + (matched ? 'p-ok' : 'p-err') + '">' + (matched ? 'open' : 'closed') + '</span></td>' +
+          '<td class="mono">' + esc(tc.number) + '</td>' +
+          '<td>' + esc(tc.name) + '</td>' +
+          '<td class="muted" style="font-size:11px">' + esc(tc.timezone) + '</td>' +
+          '<td>' + formatSchedule(tc.schedule) + '</td>' +
+          '<td>' + destLabel(tc.matchDest) + '</td>' +
+          '<td>' + destLabel(tc.noMatchDest) + '</td>' +
+          '<td style="white-space:nowrap">' +
+            '<button class="act-btn" title="Edit" onclick=\'showEdit(' + JSON.stringify(tc).replace(/'/g, "&#39;") + ')\'>' +
+              '<svg viewBox="0 0 24 24" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>' +
+            '</button>' +
+            '<button class="act-btn" title="Delete" onclick="del(\'' + esc(tc.number) + '\',\'' + esc(tc.name) + '\')">' +
+              '<svg viewBox="0 0 24 24" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>' +
+            '</button>' +
+          '</td>' +
+        '</tr>';
+      }).join('');
+    } else {
+      b.innerHTML = '<tr><td colspan="8" class="empty">No time conditions configured</td></tr>';
+    }
+  } catch (e) { console.error('tc load', e); }
+}
+
+async function save(e) {
+  e.preventDefault();
+  var editMode = document.getElementById('tc-edit-mode').value;
+  var holidays = document.getElementById('tc-holidays').value
+    .split(',').map(function(h) { return h.trim(); }).filter(Boolean);
+
+  var body = {
+    number: document.getElementById('tc-number').value,
+    name: document.getElementById('tc-name').value,
+    timezone: document.getElementById('tc-tz').value,
+    schedule: collectSchedule(),
+    holidays: holidays,
+    matchDest: {
+      type: document.getElementById('tc-match-type').value,
+      target: document.getElementById('tc-match-target').value || 'hangup'
+    },
+    noMatchDest: {
+      type: document.getElementById('tc-nomatch-type').value,
+      target: document.getElementById('tc-nomatch-target').value || 'hangup'
+    }
+  };
+
+  if (body.schedule.length === 0) { showToast('Add at least one schedule entry', true); return; }
+
+  var url = editMode ? API + '/time-conditions/' + editMode : API + '/time-conditions';
+  var method = editMode ? 'PUT' : 'POST';
+
+  var r = await fetch(url, { method: method, headers: J, body: JSON.stringify(body) });
+  var d = await r.json();
+  if (d.success) {
+    hideAdd();
+    showToast(editMode ? 'Time condition updated' : 'Time condition created');
+    load();
+  } else {
+    showToast(d.error || 'Failed to save', true);
+  }
+}
+
+async function del(number, name) {
+  if (!confirm('Delete time condition "' + name + '" (' + number + ')?')) return;
+  await fetch(API + '/time-conditions/' + number, { method: 'DELETE', headers: H });
+  showToast('Time condition deleted');
+  load();
+}
+
+// ─── Init ───
+load();
+setInterval(load, 15000);
+</script>
+<%- include('../partials/foot') %>

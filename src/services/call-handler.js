@@ -189,7 +189,14 @@ class CallHandler {
     cdr.didNumber = did;
     await cdr.save();
 
-    const { type, target } = route.destination;
+    // Resolve the destination — if it's a time condition, evaluate it now
+    let { type, target } = route.destination;
+    if (type === 'timecondition' && this.callRouter.timeConditionService) {
+      const resolved = await this.callRouter.resolveDestination(route.destination);
+      type = resolved.type;
+      target = resolved.target;
+      logger.info(`INBOUND: time condition resolved -> ${type}:${target}`);
+    }
 
     if (type === 'extension') {
       const contacts = await this.registrar.getContacts(target);
@@ -314,6 +321,17 @@ class CallHandler {
         logger.warn(`INBOUND: IVR handler not available`);
       }
       return res.send(404);
+
+    } else if (type === 'voicemail') {
+      if (this.voicemailHandler) {
+        logger.info(`INBOUND: routing to voicemail for ${target}`);
+        const handled = await this.voicemailHandler.handleVoicemail(req, res, callerID, target, cdr);
+        if (handled) return;
+      }
+      logger.warn(`INBOUND: voicemail handler not available for ${target}`);
+      cdr.status = 'missed';
+      await cdr.save();
+      return res.send(480);
 
     } else {
       logger.info(`INBOUND: destination is hangup for DID ${did}`);

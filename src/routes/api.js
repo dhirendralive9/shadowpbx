@@ -2,7 +2,7 @@ const express = require('express');
 const { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, CDR } = require('../models');
 const logger = require('../utils/logger');
 
-function createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler, monitorHandler) {
+function createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler, monitorHandler, timeConditionService) {
   const router = express.Router();
 
   // ============================================================
@@ -242,6 +242,67 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
       const ivr = await IVR.findOneAndDelete({ number: req.params.number });
       if (!ivr) return res.status(404).json({ success: false, error: 'IVR not found' });
       res.json({ success: true, message: `IVR ${req.params.number} deleted` });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // ============================================================
+  // Time Conditions
+  // ============================================================
+  const { TimeCondition } = require('../models');
+
+  router.get('/time-conditions', async (req, res) => {
+    try {
+      const conditions = await TimeCondition.find({}).sort('number');
+      // Attach live match status to each condition
+      const result = conditions.map(tc => {
+        const obj = tc.toObject();
+        if (timeConditionService) {
+          obj.currentlyMatched = timeConditionService._isMatch(tc);
+        }
+        return obj;
+      });
+      res.json({ success: true, conditions: result });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.get('/time-conditions/:number', async (req, res) => {
+    try {
+      const tc = await TimeCondition.findOne({ number: req.params.number });
+      if (!tc) return res.status(404).json({ success: false, error: 'Time condition not found' });
+      const obj = tc.toObject();
+      if (timeConditionService) obj.currentlyMatched = timeConditionService._isMatch(tc);
+      res.json({ success: true, condition: obj });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.post('/time-conditions', async (req, res) => {
+    try {
+      const { number, name, timezone, schedule, holidays, matchDest, noMatchDest } = req.body;
+      if (!number || !name || !schedule || !matchDest || !noMatchDest) {
+        return res.status(400).json({ success: false, error: 'number, name, schedule, matchDest, noMatchDest required' });
+      }
+      if (await TimeCondition.findOne({ number })) {
+        return res.status(409).json({ success: false, error: 'Time condition number already exists' });
+      }
+      const tc = await TimeCondition.create({ number, name, timezone, schedule, holidays, matchDest, noMatchDest });
+      logger.info(`Time condition created: ${number} (${name})`);
+      res.status(201).json({ success: true, condition: tc });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.put('/time-conditions/:number', async (req, res) => {
+    try {
+      const tc = await TimeCondition.findOneAndUpdate({ number: req.params.number }, req.body, { new: true });
+      if (!tc) return res.status(404).json({ success: false, error: 'Time condition not found' });
+      res.json({ success: true, condition: tc });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.delete('/time-conditions/:number', async (req, res) => {
+    try {
+      const tc = await TimeCondition.findOneAndDelete({ number: req.params.number });
+      if (!tc) return res.status(404).json({ success: false, error: 'Time condition not found' });
+      res.json({ success: true, message: `Time condition ${req.params.number} deleted` });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
 
