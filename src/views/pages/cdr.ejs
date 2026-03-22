@@ -99,6 +99,10 @@ async function loadCDR() {
   if (q) url += '&search=' + encodeURIComponent(q);
   if (st) url += '&status=' + st;
   if (dir) url += '&direction=' + dir;
+  // Agent: scope to their extension only
+  if (currentRole === 'agent' && '<%= typeof userExt !== "undefined" ? userExt : "" %>') {
+    url += '&extension=' + encodeURIComponent('<%= typeof userExt !== "undefined" ? userExt : "" %>');
+  }
   var d = await (await fetch(API + url, { headers: H })).json();
   var b = document.getElementById('cdr-body');
   if (d.success && d.cdrs && d.cdrs.length) {
