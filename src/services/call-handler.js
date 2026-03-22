@@ -433,7 +433,7 @@ class CallHandler {
   async _handleOutbound(req, res, fromExt, dialedNumber, callId) {
     logger.info(`OUTBOUND: ${fromExt} -> ${dialedNumber} [${callId}]`);
 
-    const route = await this.callRouter.findOutboundRoute(dialedNumber);
+    const route = await this.callRouter.findOutboundRoute(dialedNumber, fromExt);
     if (!route) {
       logger.warn(`OUTBOUND: no route for ${dialedNumber}`);
       return res.send(404);

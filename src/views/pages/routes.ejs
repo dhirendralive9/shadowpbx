@@ -7,7 +7,8 @@
 </div>
 
 <div id="add-inbound" style="display:none;margin-bottom:16px" class="card">
-  <form onsubmit="addInbound(event)">
+  <form onsubmit="saveInbound(event)">
+    <input type="hidden" id="in-edit-id" value="">
     <div class="grid-3" style="margin-bottom:0">
       <div class="form-group"><label class="form-label">Name</label><input class="form-input" id="in-name" placeholder="Main Number" required></div>
       <div class="form-group"><label class="form-label">DID number</label><input class="form-input" id="in-did" placeholder="+15551234567 (blank = catch-all)"></div>
@@ -27,8 +28,8 @@
       <div class="form-group" id="in-target-wrap"><label class="form-label">Target</label><input class="form-input" id="in-dest-target" placeholder="2001 / 601 / 800"></div>
       <div class="form-group" style="display:flex;align-items:flex-end">
         <div style="display:flex;gap:8px">
-          <button type="submit" class="btn btn-primary btn-sm">Create</button>
-          <button type="button" class="btn btn-sm" onclick="document.getElementById('add-inbound').style.display='none'">Cancel</button>
+          <button type="submit" class="btn btn-primary btn-sm" id="in-submit-btn">Create</button>
+          <button type="button" class="btn btn-sm" onclick="hideInbound()">Cancel</button>
         </div>
       </div>
     </div>
@@ -44,11 +45,12 @@
 <div style="margin-top:28px">
   <div class="sec-head">
     <span class="sec-title">Outbound routes</span>
-    <button class="btn btn-sm" onclick="document.getElementById('add-outbound').style.display='block'">+ Add outbound route</button>
+    <button class="btn btn-sm" onclick="showOutboundAdd()">+ Add outbound route</button>
   </div>
 
   <div id="add-outbound" style="display:none;margin-bottom:16px" class="card">
-    <form onsubmit="addOutbound(event)">
+    <form onsubmit="saveOutbound(event)">
+      <input type="hidden" id="out-edit-id" value="">
       <div class="grid-3" style="margin-bottom:0">
         <div class="form-group"><label class="form-label">Name</label><input class="form-input" id="out-name" placeholder="US Domestic" required></div>
         <div class="form-group"><label class="form-label">Patterns</label><input class="form-input" id="out-patterns" placeholder="1NXXNXXXXXX, NXXNXXXXXX" required><span class="muted" style="font-size:10px">Comma-separated dial patterns</span></div>
@@ -61,60 +63,113 @@
       </div>
       <div class="grid-3" style="margin-bottom:0">
         <div class="form-group"><label class="form-label">Priority</label><input class="form-input" id="out-priority" type="number" value="10" min="1" max="100"><span class="muted" style="font-size:10px">Lower = higher priority</span></div>
-        <div class="form-group" style="display:flex;align-items:flex-end">
-          <div style="display:flex;gap:8px">
-            <button type="submit" class="btn btn-primary btn-sm">Create</button>
-            <button type="button" class="btn btn-sm" onclick="document.getElementById('add-outbound').style.display='none'">Cancel</button>
-          </div>
-        </div>
+      </div>
+
+      <!-- Allowed extensions -->
+      <div style="margin:12px 0">
+        <label class="form-label">Allowed extensions <span class="muted" style="font-weight:400">(none checked = all allowed)</span></label>
+        <div id="out-allowed-ext" style="max-height:140px;overflow-y:auto;border:0.5px solid var(--border);border-radius:var(--radius);padding:8px;display:flex;flex-wrap:wrap;gap:4px 16px"></div>
+      </div>
+
+      <div style="display:flex;gap:8px">
+        <button type="submit" class="btn btn-primary btn-sm" id="out-submit-btn">Create</button>
+        <button type="button" class="btn btn-sm" onclick="hideOutbound()">Cancel</button>
       </div>
     </form>
   </div>
 
   <table class="tbl">
-    <thead><tr><th>Priority</th><th>Name</th><th>Patterns</th><th>Trunk</th><th>Prepend</th><th>Strip</th><th>Caller ID</th><th></th></tr></thead>
-    <tbody id="outbound-body"><tr><td colspan="8" class="empty">Loading...</td></tr></tbody>
+    <thead><tr><th>Priority</th><th>Name</th><th>Patterns</th><th>Trunk</th><th>Prepend</th><th>Strip</th><th>Caller ID</th><th>Allowed</th><th></th></tr></thead>
+    <tbody id="outbound-body"><tr><td colspan="9" class="empty">Loading...</td></tr></tbody>
   </table>
 </div>
 
 <script>
 var API = '/api', KEY = '<%= apiKey %>', H = { 'X-API-Key': KEY };
 var J = { 'X-API-Key': KEY, 'Content-Type': 'application/json' };
+var allExtensions = [];
 
-// ─── Helper: destination display ───
+function esc(s) { if (!s) return ''; var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
 function destLabel(d) {
   if (!d || !d.type) return '<span class="muted">—</span>';
   var icon = '', cls = '';
-  if (d.type === 'extension')  { icon = 'Ext'; cls = 'p-ok'; }
-  if (d.type === 'ringgroup')  { icon = 'RG';  cls = 'p-info'; }
-  if (d.type === 'ivr')        { icon = 'IVR'; cls = 'p-warn'; }
-  if (d.type === 'timecondition') { icon = 'TC'; cls = 'p-info'; }
-  if (d.type === 'queue')         { icon = 'Queue'; cls = 'p-warn'; }
-  if (d.type === 'hangup')     { icon = 'Hangup'; cls = 'p-err'; }
+  if (d.type === 'extension')      { icon = 'Ext'; cls = 'p-ok'; }
+  if (d.type === 'ringgroup')      { icon = 'RG';  cls = 'p-info'; }
+  if (d.type === 'ivr')            { icon = 'IVR'; cls = 'p-warn'; }
+  if (d.type === 'timecondition')  { icon = 'TC';  cls = 'p-info'; }
+  if (d.type === 'queue')          { icon = 'Queue'; cls = 'p-warn'; }
+  if (d.type === 'hangup')         { icon = 'Hangup'; cls = 'p-err'; }
   return '<span class="pill ' + cls + '">' + icon + '</span> ' +
-    (d.type === 'hangup' ? '' : '<span class="mono">' + (d.target || '') + '</span>');
+    (d.type === 'hangup' ? '' : '<span class="mono">' + esc(d.target || '') + '</span>');
 }
 
-// ─── Toggle target input for hangup ───
 function toggleInboundTarget() {
   var t = document.getElementById('in-dest-type').value;
   document.getElementById('in-target-wrap').style.display = t === 'hangup' ? 'none' : 'block';
 }
 
-// ─── Load trunk options into both selects ───
-async function loadTrunkOptions() {
+function showToast(msg, isError) {
+  var el = document.createElement('div');
+  el.className = 'toast ' + (isError ? 'toast-error' : 'toast-success');
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(function() { el.remove(); }, 3000);
+}
+
+// ─── Load reference data ───
+async function loadRefData() {
   try {
-    var d = await (await fetch(API + '/trunks', { headers: H })).json();
-    if (!d.success || !d.trunks) return;
-    var opts = d.trunks.map(function(t) {
-      return '<option value="' + t.name + '">' + t.name + ' (' + t.provider + ')</option>';
-    }).join('');
+    var [extR, trunkR] = await Promise.all([
+      fetch(API + '/extensions', { headers: H }).then(function(r) { return r.json(); }),
+      fetch(API + '/trunks', { headers: H }).then(function(r) { return r.json(); })
+    ]);
+    allExtensions = (extR.success && extR.extensions) || [];
+    var trunks = (trunkR.success && trunkR.trunks) || [];
+    var opts = trunks.map(function(t) { return '<option value="' + esc(t.name) + '">' + esc(t.name) + ' (' + esc(t.provider) + ')</option>'; }).join('');
     document.getElementById('in-trunk').innerHTML = '<option value="">— any trunk —</option>' + opts;
     document.getElementById('out-trunk').innerHTML = '<option value="">— select trunk —</option>' + opts;
-  } catch (e) { console.error('trunk load', e); }
+    buildExtCheckboxes([]);
+  } catch (e) { console.error('ref data', e); }
+}
+
+function buildExtCheckboxes(selected) {
+  var el = document.getElementById('out-allowed-ext');
+  if (!allExtensions.length) { el.innerHTML = '<span class="muted" style="font-size:11px">No extensions</span>'; return; }
+  el.innerHTML = allExtensions.map(function(e) {
+    var checked = selected && selected.indexOf(e.extension) >= 0 ? ' checked' : '';
+    return '<label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;min-width:120px">' +
+      '<input type="checkbox" class="out-ext-cb" value="' + esc(e.extension) + '"' + checked + '>' +
+      '<span class="mono">' + esc(e.extension) + '</span> <span class="muted">' + esc(e.name) + '</span></label>';
+  }).join('');
+}
+
+function collectAllowedExt() {
+  var cbs = document.querySelectorAll('.out-ext-cb:checked');
+  var vals = [];
+  cbs.forEach(function(cb) { vals.push(cb.value); });
+  return vals;
 }
 
 // ═══════════════════ INBOUND ═══════════════════
+function hideInbound() {
+  document.getElementById('add-inbound').style.display = 'none';
+  document.getElementById('in-edit-id').value = '';
+  document.getElementById('in-submit-btn').textContent = 'Create';
+}
+
+function editInbound(r) {
+  document.getElementById('in-edit-id').value = r._id;
+  document.getElementById('in-name').value = r.name;
+  document.getElementById('in-did').value = r.did || '';
+  document.getElementById('in-trunk').value = r.trunk || '';
+  document.getElementById('in-dest-type').value = r.destination ? r.destination.type : 'extension';
+  document.getElementById('in-dest-target').value = r.destination ? r.destination.target : '';
+  document.getElementById('in-submit-btn').textContent = 'Update';
+  toggleInboundTarget();
+  document.getElementById('add-inbound').style.display = 'block';
+}
+
 async function loadInbound() {
   try {
     var d = await (await fetch(API + '/inbound-routes', { headers: H })).json();
@@ -127,61 +182,87 @@ async function loadInbound() {
           '<td class="mono">' + (r.did ? esc(r.did) : '<span class="muted">catch-all</span>') + '</td>' +
           '<td class="muted" style="font-size:11px">' + (r.trunk ? esc(r.trunk) : 'any') + '</td>' +
           '<td>' + destLabel(r.destination) + '</td>' +
-          '<td><button class="act-btn" title="Delete" onclick="delInbound(\'' + r._id + '\',\'' + esc(r.name) + '\')">' +
-            '<svg viewBox="0 0 24 24" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>' +
-          '</button></td>' +
-        '</tr>';
+          '<td style="white-space:nowrap">' +
+            '<button class="act-btn" title="Edit" onclick=\'editInbound(' + JSON.stringify(r).replace(/'/g, "&#39;") + ')\'>' +
+              '<svg viewBox="0 0 24 24" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>' +
+            '</button>' +
+            '<button class="act-btn" title="Delete" onclick="delInbound(\'' + r._id + '\',\'' + esc(r.name) + '\')">' +
+              '<svg viewBox="0 0 24 24" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>' +
+            '</button>' +
+          '</td></tr>';
       }).join('');
-    } else {
-      b.innerHTML = '<tr><td colspan="6" class="empty">No inbound routes configured</td></tr>';
-    }
+    } else { b.innerHTML = '<tr><td colspan="6" class="empty">No inbound routes configured</td></tr>'; }
   } catch (e) { console.error('inbound load', e); }
 }
 
-async function addInbound(e) {
+async function saveInbound(e) {
   e.preventDefault();
+  var editId = document.getElementById('in-edit-id').value;
   var destType = document.getElementById('in-dest-type').value;
   var body = {
     name: document.getElementById('in-name').value,
     did: document.getElementById('in-did').value || '',
-    destination: {
-      type: destType,
-      target: destType === 'hangup' ? 'hangup' : document.getElementById('in-dest-target').value
-    }
+    destination: { type: destType, target: destType === 'hangup' ? 'hangup' : document.getElementById('in-dest-target').value }
   };
   var trunkVal = document.getElementById('in-trunk').value;
   if (trunkVal) body.trunk = trunkVal;
-
-  var r = await fetch(API + '/inbound-routes', { method: 'POST', headers: J, body: JSON.stringify(body) });
+  var url = editId ? API + '/inbound-routes/' + editId : API + '/inbound-routes';
+  var method = editId ? 'PUT' : 'POST';
+  var r = await fetch(url, { method: method, headers: J, body: JSON.stringify(body) });
   var d = await r.json();
-  if (d.success) {
-    document.getElementById('add-inbound').style.display = 'none';
-    document.getElementById('in-name').value = '';
-    document.getElementById('in-did').value = '';
-    document.getElementById('in-dest-target').value = '';
-    document.getElementById('in-dest-type').value = 'extension';
-    toggleInboundTarget();
-    showToast('Inbound route created');
-    loadInbound();
-  } else {
-    showToast(d.error || 'Failed to create route', true);
-  }
+  if (d.success) { hideInbound(); showToast(editId ? 'Route updated' : 'Route created'); loadInbound(); }
+  else showToast(d.error || 'Failed', true);
 }
 
 async function delInbound(id, name) {
   if (!confirm('Delete inbound route "' + name + '"?')) return;
   await fetch(API + '/inbound-routes/' + id, { method: 'DELETE', headers: H });
-  showToast('Inbound route deleted');
-  loadInbound();
+  showToast('Route deleted'); loadInbound();
 }
 
 // ═══════════════════ OUTBOUND ═══════════════════
+function showOutboundAdd() {
+  document.getElementById('out-edit-id').value = '';
+  document.getElementById('out-name').value = '';
+  document.getElementById('out-patterns').value = '';
+  document.getElementById('out-prepend').value = '';
+  document.getElementById('out-strip').value = '0';
+  document.getElementById('out-cid').value = '';
+  document.getElementById('out-priority').value = '10';
+  document.getElementById('out-submit-btn').textContent = 'Create';
+  buildExtCheckboxes([]);
+  document.getElementById('add-outbound').style.display = 'block';
+}
+
+function editOutbound(r) {
+  document.getElementById('out-edit-id').value = r._id;
+  document.getElementById('out-name').value = r.name;
+  document.getElementById('out-patterns').value = (r.patterns || []).join(', ');
+  document.getElementById('out-trunk').value = r.trunk || '';
+  document.getElementById('out-prepend').value = r.prepend || '';
+  document.getElementById('out-strip').value = r.strip || 0;
+  document.getElementById('out-cid').value = r.callerIdNumber || '';
+  document.getElementById('out-priority').value = r.priority || 10;
+  document.getElementById('out-submit-btn').textContent = 'Update';
+  buildExtCheckboxes(r.allowedExtensions || []);
+  document.getElementById('add-outbound').style.display = 'block';
+}
+
+function hideOutbound() {
+  document.getElementById('add-outbound').style.display = 'none';
+  document.getElementById('out-edit-id').value = '';
+  document.getElementById('out-submit-btn').textContent = 'Create';
+}
+
 async function loadOutbound() {
   try {
     var d = await (await fetch(API + '/outbound-routes', { headers: H })).json();
     var b = document.getElementById('outbound-body');
     if (d.success && d.routes && d.routes.length) {
       b.innerHTML = d.routes.map(function(r) {
+        var allowed = r.allowedExtensions && r.allowedExtensions.length
+          ? '<span class="mono" style="font-size:10px">' + r.allowedExtensions.map(esc).join(', ') + '</span>'
+          : '<span class="pill p-gray" style="font-size:9px">all</span>';
         return '<tr>' +
           '<td><span class="pill p-gray">' + (r.priority || 10) + '</span></td>' +
           '<td>' + esc(r.name) + '</td>' +
@@ -190,75 +271,51 @@ async function loadOutbound() {
           '<td class="mono">' + (r.prepend ? esc(r.prepend) : '<span class="muted">—</span>') + '</td>' +
           '<td class="mono">' + (r.strip || 0) + '</td>' +
           '<td class="mono" style="font-size:11px">' + (r.callerIdNumber ? esc(r.callerIdNumber) : '<span class="muted">default</span>') + '</td>' +
-          '<td><button class="act-btn" title="Delete" onclick="delOutbound(\'' + r._id + '\',\'' + esc(r.name) + '\')">' +
-            '<svg viewBox="0 0 24 24" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>' +
-          '</button></td>' +
-        '</tr>';
+          '<td>' + allowed + '</td>' +
+          '<td style="white-space:nowrap">' +
+            '<button class="act-btn" title="Edit" onclick=\'editOutbound(' + JSON.stringify(r).replace(/'/g, "&#39;") + ')\'>' +
+              '<svg viewBox="0 0 24 24" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>' +
+            '</button>' +
+            '<button class="act-btn" title="Delete" onclick="delOutbound(\'' + r._id + '\',\'' + esc(r.name) + '\')">' +
+              '<svg viewBox="0 0 24 24" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>' +
+            '</button>' +
+          '</td></tr>';
       }).join('');
-    } else {
-      b.innerHTML = '<tr><td colspan="8" class="empty">No outbound routes configured</td></tr>';
-    }
+    } else { b.innerHTML = '<tr><td colspan="9" class="empty">No outbound routes configured</td></tr>'; }
   } catch (e) { console.error('outbound load', e); }
 }
 
-async function addOutbound(e) {
+async function saveOutbound(e) {
   e.preventDefault();
+  var editId = document.getElementById('out-edit-id').value;
   var patterns = document.getElementById('out-patterns').value.split(',').map(function(p) { return p.trim(); }).filter(Boolean);
-  if (!patterns.length) { showToast('Enter at least one dial pattern', true); return; }
+  if (!patterns.length) { showToast('Enter at least one pattern', true); return; }
   var body = {
     name: document.getElementById('out-name').value,
     patterns: patterns,
     trunk: document.getElementById('out-trunk').value,
     prepend: document.getElementById('out-prepend').value || '',
     strip: parseInt(document.getElementById('out-strip').value) || 0,
-    priority: parseInt(document.getElementById('out-priority').value) || 10
+    priority: parseInt(document.getElementById('out-priority').value) || 10,
+    allowedExtensions: collectAllowedExt()
   };
   var cid = document.getElementById('out-cid').value;
   if (cid) body.callerIdNumber = cid;
-
-  var r = await fetch(API + '/outbound-routes', { method: 'POST', headers: J, body: JSON.stringify(body) });
+  var url = editId ? API + '/outbound-routes/' + editId : API + '/outbound-routes';
+  var method = editId ? 'PUT' : 'POST';
+  var r = await fetch(url, { method: method, headers: J, body: JSON.stringify(body) });
   var d = await r.json();
-  if (d.success) {
-    document.getElementById('add-outbound').style.display = 'none';
-    document.getElementById('out-name').value = '';
-    document.getElementById('out-patterns').value = '';
-    document.getElementById('out-prepend').value = '';
-    document.getElementById('out-strip').value = '0';
-    document.getElementById('out-cid').value = '';
-    document.getElementById('out-priority').value = '10';
-    showToast('Outbound route created');
-    loadOutbound();
-  } else {
-    showToast(d.error || 'Failed to create route', true);
-  }
+  if (d.success) { hideOutbound(); showToast(editId ? 'Route updated' : 'Route created'); loadOutbound(); }
+  else showToast(d.error || 'Failed', true);
 }
 
 async function delOutbound(id, name) {
   if (!confirm('Delete outbound route "' + name + '"?')) return;
   await fetch(API + '/outbound-routes/' + id, { method: 'DELETE', headers: H });
-  showToast('Outbound route deleted');
-  loadOutbound();
-}
-
-// ─── Utilities ───
-function esc(s) {
-  if (!s) return '';
-  var d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
-
-function showToast(msg, isError) {
-  var el = document.createElement('div');
-  el.className = 'toast ' + (isError ? 'toast-error' : 'toast-success');
-  el.textContent = msg;
-  document.body.appendChild(el);
-  setTimeout(function() { el.remove(); }, 3000);
+  showToast('Route deleted'); loadOutbound();
 }
 
 // ─── Init ───
-loadTrunkOptions();
-loadInbound();
-loadOutbound();
+loadRefData().then(function() { loadInbound(); loadOutbound(); });
 </script>
 <%- include('../partials/foot') %>

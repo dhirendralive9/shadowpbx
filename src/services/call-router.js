@@ -114,19 +114,26 @@ class CallRouter {
   // ============================================================
 
   // Find matching outbound route for a dialed number
-  async findOutboundRoute(dialedNumber) {
+  async findOutboundRoute(dialedNumber, callerExt) {
     const routes = await OutboundRoute.find({ enabled: true }).sort({ priority: 1 });
 
     for (const route of routes) {
+      // Check if caller is allowed on this route
+      if (route.allowedExtensions && route.allowedExtensions.length > 0) {
+        if (!callerExt || !route.allowedExtensions.includes(callerExt)) {
+          continue; // This extension is not permitted on this route
+        }
+      }
+
       for (const pattern of route.patterns) {
         if (this._matchDialPattern(dialedNumber, pattern)) {
-          logger.info(`Outbound route matched: ${dialedNumber} -> trunk:${route.trunk} (pattern: ${pattern})`);
+          logger.info(`Outbound route matched: ${dialedNumber} -> trunk:${route.trunk} (pattern: ${pattern}, caller: ${callerExt || 'any'})`);
           return route;
         }
       }
     }
 
-    logger.warn(`No outbound route found for: ${dialedNumber}`);
+    logger.warn(`No outbound route found for: ${dialedNumber} (caller: ${callerExt || 'unknown'})`);
     return null;
   }
 

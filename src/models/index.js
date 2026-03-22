@@ -182,6 +182,7 @@ const outboundRouteSchema = new mongoose.Schema({
   prepend: { type: String, default: '' },
   strip: { type: Number, default: 0 },
   callerIdNumber: { type: String },
+  allowedExtensions: [{ type: String }],  // empty = all allowed
   enabled: { type: Boolean, default: true },
   priority: { type: Number, default: 10 },
   createdAt: { type: Date, default: Date.now }

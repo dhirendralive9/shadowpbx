@@ -227,6 +227,14 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
 
+  router.put('/inbound-routes/:id', async (req, res) => {
+    try {
+      const route = await InboundRoute.findByIdAndUpdate(req.params.id, req.body, { new: true });
+      if (!route) return res.status(404).json({ success: false, error: 'Not found' });
+      res.json({ success: true, route });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
   router.delete('/inbound-routes/:id', async (req, res) => {
     try {
       await InboundRoute.findByIdAndDelete(req.params.id);
@@ -246,11 +254,19 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
 
   router.post('/outbound-routes', async (req, res) => {
     try {
-      const { name, patterns, trunk, prepend, strip, callerIdNumber, priority } = req.body;
+      const { name, patterns, trunk, prepend, strip, callerIdNumber, priority, allowedExtensions } = req.body;
       if (!name || !patterns || !trunk) return res.status(400).json({ success: false, error: 'name, patterns, trunk required' });
-      const route = await OutboundRoute.create({ name, patterns, trunk, prepend, strip, callerIdNumber, priority });
-      logger.info(`Outbound route: ${name} patterns=${patterns.join(',')} -> trunk:${trunk}`);
+      const route = await OutboundRoute.create({ name, patterns, trunk, prepend, strip, callerIdNumber, priority, allowedExtensions: allowedExtensions || [] });
+      logger.info(`Outbound route: ${name} patterns=${patterns.join(',')} -> trunk:${trunk} allowed=${(allowedExtensions || []).length || 'all'}`);
       res.status(201).json({ success: true, route });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.put('/outbound-routes/:id', async (req, res) => {
+    try {
+      const route = await OutboundRoute.findByIdAndUpdate(req.params.id, req.body, { new: true });
+      if (!route) return res.status(404).json({ success: false, error: 'Not found' });
+      res.json({ success: true, route });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
 
