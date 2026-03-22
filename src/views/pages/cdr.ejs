@@ -116,15 +116,16 @@ async function loadCDR() {
         '<td class="mono">' + dur(c.talkTime) + '</td>' +
         '<td><span class="pill ' + pillCls(c.status) + '">' + esc(c.status) + '</span></td>' +
         '<td>' + dispPill(c.disposition) + '</td>' +
-        '<td>' +
+        '<td style="white-space:nowrap">' +
           (c.recordingPath
-            ? '<button class="btn btn-sm" onclick="playRec(\'' + esc(c.callId) + '\',this)" title="Play">&#9654;</button> ' +
-              '<a class="btn btn-sm" href="' + API + '/cdr/' + c.callId + '/recording" download title="Download">&#8615;</a>'
+            ? '<button class="act-btn" onclick="playRec(\'' + esc(c.callId) + '\',this)" title="Play" id="play-' + esc(c.callId) + '"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg></button>' +
+              '<a class="act-btn" href="' + API + '/cdr/' + c.callId + '/recording" download title="Download"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a>'
             : '<span class="muted" style="font-size:10px">-</span>') +
         '</td>' +
         '<td>' +
-          '<button class="btn btn-sm" onclick="openNotes(\'' + esc(c.callId) + '\')" title="Notes">' +
-            (noteCount > 0 ? '&#128221; ' + noteCount : '&#128221;') +
+          '<button class="act-btn" onclick="openNotes(\'' + esc(c.callId) + '\')" title="Notes" style="position:relative">' +
+            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>' +
+            (noteCount > 0 ? '<span style="position:absolute;top:-4px;right:-4px;background:var(--red);color:#fff;font-size:8px;min-width:14px;height:14px;border-radius:7px;display:flex;align-items:center;justify-content:center">' + noteCount + '</span>' : '') +
           '</button>' +
         '</td>' +
         '<td class="muted" style="font-size:11px">' + fmtTime(c.startTime) + '</td>' +
@@ -140,34 +141,34 @@ async function loadCDR() {
   }
 }
 
+var ICON_PLAY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>';
+var ICON_PAUSE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>';
+
 var currentAudio = null;
 var currentBtn = null;
 function playRec(callId, btn) {
-  // If clicking the same button that's playing, toggle pause/resume
   if (currentAudio && currentBtn === btn) {
     if (currentAudio.paused) {
       currentAudio.play();
-      btn.innerHTML = '&#9646;&#9646;'; // ⏸ pause icon
+      btn.innerHTML = ICON_PAUSE;
       btn.title = 'Pause';
     } else {
       currentAudio.pause();
-      btn.innerHTML = '&#9654;'; // ▶ play icon
+      btn.innerHTML = ICON_PLAY;
       btn.title = 'Resume';
     }
     return;
   }
-  // Stop any currently playing audio
   if (currentAudio) {
     currentAudio.pause();
     currentAudio = null;
-    if (currentBtn) { currentBtn.innerHTML = '&#9654;'; currentBtn.title = 'Play'; }
+    if (currentBtn) { currentBtn.innerHTML = ICON_PLAY; currentBtn.title = 'Play'; }
   }
-  // Start new playback
   var a = new Audio(API + '/cdr/' + callId + '/recording');
-  a.onended = function() { btn.innerHTML = '&#9654;'; btn.title = 'Play'; currentAudio = null; currentBtn = null; };
-  a.onerror = function() { btn.innerHTML = '&#9654;'; btn.title = 'Play'; alert('Recording not available'); currentAudio = null; currentBtn = null; };
+  a.onended = function() { btn.innerHTML = ICON_PLAY; btn.title = 'Play'; currentAudio = null; currentBtn = null; };
+  a.onerror = function() { btn.innerHTML = ICON_PLAY; btn.title = 'Play'; alert('Recording not available'); currentAudio = null; currentBtn = null; };
   a.play();
-  btn.innerHTML = '&#9646;&#9646;'; // ⏸ pause icon
+  btn.innerHTML = ICON_PAUSE;
   btn.title = 'Pause';
   currentAudio = a;
   currentBtn = btn;
