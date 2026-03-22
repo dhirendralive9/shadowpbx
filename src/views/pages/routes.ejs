@@ -1,8 +1,260 @@
-<%- include('../partials/head', { title: '${page}', active: '${page}' }) %>
+<%- include('../partials/head', { title: 'Routes', active: 'routes' }) %>
+
+<!-- ═══════════════════ INBOUND ROUTES ═══════════════════ -->
 <div class="sec-head">
-  <span class="sec-title">${page}</span>
+  <span class="sec-title">Inbound routes</span>
+  <button class="btn btn-sm" onclick="document.getElementById('add-inbound').style.display='block'">+ Add inbound route</button>
 </div>
-<div class="card">
-  <div class="empty">Page under construction. Data available via API.</div>
+
+<div id="add-inbound" style="display:none;margin-bottom:16px" class="card">
+  <form onsubmit="addInbound(event)">
+    <div class="grid-3" style="margin-bottom:0">
+      <div class="form-group"><label class="form-label">Name</label><input class="form-input" id="in-name" placeholder="Main Number" required></div>
+      <div class="form-group"><label class="form-label">DID number</label><input class="form-input" id="in-did" placeholder="+15551234567 (blank = catch-all)"></div>
+      <div class="form-group"><label class="form-label">Trunk (optional)</label><select class="form-select" id="in-trunk"><option value="">— any trunk —</option></select></div>
+    </div>
+    <div class="grid-3" style="margin-bottom:0">
+      <div class="form-group"><label class="form-label">Destination type</label>
+        <select class="form-select" id="in-dest-type" onchange="toggleInboundTarget()">
+          <option value="extension">Extension</option>
+          <option value="ringgroup">Ring group</option>
+          <option value="ivr">IVR</option>
+          <option value="hangup">Hang up</option>
+        </select>
+      </div>
+      <div class="form-group" id="in-target-wrap"><label class="form-label">Target</label><input class="form-input" id="in-dest-target" placeholder="2001 / 601 / 800"></div>
+      <div class="form-group" style="display:flex;align-items:flex-end">
+        <div style="display:flex;gap:8px">
+          <button type="submit" class="btn btn-primary btn-sm">Create</button>
+          <button type="button" class="btn btn-sm" onclick="document.getElementById('add-inbound').style.display='none'">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </form>
 </div>
+
+<table class="tbl">
+  <thead><tr><th>Status</th><th>Name</th><th>DID</th><th>Trunk</th><th>Destination</th><th></th></tr></thead>
+  <tbody id="inbound-body"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody>
+</table>
+
+<!-- ═══════════════════ OUTBOUND ROUTES ═══════════════════ -->
+<div style="margin-top:28px">
+  <div class="sec-head">
+    <span class="sec-title">Outbound routes</span>
+    <button class="btn btn-sm" onclick="document.getElementById('add-outbound').style.display='block'">+ Add outbound route</button>
+  </div>
+
+  <div id="add-outbound" style="display:none;margin-bottom:16px" class="card">
+    <form onsubmit="addOutbound(event)">
+      <div class="grid-3" style="margin-bottom:0">
+        <div class="form-group"><label class="form-label">Name</label><input class="form-input" id="out-name" placeholder="US Domestic" required></div>
+        <div class="form-group"><label class="form-label">Patterns</label><input class="form-input" id="out-patterns" placeholder="1NXXNXXXXXX, NXXNXXXXXX" required><span class="muted" style="font-size:10px">Comma-separated dial patterns</span></div>
+        <div class="form-group"><label class="form-label">Trunk</label><select class="form-select" id="out-trunk" required><option value="">— select trunk —</option></select></div>
+      </div>
+      <div class="grid-3" style="margin-bottom:0">
+        <div class="form-group"><label class="form-label">Prepend</label><input class="form-input" id="out-prepend" placeholder="e.g. 1 (optional)"></div>
+        <div class="form-group"><label class="form-label">Strip digits</label><input class="form-input" id="out-strip" type="number" value="0" min="0" max="10"></div>
+        <div class="form-group"><label class="form-label">Caller ID override</label><input class="form-input" id="out-cid" placeholder="+15559876543 (optional)"></div>
+      </div>
+      <div class="grid-3" style="margin-bottom:0">
+        <div class="form-group"><label class="form-label">Priority</label><input class="form-input" id="out-priority" type="number" value="10" min="1" max="100"><span class="muted" style="font-size:10px">Lower = higher priority</span></div>
+        <div class="form-group" style="display:flex;align-items:flex-end">
+          <div style="display:flex;gap:8px">
+            <button type="submit" class="btn btn-primary btn-sm">Create</button>
+            <button type="button" class="btn btn-sm" onclick="document.getElementById('add-outbound').style.display='none'">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </form>
+  </div>
+
+  <table class="tbl">
+    <thead><tr><th>Priority</th><th>Name</th><th>Patterns</th><th>Trunk</th><th>Prepend</th><th>Strip</th><th>Caller ID</th><th></th></tr></thead>
+    <tbody id="outbound-body"><tr><td colspan="8" class="empty">Loading...</td></tr></tbody>
+  </table>
+</div>
+
+<script>
+var API = '/api', KEY = '<%= apiKey %>', H = { 'X-API-Key': KEY };
+var J = { 'X-API-Key': KEY, 'Content-Type': 'application/json' };
+
+// ─── Helper: destination display ───
+function destLabel(d) {
+  if (!d || !d.type) return '<span class="muted">—</span>';
+  var icon = '', cls = '';
+  if (d.type === 'extension')  { icon = 'Ext'; cls = 'p-ok'; }
+  if (d.type === 'ringgroup')  { icon = 'RG';  cls = 'p-info'; }
+  if (d.type === 'ivr')        { icon = 'IVR'; cls = 'p-warn'; }
+  if (d.type === 'hangup')     { icon = 'Hangup'; cls = 'p-err'; }
+  return '<span class="pill ' + cls + '">' + icon + '</span> ' +
+    (d.type === 'hangup' ? '' : '<span class="mono">' + (d.target || '') + '</span>');
+}
+
+// ─── Toggle target input for hangup ───
+function toggleInboundTarget() {
+  var t = document.getElementById('in-dest-type').value;
+  document.getElementById('in-target-wrap').style.display = t === 'hangup' ? 'none' : 'block';
+}
+
+// ─── Load trunk options into both selects ───
+async function loadTrunkOptions() {
+  try {
+    var d = await (await fetch(API + '/trunks', { headers: H })).json();
+    if (!d.success || !d.trunks) return;
+    var opts = d.trunks.map(function(t) {
+      return '<option value="' + t.name + '">' + t.name + ' (' + t.provider + ')</option>';
+    }).join('');
+    document.getElementById('in-trunk').innerHTML = '<option value="">— any trunk —</option>' + opts;
+    document.getElementById('out-trunk').innerHTML = '<option value="">— select trunk —</option>' + opts;
+  } catch (e) { console.error('trunk load', e); }
+}
+
+// ═══════════════════ INBOUND ═══════════════════
+async function loadInbound() {
+  try {
+    var d = await (await fetch(API + '/inbound-routes', { headers: H })).json();
+    var b = document.getElementById('inbound-body');
+    if (d.success && d.routes && d.routes.length) {
+      b.innerHTML = d.routes.map(function(r) {
+        return '<tr>' +
+          '<td><span class="dot ' + (r.enabled !== false ? 'dot-green' : 'dot-gray') + '"></span></td>' +
+          '<td>' + esc(r.name) + '</td>' +
+          '<td class="mono">' + (r.did ? esc(r.did) : '<span class="muted">catch-all</span>') + '</td>' +
+          '<td class="muted" style="font-size:11px">' + (r.trunk ? esc(r.trunk) : 'any') + '</td>' +
+          '<td>' + destLabel(r.destination) + '</td>' +
+          '<td><button class="act-btn" title="Delete" onclick="delInbound(\'' + r._id + '\',\'' + esc(r.name) + '\')">' +
+            '<svg viewBox="0 0 24 24" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>' +
+          '</button></td>' +
+        '</tr>';
+      }).join('');
+    } else {
+      b.innerHTML = '<tr><td colspan="6" class="empty">No inbound routes configured</td></tr>';
+    }
+  } catch (e) { console.error('inbound load', e); }
+}
+
+async function addInbound(e) {
+  e.preventDefault();
+  var destType = document.getElementById('in-dest-type').value;
+  var body = {
+    name: document.getElementById('in-name').value,
+    did: document.getElementById('in-did').value || '',
+    destination: {
+      type: destType,
+      target: destType === 'hangup' ? 'hangup' : document.getElementById('in-dest-target').value
+    }
+  };
+  var trunkVal = document.getElementById('in-trunk').value;
+  if (trunkVal) body.trunk = trunkVal;
+
+  var r = await fetch(API + '/inbound-routes', { method: 'POST', headers: J, body: JSON.stringify(body) });
+  var d = await r.json();
+  if (d.success) {
+    document.getElementById('add-inbound').style.display = 'none';
+    document.getElementById('in-name').value = '';
+    document.getElementById('in-did').value = '';
+    document.getElementById('in-dest-target').value = '';
+    document.getElementById('in-dest-type').value = 'extension';
+    toggleInboundTarget();
+    showToast('Inbound route created');
+    loadInbound();
+  } else {
+    showToast(d.error || 'Failed to create route', true);
+  }
+}
+
+async function delInbound(id, name) {
+  if (!confirm('Delete inbound route "' + name + '"?')) return;
+  await fetch(API + '/inbound-routes/' + id, { method: 'DELETE', headers: H });
+  showToast('Inbound route deleted');
+  loadInbound();
+}
+
+// ═══════════════════ OUTBOUND ═══════════════════
+async function loadOutbound() {
+  try {
+    var d = await (await fetch(API + '/outbound-routes', { headers: H })).json();
+    var b = document.getElementById('outbound-body');
+    if (d.success && d.routes && d.routes.length) {
+      b.innerHTML = d.routes.map(function(r) {
+        return '<tr>' +
+          '<td><span class="pill p-gray">' + (r.priority || 10) + '</span></td>' +
+          '<td>' + esc(r.name) + '</td>' +
+          '<td class="mono" style="font-size:11px">' + (r.patterns || []).map(esc).join(', ') + '</td>' +
+          '<td class="muted">' + esc(r.trunk || '-') + '</td>' +
+          '<td class="mono">' + (r.prepend ? esc(r.prepend) : '<span class="muted">—</span>') + '</td>' +
+          '<td class="mono">' + (r.strip || 0) + '</td>' +
+          '<td class="mono" style="font-size:11px">' + (r.callerIdNumber ? esc(r.callerIdNumber) : '<span class="muted">default</span>') + '</td>' +
+          '<td><button class="act-btn" title="Delete" onclick="delOutbound(\'' + r._id + '\',\'' + esc(r.name) + '\')">' +
+            '<svg viewBox="0 0 24 24" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>' +
+          '</button></td>' +
+        '</tr>';
+      }).join('');
+    } else {
+      b.innerHTML = '<tr><td colspan="8" class="empty">No outbound routes configured</td></tr>';
+    }
+  } catch (e) { console.error('outbound load', e); }
+}
+
+async function addOutbound(e) {
+  e.preventDefault();
+  var patterns = document.getElementById('out-patterns').value.split(',').map(function(p) { return p.trim(); }).filter(Boolean);
+  if (!patterns.length) { showToast('Enter at least one dial pattern', true); return; }
+  var body = {
+    name: document.getElementById('out-name').value,
+    patterns: patterns,
+    trunk: document.getElementById('out-trunk').value,
+    prepend: document.getElementById('out-prepend').value || '',
+    strip: parseInt(document.getElementById('out-strip').value) || 0,
+    priority: parseInt(document.getElementById('out-priority').value) || 10
+  };
+  var cid = document.getElementById('out-cid').value;
+  if (cid) body.callerIdNumber = cid;
+
+  var r = await fetch(API + '/outbound-routes', { method: 'POST', headers: J, body: JSON.stringify(body) });
+  var d = await r.json();
+  if (d.success) {
+    document.getElementById('add-outbound').style.display = 'none';
+    document.getElementById('out-name').value = '';
+    document.getElementById('out-patterns').value = '';
+    document.getElementById('out-prepend').value = '';
+    document.getElementById('out-strip').value = '0';
+    document.getElementById('out-cid').value = '';
+    document.getElementById('out-priority').value = '10';
+    showToast('Outbound route created');
+    loadOutbound();
+  } else {
+    showToast(d.error || 'Failed to create route', true);
+  }
+}
+
+async function delOutbound(id, name) {
+  if (!confirm('Delete outbound route "' + name + '"?')) return;
+  await fetch(API + '/outbound-routes/' + id, { method: 'DELETE', headers: H });
+  showToast('Outbound route deleted');
+  loadOutbound();
+}
+
+// ─── Utilities ───
+function esc(s) {
+  if (!s) return '';
+  var d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function showToast(msg, isError) {
+  var el = document.createElement('div');
+  el.className = 'toast ' + (isError ? 'toast-error' : 'toast-success');
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(function() { el.remove(); }, 3000);
+}
+
+// ─── Init ───
+loadTrunkOptions();
+loadInbound();
+loadOutbound();
+</script>
 <%- include('../partials/foot') %>
