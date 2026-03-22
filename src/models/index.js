@@ -281,6 +281,22 @@ voicemailMessageSchema.index({ extension: 1, createdAt: -1 });
 voicemailMessageSchema.index({ extension: 1, read: 1 });
 
 // ============================================================
+// Chat Message
+// ============================================================
+const chatMessageSchema = new mongoose.Schema({
+  from: { type: String, required: true, index: true },        // sender username
+  to: { type: String, required: true, index: true },          // recipient username
+  fromRole: { type: String },
+  text: { type: String, required: true },
+  read: { type: Boolean, default: false },
+  readAt: Date,
+  createdAt: { type: Date, default: Date.now }
+});
+
+chatMessageSchema.index({ from: 1, to: 1, createdAt: -1 });
+chatMessageSchema.index({ to: 1, read: 1 });
+
+// ============================================================
 // Active Call
 // ============================================================
 const activeCallSchema = new mongoose.Schema({
@@ -303,8 +319,9 @@ const IVR = mongoose.model('IVR', ivrSchema);
 const TimeCondition = mongoose.model('TimeCondition', timeConditionSchema);
 const Queue = mongoose.model('Queue', queueSchema);
 const User = mongoose.model('User', userSchema);
+const ChatMessage = mongoose.model('ChatMessage', chatMessageSchema);
 const CDR = mongoose.model('CDR', cdrSchema);
 const VoicemailMessage = mongoose.model('VoicemailMessage', voicemailMessageSchema);
 const ActiveCall = mongoose.model('ActiveCall', activeCallSchema);
 
-module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, IVR, TimeCondition, Queue, User, CDR, VoicemailMessage, ActiveCall };
+module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, IVR, TimeCondition, Queue, User, ChatMessage, CDR, VoicemailMessage, ActiveCall };

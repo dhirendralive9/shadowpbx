@@ -1,0 +1,212 @@
+<%- include('../partials/head', { title: 'Chat', active: 'chat' }) %>
+
+<div style="display:flex;gap:0;height:calc(100vh - 140px);border:0.5px solid var(--border);border-radius:var(--radius-lg);overflow:hidden">
+  <!-- Contacts sidebar -->
+  <div style="width:240px;border-right:0.5px solid var(--border);display:flex;flex-direction:column;background:var(--bg-card)">
+    <div style="padding:12px 14px;border-bottom:0.5px solid var(--border);font-size:12px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.4px">Contacts</div>
+    <div id="contacts-list" style="flex:1;overflow-y:auto"></div>
+  </div>
+
+  <!-- Chat area -->
+  <div style="flex:1;display:flex;flex-direction:column;background:var(--bg-page)">
+    <!-- Chat header -->
+    <div id="chat-header" style="padding:12px 16px;border-bottom:0.5px solid var(--border);background:var(--bg-card);display:flex;align-items:center;gap:10px">
+      <span class="muted" style="font-size:13px">Select a contact to start chatting</span>
+    </div>
+
+    <!-- Messages -->
+    <div id="messages" style="flex:1;overflow-y:auto;padding:16px"></div>
+
+    <!-- Typing indicator -->
+    <div id="typing-indicator" style="display:none;padding:4px 16px;font-size:11px;color:var(--text-tertiary);font-style:italic"></div>
+
+    <!-- Input -->
+    <div style="padding:12px 16px;border-top:0.5px solid var(--border);background:var(--bg-card);display:flex;gap:8px">
+      <input class="form-input" id="msg-input" placeholder="Type a message..." disabled style="flex:1">
+      <button class="btn btn-primary btn-sm" id="send-btn" onclick="sendMessage()" disabled>Send</button>
+    </div>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+var API = '/api', KEY = '<%= apiKey %>', H = { 'X-API-Key': KEY };
+var J = { 'X-API-Key': KEY, 'Content-Type': 'application/json' };
+var currentUser = '<%= user %>';
+var currentRole = '<%= role %>';
+var currentName = '<%= userName %>';
+var activeChatUser = null;
+var contacts = [];
+var socket = io();
+var typingTimeout = null;
+
+function esc(s) { if (!s) return ''; var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function fmtTime(t) {
+  if (!t) return '';
+  var d = new Date(t), now = new Date();
+  if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+function rolePill(r) {
+  if (r === 'admin') return '<span class="pill p-miss" style="font-size:8px">admin</span>';
+  if (r === 'supervisor') return '<span class="pill p-warn" style="font-size:8px">super</span>';
+  return '<span class="pill p-info" style="font-size:8px">agent</span>';
+}
+
+// ─── Socket.IO ───
+socket.emit('chat:register', currentUser);
+
+socket.on('chat:message', function(msg) {
+  if (!msg) return;
+  // If this message is part of the active conversation, render it
+  if (activeChatUser && (msg.from === activeChatUser || msg.to === activeChatUser)) {
+    appendMessage(msg);
+    scrollToBottom();
+    // Mark as read if it's incoming
+    if (msg.from === activeChatUser) {
+      socket.emit('chat:read', { from: activeChatUser, to: currentUser });
+    }
+  }
+  // Update contacts list unread counts
+  loadContacts();
+});
+
+socket.on('chat:typing', function(data) {
+  if (data && data.from === activeChatUser) {
+    var el = document.getElementById('typing-indicator');
+    el.textContent = data.from + ' is typing...';
+    el.style.display = 'block';
+    clearTimeout(typingTimeout);
+    typingTimeout = setTimeout(function() { el.style.display = 'none'; }, 2000);
+  }
+});
+
+socket.on('chat:read', function(data) {
+  // Could update read receipts UI here if needed
+});
+
+// ─── Load contacts ───
+async function loadContacts() {
+  try {
+    var [contactsR, convR] = await Promise.all([
+      fetch(API + '/chat/contacts/' + currentUser, { headers: H }).then(function(r) { return r.json(); }),
+      fetch(API + '/chat/conversations/' + currentUser, { headers: H }).then(function(r) { return r.json(); })
+    ]);
+    contacts = (contactsR.success && contactsR.contacts) || [];
+    var convMap = {};
+    if (convR.success && convR.conversations) {
+      convR.conversations.forEach(function(c) { convMap[c.username] = c; });
+    }
+
+    var el = document.getElementById('contacts-list');
+    if (!contacts.length) { el.innerHTML = '<div class="muted" style="padding:16px;font-size:12px">No contacts available</div>'; return; }
+
+    // Sort: contacts with conversations first (by last message time), then alphabetical
+    contacts.sort(function(a, b) {
+      var ca = convMap[a.username], cb = convMap[b.username];
+      if (ca && cb) return new Date(cb.lastTime) - new Date(ca.lastTime);
+      if (ca) return -1;
+      if (cb) return 1;
+      return (a.name || a.username).localeCompare(b.name || b.username);
+    });
+
+    el.innerHTML = contacts.map(function(c) {
+      var conv = convMap[c.username];
+      var isActive = activeChatUser === c.username;
+      var unread = conv ? conv.unread : 0;
+      return '<div onclick="openChat(\'' + esc(c.username) + '\')" style="padding:10px 14px;cursor:pointer;border-bottom:0.5px solid var(--border);' + (isActive ? 'background:var(--bg-surface)' : '') + ';transition:background 0.1s" onmouseover="this.style.background=\'var(--bg-surface)\'" onmouseout="this.style.background=\'' + (isActive ? 'var(--bg-surface)' : '') + '\'">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center">' +
+          '<span style="font-size:13px;font-weight:500">' + esc(c.name || c.username) + '</span>' +
+          (unread > 0 ? '<span class="pill p-miss" style="font-size:9px;min-width:18px;text-align:center">' + unread + '</span>' : '') +
+        '</div>' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:2px">' +
+          '<span>' + rolePill(c.role) + '</span>' +
+          (conv ? '<span class="muted" style="font-size:9px">' + fmtTime(conv.lastTime) + '</span>' : '') +
+        '</div>' +
+        (conv ? '<div class="muted" style="font-size:11px;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px">' + esc(conv.lastMessage) + '</div>' : '') +
+      '</div>';
+    }).join('');
+  } catch (e) { console.error('contacts', e); }
+}
+
+// ─── Open conversation ───
+async function openChat(username) {
+  activeChatUser = username;
+  var contact = contacts.find(function(c) { return c.username === username; });
+
+  // Update header
+  document.getElementById('chat-header').innerHTML =
+    '<span style="font-size:14px;font-weight:500">' + esc(contact ? contact.name : username) + '</span> ' +
+    rolePill(contact ? contact.role : '') +
+    (contact && contact.extension ? ' <span class="mono muted" style="font-size:11px">ext ' + esc(contact.extension) + '</span>' : '');
+
+  // Enable input
+  document.getElementById('msg-input').disabled = false;
+  document.getElementById('msg-input').focus();
+  document.getElementById('send-btn').disabled = false;
+
+  // Load messages
+  try {
+    var d = await (await fetch(API + '/chat/messages/' + currentUser + '/' + username + '?limit=100', { headers: H })).json();
+    var el = document.getElementById('messages');
+    if (d.success && d.messages && d.messages.length) {
+      el.innerHTML = d.messages.map(function(m) { return renderMessage(m); }).join('');
+    } else {
+      el.innerHTML = '<div class="muted" style="text-align:center;padding:40px;font-size:12px">No messages yet. Say hi!</div>';
+    }
+    scrollToBottom();
+
+    // Mark as read
+    socket.emit('chat:read', { from: username, to: currentUser });
+  } catch (e) { console.error('load messages', e); }
+
+  // Refresh contacts to update unread
+  loadContacts();
+}
+
+// ─── Render message ───
+function renderMessage(msg) {
+  var isMine = msg.from === currentUser;
+  return '<div style="display:flex;justify-content:' + (isMine ? 'flex-end' : 'flex-start') + ';margin-bottom:8px">' +
+    '<div style="max-width:70%;padding:8px 12px;border-radius:' + (isMine ? '12px 12px 2px 12px' : '12px 12px 12px 2px') + ';background:' + (isMine ? 'var(--blue-bg)' : 'var(--bg-card)') + ';border:0.5px solid var(--border)">' +
+      '<div style="font-size:13px;word-break:break-word">' + esc(msg.text) + '</div>' +
+      '<div style="font-size:9px;color:var(--text-tertiary);margin-top:3px;text-align:' + (isMine ? 'right' : 'left') + '">' + fmtTime(msg.createdAt) + '</div>' +
+    '</div>' +
+  '</div>';
+}
+
+function appendMessage(msg) {
+  var el = document.getElementById('messages');
+  var emptyMsg = el.querySelector('.muted');
+  if (emptyMsg && emptyMsg.textContent.includes('No messages')) el.innerHTML = '';
+  el.insertAdjacentHTML('beforeend', renderMessage(msg));
+}
+
+function scrollToBottom() {
+  var el = document.getElementById('messages');
+  el.scrollTop = el.scrollHeight;
+}
+
+// ─── Send message ───
+function sendMessage() {
+  var input = document.getElementById('msg-input');
+  var text = input.value.trim();
+  if (!text || !activeChatUser) return;
+  socket.emit('chat:send', { from: currentUser, to: activeChatUser, text: text, fromRole: currentRole });
+  input.value = '';
+  input.focus();
+}
+
+// ─── Typing indicator ───
+document.getElementById('msg-input').addEventListener('keypress', function(e) {
+  if (e.key === 'Enter') { sendMessage(); return; }
+  if (activeChatUser) {
+    socket.emit('chat:typing', { from: currentUser, to: activeChatUser });
+  }
+});
+
+// ─── Init ───
+loadContacts();
+setInterval(loadContacts, 15000);
+</script>
+<%- include('../partials/foot') %>

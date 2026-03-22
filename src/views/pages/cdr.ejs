@@ -137,12 +137,36 @@ async function loadCDR() {
 }
 
 var currentAudio = null;
+var currentBtn = null;
 function playRec(callId, btn) {
-  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+  // If clicking the same button that's playing, toggle pause/resume
+  if (currentAudio && currentBtn === btn) {
+    if (currentAudio.paused) {
+      currentAudio.play();
+      btn.innerHTML = '&#9646;&#9646;'; // ⏸ pause icon
+      btn.title = 'Pause';
+    } else {
+      currentAudio.pause();
+      btn.innerHTML = '&#9654;'; // ▶ play icon
+      btn.title = 'Resume';
+    }
+    return;
+  }
+  // Stop any currently playing audio
+  if (currentAudio) {
+    currentAudio.pause();
+    currentAudio = null;
+    if (currentBtn) { currentBtn.innerHTML = '&#9654;'; currentBtn.title = 'Play'; }
+  }
+  // Start new playback
   var a = new Audio(API + '/cdr/' + callId + '/recording');
-  a.onended = function() { btn.textContent = '\u25B6'; currentAudio = null; };
-  a.onerror = function() { btn.textContent = '\u25B6'; alert('Recording not available'); currentAudio = null; };
-  a.play(); btn.textContent = '\u25A0'; currentAudio = a;
+  a.onended = function() { btn.innerHTML = '&#9654;'; btn.title = 'Play'; currentAudio = null; currentBtn = null; };
+  a.onerror = function() { btn.innerHTML = '&#9654;'; btn.title = 'Play'; alert('Recording not available'); currentAudio = null; currentBtn = null; };
+  a.play();
+  btn.innerHTML = '&#9646;&#9646;'; // ⏸ pause icon
+  btn.title = 'Pause';
+  currentAudio = a;
+  currentBtn = btn;
 }
 
 // ─── Notes modal ───

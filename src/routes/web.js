@@ -170,6 +170,10 @@ function createWebRouter(apiKey) {
     res.render('pages/voicemail', locals(req));
   });
 
+  router.get('/chat', authMiddleware, (req, res) => {
+    res.render('pages/chat', locals(req));
+  });
+
   // ─── Supervisor + Admin ───
   router.get('/extensions', authMiddleware, supervisorUp, (req, res) => {
     res.render('pages/extensions', locals(req));

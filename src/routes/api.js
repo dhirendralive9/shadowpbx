@@ -807,6 +807,118 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   });
 
   // ============================================================
+  // Chat
+  // ============================================================
+  const { ChatMessage } = require('../models');
+
+  // Get conversations list (unique chat partners with last message + unread count)
+  router.get('/chat/conversations/:username', async (req, res) => {
+    try {
+      const me = req.params.username;
+      const msgs = await ChatMessage.aggregate([
+        { $match: { $or: [{ from: me }, { to: me }] } },
+        { $sort: { createdAt: -1 } },
+        { $group: {
+          _id: { $cond: [{ $eq: ['$from', me] }, '$to', '$from'] },
+          lastMessage: { $first: '$text' },
+          lastTime: { $first: '$createdAt' },
+          unread: { $sum: { $cond: [{ $and: [{ $eq: ['$to', me] }, { $eq: ['$read', false] }] }, 1, 0] } }
+        }},
+        { $sort: { lastTime: -1 } }
+      ]);
+      // Enrich with user info
+      const usernames = msgs.map(m => m._id);
+      const users = await User.find({ username: { $in: usernames } }, 'username name role').lean();
+      const userMap = {};
+      users.forEach(u => { userMap[u.username] = u; });
+      const conversations = msgs.map(m => ({
+        username: m._id,
+        name: userMap[m._id] ? userMap[m._id].name : m._id,
+        role: userMap[m._id] ? userMap[m._id].role : '',
+        lastMessage: m.lastMessage,
+        lastTime: m.lastTime,
+        unread: m.unread
+      }));
+      res.json({ success: true, conversations });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // Get messages between two users
+  router.get('/chat/messages/:user1/:user2', async (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit) || 50;
+      const before = req.query.before ? new Date(req.query.before) : new Date();
+      const msgs = await ChatMessage.find({
+        $or: [
+          { from: req.params.user1, to: req.params.user2 },
+          { from: req.params.user2, to: req.params.user1 }
+        ],
+        createdAt: { $lt: before }
+      }).sort({ createdAt: -1 }).limit(limit).lean();
+      res.json({ success: true, messages: msgs.reverse() });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // Send a message (also used by Socket.IO fallback)
+  router.post('/chat/send', async (req, res) => {
+    try {
+      const { from, to, text, fromRole } = req.body;
+      if (!from || !to || !text) return res.status(400).json({ success: false, error: 'from, to, text required' });
+      const msg = await ChatMessage.create({ from, to, text, fromRole: fromRole || '', read: false });
+      res.json({ success: true, message: msg });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // Mark messages as read
+  router.post('/chat/read/:from/:to', async (req, res) => {
+    try {
+      await ChatMessage.updateMany(
+        { from: req.params.from, to: req.params.to, read: false },
+        { $set: { read: true, readAt: new Date() } }
+      );
+      res.json({ success: true });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // Get total unread count for a user
+  router.get('/chat/unread/:username', async (req, res) => {
+    try {
+      const count = await ChatMessage.countDocuments({ to: req.params.username, read: false });
+      res.json({ success: true, unread: count });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // Get contacts (users this person can chat with based on RBAC)
+  router.get('/chat/contacts/:username', async (req, res) => {
+    try {
+      const me = await User.findOne({ username: req.params.username });
+      if (!me) return res.json({ success: true, contacts: [] });
+      let contacts;
+      if (me.role === 'admin') {
+        contacts = await User.find({ username: { $ne: me.username }, enabled: true }, 'username name role extension').lean();
+      } else if (me.role === 'supervisor') {
+        // Supervisor can chat with admins + agents in their assigned extensions
+        const adminUsers = await User.find({ role: 'admin', enabled: true }, 'username name role extension').lean();
+        const agentUsers = await User.find({
+          role: 'agent', enabled: true,
+          extension: { $in: me.assignedExtensions || [] }
+        }, 'username name role extension').lean();
+        const otherSupers = await User.find({ role: 'supervisor', username: { $ne: me.username }, enabled: true }, 'username name role extension').lean();
+        contacts = [...adminUsers, ...otherSupers, ...agentUsers];
+      } else {
+        // Agent can chat with supervisors who manage their extension + admins
+        const supervisors = await User.find({
+          role: 'supervisor', enabled: true,
+          assignedExtensions: me.extension
+        }, 'username name role extension').lean();
+        const adminUsers = await User.find({ role: 'admin', enabled: true }, 'username name role extension').lean();
+        contacts = [...adminUsers, ...supervisors];
+      }
+      res.json({ success: true, contacts });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // ============================================================
   // CDR Recording playback
   // ============================================================
   router.get('/cdr/:callId/recording', async (req, res) => {

@@ -254,13 +254,82 @@ async function main() {
   const io = new SocketIO(server);
 
   // Socket.IO real-time updates
+  const { ChatMessage } = require('./models');
+  const socketUsers = new Map(); // username -> Set<socketId>
+
   io.on('connection', (socket) => {
     logger.debug(`GUI: socket connected ${socket.id}`);
-    // Send initial state immediately
     emitDashboardState(socket);
+
+    // Chat: user registers their username
+    socket.on('chat:register', (username) => {
+      if (!username) return;
+      socket.chatUser = username;
+      if (!socketUsers.has(username)) socketUsers.set(username, new Set());
+      socketUsers.get(username).add(socket.id);
+      logger.debug(`Chat: ${username} registered (socket ${socket.id})`);
+    });
+
+    // Chat: send message
+    socket.on('chat:send', async (data) => {
+      if (!data || !data.from || !data.to || !data.text) return;
+      try {
+        const msg = await ChatMessage.create({
+          from: data.from, to: data.to, text: data.text,
+          fromRole: data.fromRole || '', read: false
+        });
+        // Deliver to recipient if online
+        const recipientSockets = socketUsers.get(data.to);
+        if (recipientSockets) {
+          recipientSockets.forEach(sid => {
+            io.to(sid).emit('chat:message', msg.toObject());
+          });
+        }
+        // Echo back to sender (for multi-tab)
+        const senderSockets = socketUsers.get(data.from);
+        if (senderSockets) {
+          senderSockets.forEach(sid => {
+            io.to(sid).emit('chat:message', msg.toObject());
+          });
+        }
+      } catch (e) { logger.debug(`Chat send error: ${e.message}`); }
+    });
+
+    // Chat: mark messages read
+    socket.on('chat:read', async (data) => {
+      if (!data || !data.from || !data.to) return;
+      try {
+        await ChatMessage.updateMany(
+          { from: data.from, to: data.to, read: false },
+          { $set: { read: true, readAt: new Date() } }
+        );
+        // Notify sender that messages were read
+        const senderSockets = socketUsers.get(data.from);
+        if (senderSockets) {
+          senderSockets.forEach(sid => {
+            io.to(sid).emit('chat:read', { from: data.from, to: data.to });
+          });
+        }
+      } catch (e) {}
+    });
+
+    // Chat: typing indicator
+    socket.on('chat:typing', (data) => {
+      if (!data || !data.to) return;
+      const recipientSockets = socketUsers.get(data.to);
+      if (recipientSockets) {
+        recipientSockets.forEach(sid => {
+          io.to(sid).emit('chat:typing', { from: data.from });
+        });
+      }
+    });
 
     socket.on('disconnect', () => {
       logger.debug(`GUI: socket disconnected ${socket.id}`);
+      if (socket.chatUser && socketUsers.has(socket.chatUser)) {
+        socketUsers.get(socket.chatUser).delete(socket.id);
+        if (socketUsers.get(socket.chatUser).size === 0) socketUsers.delete(socket.chatUser);
+      }
     });
   });
 
