@@ -4,7 +4,9 @@
   <span class="sec-title">Ring groups</span>
   <div style="display:flex;align-items:center;gap:10px">
     <span class="muted" style="font-size:11px" id="rg-summary"></span>
+    <% if (role === 'admin') { %>
     <button class="btn btn-sm" onclick="showAdd()">+ Add ring group</button>
+    <% } %>
   </div>
 </div>
 
@@ -72,6 +74,7 @@
 var API = '/api', KEY = '<%= apiKey %>', H = { 'X-API-Key': KEY };
 var J = { 'X-API-Key': KEY, 'Content-Type': 'application/json' };
 var allExtensions = [];
+var myRole = '<%= typeof role !== "undefined" ? role : "admin" %>';
 
 // ─── Member row management ───
 var memberRowId = 0;
@@ -256,7 +259,7 @@ async function load() {
           '</div>' +
           '<div style="display:flex;gap:6px">' +
             '<button class="btn btn-sm" onclick=\'showEdit(' + JSON.stringify(rg).replace(/'/g, "&#39;") + ')\'>Edit</button>' +
-            '<button class="btn btn-sm btn-danger" onclick="del(\'' + esc(rg.number) + '\',\'' + esc(rg.name) + '\')">Delete</button>' +
+            (myRole === 'admin' ? '<button class="btn btn-sm btn-danger" onclick="del(\'' + esc(rg.number) + '\',\'' + esc(rg.name) + '\')">Delete</button>' : '') +
           '</div>' +
         '</div>' +
         '<div style="margin-top:4px">' +

@@ -4,7 +4,9 @@
   <span class="sec-title">Call queues</span>
   <div style="display:flex;align-items:center;gap:10px">
     <span class="muted" style="font-size:11px" id="q-summary"></span>
+    <% if (role === 'admin') { %>
     <button class="btn btn-sm" onclick="showAdd()">+ Add queue</button>
+    <% } %>
   </div>
 </div>
 
@@ -71,6 +73,7 @@
 <script>
 var API = '/api', KEY = '<%= apiKey %>', H = { 'X-API-Key': KEY };
 var J = { 'X-API-Key': KEY, 'Content-Type': 'application/json' };
+var myRole = '<%= typeof role !== "undefined" ? role : "admin" %>';
 
 // ─── Agent row management ───
 var agentRowId = 0;
@@ -199,8 +202,10 @@ async function load() {
       if (s.callersWaiting > 0) html += '<span class="pill p-ring">' + s.callersWaiting + ' waiting</span>';
       html += '</div>';
       html += '<div style="display:flex;gap:6px">';
-      html += '<button class="btn btn-sm" onclick=\'showEdit(' + JSON.stringify(q).replace(/'/g, "&#39;") + ')\'>Edit</button>';
-      html += '<button class="btn btn-sm btn-danger" onclick="del(\'' + esc(q.number) + '\',\'' + esc(q.name) + '\')">Delete</button>';
+      if (myRole === 'admin') {
+        html += '<button class="btn btn-sm" onclick=\'showEdit(' + JSON.stringify(q).replace(/'/g, "&#39;") + ')\'>Edit</button>';
+        html += '<button class="btn btn-sm btn-danger" onclick="del(\'' + esc(q.number) + '\',\'' + esc(q.name) + '\')">Delete</button>';
+      }
       html += '</div></div>';
 
       // Stats row

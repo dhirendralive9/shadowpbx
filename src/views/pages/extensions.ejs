@@ -4,11 +4,14 @@
   <span class="sec-title">Extensions</span>
   <div style="display:flex;align-items:center;gap:10px">
     <span class="muted" style="font-size:11px" id="ext-summary"></span>
+    <% if (role === 'admin') { %>
     <button class="btn btn-sm btn-danger" onclick="regenAll()">Regenerate All Passwords</button>
     <button class="btn btn-sm" onclick="showAddForm()">+ Add extension</button>
+    <% } %>
   </div>
 </div>
 
+<% if (role === 'admin') { %>
 <!-- Add extension form -->
 <div id="add-form" style="display:none; margin-bottom:16px;" class="card">
   <form onsubmit="addExtension(event)">
@@ -23,6 +26,7 @@
     </div>
   </form>
 </div>
+<% } %>
 
 <!-- Password result modal -->
 <div id="pw-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:100;display:none;align-items:center;justify-content:center">
@@ -55,6 +59,7 @@ var KEY = '<%= apiKey %>';
 var headers = { 'X-API-Key': KEY };
 var J = { 'X-API-Key': KEY, 'Content-Type': 'application/json' };
 var lastPasswordResults = [];
+var myRole = '<%= typeof role !== "undefined" ? role : "admin" %>';
 
 function showAddForm() { document.getElementById('add-form').style.display = 'block'; }
 function hideAddForm() { document.getElementById('add-form').style.display = 'none'; }
@@ -114,12 +119,14 @@ async function loadExtensions() {
         '<td class="mono" style="font-size:11px">' + (reg ? esc(c0.ip + ':' + c0.port) : '-') + '</td>' +
         '<td class="muted">' + (c0.expires ? formatExpires(c0.expires) : '-') + '</td>' +
         '<td style="white-space:nowrap">' +
-          '<button class="act-btn" title="Regenerate password" onclick="regenOne(\'' + esc(e.extension) + '\',\'' + esc(e.name) + '\')">' +
-            '<svg viewBox="0 0 24 24" stroke-width="2"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0115.36-6.36L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 01-15.36 6.36L3 16"/></svg>' +
-          '</button>' +
-          '<button class="act-btn" title="Delete" onclick="deleteExt(\'' + esc(e.extension) + '\')">' +
-            '<svg viewBox="0 0 24 24" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>' +
-          '</button>' +
+          (myRole === 'admin'
+            ? '<button class="act-btn" title="Regenerate password" onclick="regenOne(\'' + esc(e.extension) + '\',\'' + esc(e.name) + '\')">' +
+                '<svg viewBox="0 0 24 24" stroke-width="2"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0115.36-6.36L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 01-15.36 6.36L3 16"/></svg>' +
+              '</button>' +
+              '<button class="act-btn" title="Delete" onclick="deleteExt(\'' + esc(e.extension) + '\')">' +
+                '<svg viewBox="0 0 24 24" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>' +
+              '</button>'
+            : '') +
         '</td>' +
       '</tr>';
     }).join('');
