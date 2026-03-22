@@ -12,14 +12,14 @@
 <!-- Add extension form -->
 <div id="add-form" style="display:none; margin-bottom:16px;" class="card">
   <form onsubmit="addExtension(event)">
-    <div class="grid-3" style="margin-bottom:0">
+    <div class="grid-2" style="margin-bottom:0">
       <div class="form-group"><label class="form-label">Extension</label><input class="form-input" id="new-ext" placeholder="2004" required></div>
       <div class="form-group"><label class="form-label">Name</label><input class="form-input" id="new-name" placeholder="User Four" required></div>
-      <div class="form-group"><label class="form-label">Password</label><input class="form-input" id="new-pass" placeholder="SIP password" required></div>
     </div>
     <div style="display:flex;gap:8px;margin-top:8px">
       <button type="submit" class="btn btn-primary btn-sm">Create</button>
       <button type="button" class="btn btn-sm" onclick="hideAddForm()">Cancel</button>
+      <span class="muted" style="font-size:11px;align-self:center">A secure password will be auto-generated</span>
     </div>
   </form>
 </div>
@@ -134,25 +134,35 @@ function formatExpires(exp) {
   return secs + 's';
 }
 
+// ─── Generate secure random password ───
+function generatePassword() {
+  var chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+  var pw = '';
+  var arr = new Uint8Array(16);
+  crypto.getRandomValues(arr);
+  for (var i = 0; i < 16; i++) pw += chars[arr[i] % chars.length];
+  return pw;
+}
+
 // ─── Add extension ───
 async function addExtension(e) {
   e.preventDefault();
-  var body = {
-    extension: document.getElementById('new-ext').value,
-    name: document.getElementById('new-name').value,
-    password: document.getElementById('new-pass').value
-  };
+  var ext = document.getElementById('new-ext').value.trim();
+  var name = document.getElementById('new-name').value.trim();
+  var password = generatePassword();
+
   var r = await fetch(API + '/extensions', {
     method: 'POST', headers: J,
-    body: JSON.stringify(body)
+    body: JSON.stringify({ extension: ext, name: name, password: password })
   });
   var d = await r.json();
   if (d.success) {
     hideAddForm();
     document.getElementById('new-ext').value = '';
     document.getElementById('new-name').value = '';
-    document.getElementById('new-pass').value = '';
-    showToast('Extension created');
+    lastPasswordResults = [{ extension: ext, name: name, password: password }];
+    showPwModal('Extension Created — ' + ext);
+    showToast('Extension ' + ext + ' created');
   } else {
     showToast(d.error || 'Failed', true);
   }
