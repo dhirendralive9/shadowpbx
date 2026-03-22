@@ -105,6 +105,39 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
 
+  // Regenerate password for a single extension
+  router.post('/extensions/:ext/regenerate-password', async (req, res) => {
+    try {
+      const ext = await Extension.findOne({ extension: req.params.ext });
+      if (!ext) return res.status(404).json({ success: false, error: 'Not found' });
+      const crypto = require('crypto');
+      const newPassword = crypto.randomBytes(12).toString('base64url').substring(0, 16);
+      ext.password = newPassword;
+      ext.updatedAt = new Date();
+      await ext.save();
+      logger.info(`Extension ${ext.extension}: password regenerated`);
+      res.json({ success: true, extension: ext.extension, name: ext.name, password: newPassword });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // Regenerate passwords for ALL extensions
+  router.post('/extensions/regenerate-all', async (req, res) => {
+    try {
+      const crypto = require('crypto');
+      const extensions = await Extension.find({}).sort('extension');
+      const results = [];
+      for (const ext of extensions) {
+        const newPassword = crypto.randomBytes(12).toString('base64url').substring(0, 16);
+        ext.password = newPassword;
+        ext.updatedAt = new Date();
+        await ext.save();
+        results.push({ extension: ext.extension, name: ext.name, password: newPassword });
+      }
+      logger.info(`Regenerated passwords for ${results.length} extension(s)`);
+      res.json({ success: true, extensions: results });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
   // ============================================================
   // Ring Groups
   // ============================================================

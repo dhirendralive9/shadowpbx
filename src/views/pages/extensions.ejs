@@ -4,10 +4,12 @@
   <span class="sec-title">Extensions</span>
   <div style="display:flex;align-items:center;gap:10px">
     <span class="muted" style="font-size:11px" id="ext-summary"></span>
+    <button class="btn btn-sm btn-danger" onclick="regenAll()">Regenerate All Passwords</button>
     <button class="btn btn-sm" onclick="showAddForm()">+ Add extension</button>
   </div>
 </div>
 
+<!-- Add extension form -->
 <div id="add-form" style="display:none; margin-bottom:16px;" class="card">
   <form onsubmit="addExtension(event)">
     <div class="grid-3" style="margin-bottom:0">
@@ -22,6 +24,24 @@
   </form>
 </div>
 
+<!-- Password result modal -->
+<div id="pw-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:100;display:none;align-items:center;justify-content:center">
+  <div class="card" style="max-width:600px;width:90%;max-height:80vh;overflow-y:auto">
+    <div class="card-head">
+      <span class="card-title" id="pw-modal-title">New Password</span>
+      <button class="act-btn" onclick="closePwModal()" title="Close">
+        <svg viewBox="0 0 24 24" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div id="pw-modal-body"></div>
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button class="btn btn-primary btn-sm" onclick="downloadCsv()">Download CSV</button>
+      <button class="btn btn-sm" onclick="copyPasswords()">Copy to clipboard</button>
+      <button class="btn btn-sm" onclick="closePwModal()">Close</button>
+    </div>
+  </div>
+</div>
+
 <table class="tbl">
   <thead><tr><th>Status</th><th>Extension</th><th>Name</th><th>Presence</th><th>User agent</th><th>IP address</th><th>Expires</th><th></th></tr></thead>
   <tbody id="ext-body">
@@ -33,6 +53,8 @@
 var API = '/api';
 var KEY = '<%= apiKey %>';
 var headers = { 'X-API-Key': KEY };
+var J = { 'X-API-Key': KEY, 'Content-Type': 'application/json' };
+var lastPasswordResults = [];
 
 function showAddForm() { document.getElementById('add-form').style.display = 'block'; }
 function hideAddForm() { document.getElementById('add-form').style.display = 'none'; }
@@ -57,6 +79,7 @@ function statusDot(reg, presence) {
 
 function esc(s) { if (!s) return ''; var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
+// ─── Load extensions ───
 async function loadExtensions() {
   try {
     var r = await fetch(API + '/extensions', { headers: headers });
@@ -70,7 +93,6 @@ async function loadExtensions() {
       return;
     }
 
-    // Summary counts
     var online = 0, inCall = 0;
     d.extensions.forEach(function(e) {
       if (e.registered) online++;
@@ -91,9 +113,14 @@ async function loadExtensions() {
         '<td class="muted" style="font-size:11px">' + esc(c0.userAgent || '-') + '</td>' +
         '<td class="mono" style="font-size:11px">' + (reg ? esc(c0.ip + ':' + c0.port) : '-') + '</td>' +
         '<td class="muted">' + (c0.expires ? formatExpires(c0.expires) : '-') + '</td>' +
-        '<td><button class="act-btn" title="Delete" onclick="deleteExt(\'' + esc(e.extension) + '\')">' +
-          '<svg viewBox="0 0 24 24" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>' +
-        '</button></td>' +
+        '<td style="white-space:nowrap">' +
+          '<button class="act-btn" title="Regenerate password" onclick="regenOne(\'' + esc(e.extension) + '\',\'' + esc(e.name) + '\')">' +
+            '<svg viewBox="0 0 24 24" stroke-width="2"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0115.36-6.36L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 01-15.36 6.36L3 16"/></svg>' +
+          '</button>' +
+          '<button class="act-btn" title="Delete" onclick="deleteExt(\'' + esc(e.extension) + '\')">' +
+            '<svg viewBox="0 0 24 24" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>' +
+          '</button>' +
+        '</td>' +
       '</tr>';
     }).join('');
   } catch (err) { console.error('ext load', err); }
@@ -107,6 +134,7 @@ function formatExpires(exp) {
   return secs + 's';
 }
 
+// ─── Add extension ───
 async function addExtension(e) {
   e.preventDefault();
   var body = {
@@ -115,7 +143,7 @@ async function addExtension(e) {
     password: document.getElementById('new-pass').value
   };
   var r = await fetch(API + '/extensions', {
-    method: 'POST', headers: { 'X-API-Key': KEY, 'Content-Type': 'application/json' },
+    method: 'POST', headers: J,
     body: JSON.stringify(body)
   });
   var d = await r.json();
@@ -131,6 +159,7 @@ async function addExtension(e) {
   loadExtensions();
 }
 
+// ─── Delete extension ───
 async function deleteExt(ext) {
   if (!confirm('Delete extension ' + ext + '?')) return;
   await fetch(API + '/extensions/' + ext, { method: 'DELETE', headers: headers });
@@ -138,6 +167,96 @@ async function deleteExt(ext) {
   loadExtensions();
 }
 
+// ─── Regenerate single password ───
+async function regenOne(ext, name) {
+  if (!confirm('Regenerate password for ' + ext + ' (' + name + ')?\n\nThe current password will be replaced immediately.\nThe softphone will need to be re-configured.')) return;
+  var r = await fetch(API + '/extensions/' + ext + '/regenerate-password', { method: 'POST', headers: J });
+  var d = await r.json();
+  if (d.success) {
+    lastPasswordResults = [{ extension: d.extension, name: d.name, password: d.password }];
+    showPwModal('New Password — Extension ' + ext);
+    showToast('Password regenerated for ' + ext);
+  } else {
+    showToast(d.error || 'Failed', true);
+  }
+}
+
+// ─── Regenerate ALL passwords ───
+async function regenAll() {
+  if (!confirm('Regenerate passwords for ALL extensions?\n\n⚠ This will replace every extension password immediately.\nAll softphones will need to be re-configured.\n\nMake sure to download the CSV after regeneration.')) return;
+  var r = await fetch(API + '/extensions/regenerate-all', { method: 'POST', headers: J });
+  var d = await r.json();
+  if (d.success && d.extensions) {
+    lastPasswordResults = d.extensions;
+    showPwModal('Regenerated Passwords — ' + d.extensions.length + ' Extensions');
+    showToast(d.extensions.length + ' passwords regenerated');
+  } else {
+    showToast(d.error || 'Failed', true);
+  }
+}
+
+// ─── Password modal ───
+function showPwModal(title) {
+  document.getElementById('pw-modal-title').textContent = title;
+  var html = '<table class="tbl"><thead><tr><th>Extension</th><th>Name</th><th>New Password</th></tr></thead><tbody>';
+  html += lastPasswordResults.map(function(r) {
+    return '<tr>' +
+      '<td class="mono">' + esc(r.extension) + '</td>' +
+      '<td>' + esc(r.name) + '</td>' +
+      '<td><code style="background:var(--bg-surface);padding:3px 8px;border-radius:4px;font-family:var(--mono);font-size:13px;user-select:all">' + esc(r.password) + '</code></td>' +
+    '</tr>';
+  }).join('');
+  html += '</tbody></table>';
+  document.getElementById('pw-modal-body').innerHTML = html;
+  document.getElementById('pw-modal').style.display = 'flex';
+}
+
+function closePwModal() {
+  document.getElementById('pw-modal').style.display = 'none';
+  lastPasswordResults = [];
+  loadExtensions();
+}
+
+// ─── Download CSV ───
+function downloadCsv() {
+  if (!lastPasswordResults.length) return;
+  var csv = 'Extension,Name,Password\n';
+  lastPasswordResults.forEach(function(r) {
+    csv += '"' + r.extension + '","' + (r.name || '').replace(/"/g, '""') + '","' + r.password + '"\n';
+  });
+  var blob = new Blob([csv], { type: 'text/csv' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = 'shadowpbx-extensions-' + new Date().toISOString().split('T')[0] + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showToast('CSV downloaded');
+}
+
+// ─── Copy to clipboard ───
+function copyPasswords() {
+  if (!lastPasswordResults.length) return;
+  var text = lastPasswordResults.map(function(r) {
+    return r.extension + '\t' + (r.name || '') + '\t' + r.password;
+  }).join('\n');
+  navigator.clipboard.writeText(text).then(function() {
+    showToast('Copied to clipboard');
+  }).catch(function() {
+    // Fallback
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    showToast('Copied to clipboard');
+  });
+}
+
+// ─── Toast ───
 function showToast(msg, isError) {
   var el = document.createElement('div');
   el.className = 'toast ' + (isError ? 'toast-error' : 'toast-success');
