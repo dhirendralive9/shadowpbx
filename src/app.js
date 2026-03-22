@@ -190,6 +190,32 @@ async function main() {
   app.use(cookieParser());
   app.use(express.static(path.join(__dirname, 'public')));
 
+  // Public audio endpoints (no auth — shareable/downloadable links)
+  const { CDR: CDRModel, VoicemailMessage: VMModel } = require('./models');
+  const fs = require('fs');
+
+  app.get('/api/cdr/:callId/recording', async (req, res) => {
+    try {
+      const cdr = await CDRModel.findOne({ callId: req.params.callId });
+      if (!cdr || !cdr.recordingPath) return res.status(404).json({ success: false, error: 'Recording not found' });
+      if (!fs.existsSync(cdr.recordingPath)) return res.status(404).json({ success: false, error: 'Recording file missing' });
+      res.setHeader('Content-Type', 'audio/wav');
+      res.setHeader('Content-Disposition', `inline; filename="${require('path').basename(cdr.recordingPath)}"`);
+      fs.createReadStream(cdr.recordingPath).pipe(res);
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  app.get('/api/voicemail/:ext/:messageId/audio', async (req, res) => {
+    try {
+      const msg = await VMModel.findOne({ extension: req.params.ext, messageId: req.params.messageId });
+      if (!msg || !msg.recordingPath) return res.status(404).json({ success: false, error: 'Message not found' });
+      if (!fs.existsSync(msg.recordingPath)) return res.status(404).json({ success: false, error: 'Audio file missing' });
+      res.setHeader('Content-Type', 'audio/wav');
+      res.setHeader('Content-Disposition', `inline; filename="${require('path').basename(msg.recordingPath)}"`);
+      fs.createReadStream(msg.recordingPath).pipe(res);
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
   // API auth middleware
   app.use('/api', (req, res, next) => {
     const token = req.headers['x-api-key'] || req.query.apikey;

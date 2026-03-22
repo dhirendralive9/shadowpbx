@@ -62,7 +62,7 @@ async function loadCDR(){
 let currentAudio=null;
 function playRec(callId,btn){
   if(currentAudio){currentAudio.pause();currentAudio=null;}
-  const a=new Audio(API+'/cdr/'+callId+'/recording?_key='+KEY);
+  const a=new Audio(API+'/cdr/'+callId+'/recording');
   a.onended=function(){btn.textContent='\u25B6';currentAudio=null;};
   a.onerror=function(){btn.textContent='\u25B6';alert('Recording not available');currentAudio=null;};
   a.play();btn.textContent='\u25A0';currentAudio=a;

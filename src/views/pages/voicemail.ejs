@@ -50,7 +50,7 @@ async function loadVM(){
 }
 
 function playVM(ext,id){
-  window.open(API+'/voicemail/'+ext+'/'+id+'/audio?apikey='+KEY,'_blank');
+  window.open(API+'/voicemail/'+ext+'/'+id+'/audio','_blank');
 }
 async function markRead(ext,id){
   await fetch(API+'/voicemail/'+ext+'/'+id+'/read',{method:'POST',headers:H});loadVM();
