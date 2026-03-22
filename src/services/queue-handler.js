@@ -112,11 +112,8 @@ class QueueHandler {
       const toTag = uas.sip ? uas.sip.localTag : '';
       if (toTag) {
         try {
-          await this.rtpengine.answer(this.rtpengineConfig, {
-            'call-id': sipCallId, 'from-tag': fromTag, 'to-tag': toTag,
-            sdp: rtpOffer.sdp, 'flags': ['trust-address'],
-            'replace': ['origin', 'session-connection'], 'ICE': 'remove'
-          });
+          const rtpHelper = require('../utils/rtp-helper');
+          await rtpHelper.answer(this.rtpengine, sipCallId, fromTag, toTag, rtpOffer.sdp);
         } catch (e) { logger.warn(`QUEUE ${qNum}: RTPEngine answer: ${e.message}`); }
       }
 
@@ -399,9 +396,8 @@ class QueueHandler {
 
         // RTPEngine cleanup
         try {
-          await this.rtpengine.delete(this.rtpengineConfig, {
-            'call-id': sipCallId, 'from-tag': qCall.fromTag
-          });
+          const rtpHelper = require('../utils/rtp-helper');
+          await rtpHelper.del(this.rtpengine, sipCallId, qCall.fromTag);
         } catch (e) {}
       };
 
@@ -481,9 +477,8 @@ class QueueHandler {
 
     // RTPEngine cleanup
     try {
-      this.rtpengine.delete(this.rtpengineConfig, {
-        'call-id': qCall.sipCallId, 'from-tag': qCall.fromTag
-      }).catch(() => {});
+      const rtpHelper = require('../utils/rtp-helper');
+      rtpHelper.del(this.rtpengine, qCall.sipCallId, qCall.fromTag);
     } catch (e) {}
 
     // Update CDR
@@ -591,14 +586,8 @@ class QueueHandler {
   // RTPEngine helpers
   // ============================================================
   async _rtpengineOffer(callId, fromTag, sdp) {
-    if (!this.rtpengine) return null;
-    try {
-      const r = await this.rtpengine.offer(this.rtpengineConfig, {
-        'call-id': callId, 'from-tag': fromTag, sdp,
-        'flags': ['trust-address'], 'replace': ['origin', 'session-connection'], 'ICE': 'remove'
-      });
-      return r && r.result === 'ok' ? r : null;
-    } catch (e) { return null; }
+    const rtpHelper = require('../utils/rtp-helper');
+    return rtpHelper.offer(this.rtpengine, callId, fromTag, sdp);
   }
 
   async _startMoh(sipCallId, fromTag, queueConfig) {

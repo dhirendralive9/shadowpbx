@@ -110,6 +110,10 @@ async function main() {
     logger.info(`RTPEngine client ready (with call-id tracking)`);
   }
 
+  // Log SRTP mode
+  const rtpHelper = require('./utils/rtp-helper');
+  rtpHelper.logMode();
+
   // 4. Initialize services
   const registrar = new Registrar(srf);
   const ringGroupHandler = new RingGroupHandler(srf, registrar, rtpengine);

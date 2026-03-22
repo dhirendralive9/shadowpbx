@@ -136,16 +136,9 @@ class RingGroupHandler {
       // Step 1: Send caller's SDP to RTPEngine (offer)
       if (this.rtpengine) {
         try {
-          const offerResp = await this.rtpengine.offer(rtpConfig, {
-            'call-id': rtpCallId,
-            'from-tag': fromTag,
-            sdp: req.body,
-            'record call': 'yes',
-            'flags': ['trust-address'],
-            'replace': ['origin', 'session-connection'],
-            'ICE': 'remove'
-          });
-          if (offerResp && offerResp.result === 'ok') {
+          const rtpHelper = require('../utils/rtp-helper');
+          const offerResp = await rtpHelper.offer(this.rtpengine, rtpCallId, fromTag, req.body, { 'record call': 'yes' });
+          if (offerResp) {
             rtpOfferSdp = offerResp.sdp;
             logger.info(`SIMRING: RTPEngine offer OK (call-id=${rtpCallId})`);
           }
@@ -168,18 +161,10 @@ class RingGroupHandler {
         const rtpEngine = this.rtpengine;
         opts.localSdpA = async (sdpB, res) => {
           try {
+            const rtpHelper = require('../utils/rtp-helper');
             const toTag = res.getParsedHeader('To').params.tag;
-            const answerResp = await rtpEngine.answer(rtpConfig, {
-              'call-id': rtpCallId,
-              'from-tag': fromTag,
-              'to-tag': toTag,
-              sdp: sdpB,
-              'record call': 'yes',
-              'flags': ['trust-address'],
-              'replace': ['origin', 'session-connection'],
-              'ICE': 'remove'
-            });
-            if (answerResp && answerResp.result === 'ok') {
+            const answerResp = await rtpHelper.answer(rtpEngine, rtpCallId, fromTag, toTag, sdpB, { 'record call': 'yes' });
+            if (answerResp) {
               logger.info(`SIMRING: RTPEngine answer OK (to-tag=${toTag})`);
               return answerResp.sdp;
             }

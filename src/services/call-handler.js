@@ -555,24 +555,18 @@ class CallHandler {
   }
 
   async _rtpengineOffer(callId, fromTag, sdp) {
-    if (!this.rtpengine) return null;
-    try {
-      const response = await this.rtpengine.offer(this.rtpengineConfig, { 'call-id': callId, 'from-tag': fromTag, sdp, 'record call': 'yes', 'flags': ['trust-address'], 'replace': ['origin', 'session-connection'], 'ICE': 'remove' });
-      return response.result === 'ok' ? response : null;
-    } catch (err) { return null; }
+    const rtpHelper = require('../utils/rtp-helper');
+    return rtpHelper.offer(this.rtpengine, callId, fromTag, sdp, { 'record call': 'yes' });
   }
 
   async _rtpengineAnswer(callId, fromTag, toTag, sdp) {
-    if (!this.rtpengine) return null;
-    try {
-      const response = await this.rtpengine.answer(this.rtpengineConfig, { 'call-id': callId, 'from-tag': fromTag, 'to-tag': toTag, sdp, 'record call': 'yes', 'flags': ['trust-address'], 'replace': ['origin', 'session-connection'], 'ICE': 'remove' });
-      return response.result === 'ok' ? response : null;
-    } catch (err) { return null; }
+    const rtpHelper = require('../utils/rtp-helper');
+    return rtpHelper.answer(this.rtpengine, callId, fromTag, toTag, sdp, { 'record call': 'yes' });
   }
 
   async _rtpengineDelete(callId, fromTag) {
-    if (!this.rtpengine) return;
-    try { await this.rtpengine.delete(this.rtpengineConfig, { 'call-id': callId, 'from-tag': fromTag }); } catch (err) {}
+    const rtpHelper = require('../utils/rtp-helper');
+    return rtpHelper.del(this.rtpengine, callId, fromTag);
   }
 
   getActiveCalls() {

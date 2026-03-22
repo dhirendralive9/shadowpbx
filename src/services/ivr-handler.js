@@ -62,15 +62,8 @@ class IvrHandler {
       const toTag = uas.sip ? uas.sip.localTag : '';
       if (toTag) {
         try {
-          await this.rtpengine.answer(this.rtpengineConfig, {
-            'call-id': sipCallId,
-            'from-tag': fromTag,
-            'to-tag': toTag,
-            sdp: rtpOffer.sdp,
-            'flags': ['trust-address'],
-            'replace': ['origin', 'session-connection'],
-            'ICE': 'remove'
-          });
+          const rtpHelper = require('../utils/rtp-helper');
+          await rtpHelper.answer(this.rtpengine, sipCallId, fromTag, toTag, rtpOffer.sdp);
           logger.info(`IVR: RTPEngine answer completed (from-tag=${fromTag} to-tag=${toTag})`);
         } catch (ansErr) {
           logger.warn(`IVR: RTPEngine answer failed: ${ansErr.message}`);
@@ -535,23 +528,13 @@ class IvrHandler {
   }
 
   async _rtpengineOffer(callId, fromTag, sdp) {
-    if (!this.rtpengine) return null;
-    try {
-      const response = await this.rtpengine.offer(this.rtpengineConfig, {
-        'call-id': callId,
-        'from-tag': fromTag,
-        sdp,
-        'flags': ['trust-address'],
-        'replace': ['origin', 'session-connection'],
-        'ICE': 'remove'
-      });
-      return response.result === 'ok' ? response : null;
-    } catch (err) { return null; }
+    const rtpHelper = require('../utils/rtp-helper');
+    return rtpHelper.offer(this.rtpengine, callId, fromTag, sdp);
   }
 
   async _rtpengineDelete(callId, fromTag) {
-    if (!this.rtpengine) return;
-    try { await this.rtpengine.delete(this.rtpengineConfig, { 'call-id': callId, 'from-tag': fromTag }); } catch (e) {}
+    const rtpHelper = require('../utils/rtp-helper');
+    return rtpHelper.del(this.rtpengine, callId, fromTag);
   }
 
   async _endCall(cdr, hangupBy) {
