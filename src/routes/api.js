@@ -281,6 +281,75 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   // IVR / Auto Attendant
   // ============================================================
   const { IVR } = require('../models');
+  const multer = require('multer');
+  const audioDir = process.env.MOH_DIR || '/opt/shadowpbx/audio';
+
+  // Audio file upload (WAV only, max 10MB)
+  const audioUpload = multer({
+    storage: multer.diskStorage({
+      destination: function(req, file, cb) {
+        const fs = require('fs');
+        if (!fs.existsSync(audioDir)) fs.mkdirSync(audioDir, { recursive: true });
+        cb(null, audioDir);
+      },
+      filename: function(req, file, cb) {
+        const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+        cb(null, Date.now() + '-' + safeName);
+      }
+    }),
+    limits: { fileSize: 10 * 1024 * 1024 },
+    fileFilter: function(req, file, cb) {
+      if (file.mimetype === 'audio/wav' || file.mimetype === 'audio/x-wav' || file.mimetype === 'audio/wave' ||
+          file.mimetype === 'audio/mpeg' || file.originalname.match(/\.(wav|mp3)$/i)) {
+        cb(null, true);
+      } else {
+        cb(new Error('Only WAV and MP3 files are allowed'));
+      }
+    }
+  });
+
+  router.post('/audio/upload', audioUpload.single('file'), async (req, res) => {
+    if (!req.file) return res.status(400).json({ success: false, error: 'No file uploaded' });
+    const fs = require('fs');
+    const path = require('path');
+    const { execSync } = require('child_process');
+    const uploadedPath = req.file.path;
+    const baseName = path.basename(uploadedPath, path.extname(uploadedPath));
+    const convertedPath = path.join(audioDir, baseName + '.wav');
+
+    try {
+      // Convert to 8kHz mono 16-bit PCM WAV (RTPEngine standard)
+      execSync(`ffmpeg -y -i "${uploadedPath}" -ar 8000 -ac 1 -sample_fmt s16 -acodec pcm_s16le "${convertedPath}" 2>/dev/null`);
+
+      // Remove original if different from converted
+      if (uploadedPath !== convertedPath && fs.existsSync(uploadedPath)) {
+        fs.unlinkSync(uploadedPath);
+      }
+
+      const stat = fs.statSync(convertedPath);
+      logger.info(`Audio uploaded + converted: ${req.file.originalname} -> ${convertedPath} (8kHz mono PCM, ${Math.round(stat.size / 1024)}KB)`);
+      res.json({ success: true, path: convertedPath, filename: baseName + '.wav', originalName: req.file.originalname, size: stat.size });
+    } catch (convErr) {
+      // ffmpeg not available or conversion failed — keep original
+      logger.warn(`Audio conversion failed (${convErr.message}), keeping original: ${uploadedPath}`);
+      res.json({ success: true, path: uploadedPath, filename: req.file.filename, originalName: req.file.originalname, size: req.file.size, warning: 'Conversion failed — file may not play correctly. Install ffmpeg for auto-conversion.' });
+    }
+  });
+
+  router.get('/audio/list', (req, res) => {
+    try {
+      const fs = require('fs');
+      if (!fs.existsSync(audioDir)) return res.json({ success: true, files: [] });
+      const files = fs.readdirSync(audioDir)
+        .filter(f => f.match(/\.(wav|mp3)$/i))
+        .map(f => {
+          const stat = fs.statSync(require('path').join(audioDir, f));
+          return { name: f, path: require('path').join(audioDir, f), size: stat.size, modified: stat.mtime };
+        })
+        .sort((a, b) => new Date(b.modified) - new Date(a.modified));
+      res.json({ success: true, files });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
 
   router.get('/ivr', async (req, res) => {
     try {

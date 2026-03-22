@@ -1,8 +1,338 @@
-<%- include('../partials/head', { title: '${page}', active: '${page}' }) %>
+<%- include('../partials/head', { title: 'IVR', active: 'ivr' }) %>
+
 <div class="sec-head">
-  <span class="sec-title">${page}</span>
+  <span class="sec-title">IVR / Auto attendant</span>
+  <div style="display:flex;align-items:center;gap:10px">
+    <span class="muted" style="font-size:11px" id="ivr-summary"></span>
+    <button class="btn btn-sm" onclick="showAdd()">+ Add IVR</button>
+  </div>
 </div>
-<div class="card">
-  <div class="empty">Page under construction. Data available via API.</div>
+
+<!-- ═══════════════════ ADD / EDIT FORM ═══════════════════ -->
+<div id="add-form" style="display:none;margin-bottom:16px" class="card">
+  <form onsubmit="save(event)">
+    <input type="hidden" id="ivr-edit-mode" value="">
+
+    <div class="grid-3" style="margin-bottom:0">
+      <div class="form-group"><label class="form-label">Number</label><input class="form-input" id="ivr-number" placeholder="800" required></div>
+      <div class="form-group"><label class="form-label">Name</label><input class="form-input" id="ivr-name" placeholder="Main Menu" required></div>
+      <div class="form-group">
+        <label class="form-label">Greeting audio</label>
+        <div style="display:flex;gap:6px">
+          <select class="form-select" id="ivr-greeting" style="flex:1"><option value="">— no greeting —</option></select>
+          <button type="button" class="btn btn-sm" onclick="document.getElementById('audio-upload').click()">Upload</button>
+          <input type="file" id="audio-upload" accept=".wav,.mp3" style="display:none" onchange="uploadAudio(this)">
+        </div>
+      </div>
+    </div>
+
+    <div class="grid-3" style="margin-bottom:0">
+      <div class="form-group"><label class="form-label">Input timeout (seconds)</label><input class="form-input" id="ivr-timeout" type="number" value="10" min="3" max="30"></div>
+      <div class="form-group"><label class="form-label">Max retries</label><input class="form-input" id="ivr-retries" type="number" value="3" min="1" max="10"></div>
+      <div class="form-group" style="display:flex;align-items:flex-end;gap:8px;padding-bottom:14px">
+        <label style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="ivr-enabled" checked> Enabled</label>
+      </div>
+    </div>
+
+    <!-- DTMF options -->
+    <div style="margin-bottom:12px">
+      <label class="form-label">DTMF options — press a digit to route the caller</label>
+      <div id="option-rows"></div>
+      <button type="button" class="btn btn-sm" onclick="addOptionRow()" style="margin-top:6px">+ Add option</button>
+    </div>
+
+    <!-- Timeout destination -->
+    <div class="grid-3" style="margin-bottom:0">
+      <div class="form-group"><label class="form-label">Timeout destination</label>
+        <select class="form-select" id="ivr-to-type" onchange="toggleToTarget()">
+          <option value="hangup">Hang up</option>
+          <option value="voicemail">Voicemail</option>
+          <option value="extension">Extension</option>
+          <option value="ringgroup">Ring group</option>
+          <option value="ivr">Another IVR</option>
+        </select>
+      </div>
+      <div class="form-group" id="ivr-to-wrap"><label class="form-label">Target</label><input class="form-input" id="ivr-to-target" placeholder="2001"></div>
+      <div class="form-group" style="display:flex;align-items:flex-end">
+        <div style="display:flex;gap:8px">
+          <button type="submit" class="btn btn-primary btn-sm" id="ivr-submit-btn">Create</button>
+          <button type="button" class="btn btn-sm" onclick="hideAdd()">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </form>
 </div>
+
+<!-- ═══════════════════ IVR LIST ═══════════════════ -->
+<div id="ivr-list"></div>
+
+<script>
+var API = '/api', KEY = '<%= apiKey %>', H = { 'X-API-Key': KEY };
+var J = { 'X-API-Key': KEY, 'Content-Type': 'application/json' };
+var audioFiles = [];
+var DIGITS = ['1','2','3','4','5','6','7','8','9','0','*','#'];
+var DEST_TYPES = [
+  { value: 'extension', label: 'Extension' },
+  { value: 'ringgroup', label: 'Ring group' },
+  { value: 'ivr', label: 'IVR' },
+  { value: 'voicemail', label: 'Voicemail' },
+  { value: 'external', label: 'External number' },
+  { value: 'hangup', label: 'Hang up' }
+];
+
+function esc(s) { if (!s) return ''; var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function showToast(msg, isError) {
+  var el = document.createElement('div');
+  el.className = 'toast ' + (isError ? 'toast-error' : 'toast-success');
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(function() { el.remove(); }, 3000);
+}
+
+function destLabel(d) {
+  if (!d || !d.type) return '<span class="muted">—</span>';
+  var cls = 'p-gray';
+  if (d.type === 'extension') cls = 'p-ok';
+  if (d.type === 'ringgroup') cls = 'p-info';
+  if (d.type === 'ivr') cls = 'p-warn';
+  if (d.type === 'voicemail') cls = 'p-vm';
+  if (d.type === 'external') cls = 'p-info';
+  if (d.type === 'hangup') cls = 'p-err';
+  var label = d.type === 'ringgroup' ? 'RG' : d.type === 'voicemail' ? 'VM' : d.type === 'external' ? 'Ext#' : d.type.charAt(0).toUpperCase() + d.type.slice(1);
+  return '<span class="pill ' + cls + '">' + label + '</span> ' + (d.type === 'hangup' ? '' : '<span class="mono">' + esc(d.target || '') + '</span>');
+}
+
+function toggleToTarget() {
+  var t = document.getElementById('ivr-to-type').value;
+  document.getElementById('ivr-to-wrap').style.display = t === 'hangup' ? 'none' : 'block';
+}
+
+// ─── Audio file management ───
+async function loadAudioFiles() {
+  try {
+    var d = await (await fetch(API + '/audio/list', { headers: H })).json();
+    audioFiles = (d.success && d.files) || [];
+    populateGreetingSelect('');
+  } catch (e) { console.error('audio list', e); }
+}
+
+function populateGreetingSelect(selected) {
+  var sel = document.getElementById('ivr-greeting');
+  sel.innerHTML = '<option value="">— no greeting —</option>';
+  audioFiles.forEach(function(f) {
+    var s = f.path === selected ? ' selected' : '';
+    sel.innerHTML += '<option value="' + esc(f.path) + '"' + s + '>' + esc(f.name) + ' (' + Math.round(f.size / 1024) + 'KB)</option>';
+  });
+}
+
+async function uploadAudio(input) {
+  if (!input.files || !input.files[0]) return;
+  var formData = new FormData();
+  formData.append('file', input.files[0]);
+  try {
+    var r = await fetch(API + '/audio/upload', { method: 'POST', headers: { 'X-API-Key': KEY }, body: formData });
+    var d = await r.json();
+    if (d.success) {
+      showToast('Audio uploaded: ' + d.originalName);
+      await loadAudioFiles();
+      document.getElementById('ivr-greeting').value = d.path;
+    } else {
+      showToast(d.error || 'Upload failed', true);
+    }
+  } catch (e) { showToast('Upload failed', true); }
+  input.value = '';
+}
+
+// ─── DTMF option rows ───
+var optionRowId = 0;
+function addOptionRow(data) {
+  var id = optionRowId++;
+  var digit = (data && data.digit) || '';
+  var destType = (data && data.destination && data.destination.type) || 'extension';
+  var destTarget = (data && data.destination && data.destination.target) || '';
+
+  var digitOpts = DIGITS.map(function(d) {
+    return '<option value="' + d + '"' + (d === digit ? ' selected' : '') + '>' + d + '</option>';
+  }).join('');
+
+  var typeOpts = DEST_TYPES.map(function(t) {
+    return '<option value="' + t.value + '"' + (t.value === destType ? ' selected' : '') + '>' + t.label + '</option>';
+  }).join('');
+
+  var html = '<div style="display:flex;gap:8px;align-items:center;margin-bottom:4px" id="opt-' + id + '">' +
+    '<select class="form-select" id="opt-digit-' + id + '" style="width:60px">' + digitOpts + '</select>' +
+    '<span class="muted" style="font-size:11px">→</span>' +
+    '<select class="form-select" id="opt-type-' + id + '" style="width:130px" onchange="toggleOptTarget(' + id + ')">' + typeOpts + '</select>' +
+    '<input class="form-input" id="opt-target-' + id + '" placeholder="2001 / 601" value="' + esc(destTarget) + '" style="width:120px;' + (destType === 'hangup' ? 'display:none' : '') + '">' +
+    '<button type="button" class="act-btn" onclick="document.getElementById(\'opt-' + id + '\').remove()">' +
+      '<svg viewBox="0 0 24 24" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
+    '</button></div>';
+  document.getElementById('option-rows').insertAdjacentHTML('beforeend', html);
+}
+
+function toggleOptTarget(id) {
+  var t = document.getElementById('opt-type-' + id).value;
+  document.getElementById('opt-target-' + id).style.display = t === 'hangup' ? 'none' : 'block';
+}
+
+function collectOptions() {
+  var rows = document.getElementById('option-rows').children;
+  var options = [];
+  for (var i = 0; i < rows.length; i++) {
+    var id = rows[i].id.replace('opt-', '');
+    var digit = document.getElementById('opt-digit-' + id).value;
+    var type = document.getElementById('opt-type-' + id).value;
+    var target = type === 'hangup' ? 'hangup' : document.getElementById('opt-target-' + id).value;
+    if (digit && type) {
+      options.push({ digit: digit, destination: { type: type, target: target } });
+    }
+  }
+  return options;
+}
+
+// ─── Form ───
+function showAdd() {
+  document.getElementById('ivr-edit-mode').value = '';
+  document.getElementById('ivr-number').value = '';
+  document.getElementById('ivr-number').disabled = false;
+  document.getElementById('ivr-name').value = '';
+  document.getElementById('ivr-greeting').value = '';
+  document.getElementById('ivr-timeout').value = '10';
+  document.getElementById('ivr-retries').value = '3';
+  document.getElementById('ivr-enabled').checked = true;
+  document.getElementById('ivr-to-type').value = 'hangup';
+  document.getElementById('ivr-to-target').value = '';
+  document.getElementById('ivr-submit-btn').textContent = 'Create';
+  document.getElementById('option-rows').innerHTML = '';
+  optionRowId = 0;
+  addOptionRow({ digit: '1', destination: { type: 'extension', target: '' } });
+  toggleToTarget();
+  document.getElementById('add-form').style.display = 'block';
+}
+
+function showEdit(ivr) {
+  document.getElementById('ivr-edit-mode').value = ivr.number;
+  document.getElementById('ivr-number').value = ivr.number;
+  document.getElementById('ivr-number').disabled = true;
+  document.getElementById('ivr-name').value = ivr.name;
+  populateGreetingSelect(ivr.greeting || '');
+  document.getElementById('ivr-timeout').value = ivr.timeout || 10;
+  document.getElementById('ivr-retries').value = ivr.maxRetries || 3;
+  document.getElementById('ivr-enabled').checked = ivr.enabled !== false;
+  document.getElementById('ivr-to-type').value = (ivr.timeoutDest && ivr.timeoutDest.type) || 'hangup';
+  document.getElementById('ivr-to-target').value = (ivr.timeoutDest && ivr.timeoutDest.target) || '';
+  document.getElementById('ivr-submit-btn').textContent = 'Update';
+  document.getElementById('option-rows').innerHTML = '';
+  optionRowId = 0;
+  if (ivr.options && ivr.options.length) {
+    ivr.options.forEach(function(o) { addOptionRow(o); });
+  } else {
+    addOptionRow();
+  }
+  toggleToTarget();
+  document.getElementById('add-form').style.display = 'block';
+}
+
+function hideAdd() { document.getElementById('add-form').style.display = 'none'; }
+
+// ─── CRUD ───
+async function load() {
+  try {
+    var d = await (await fetch(API + '/ivr', { headers: H })).json();
+    var container = document.getElementById('ivr-list');
+
+    if (!d.success || !d.ivrs || !d.ivrs.length) {
+      container.innerHTML = '<div class="card"><div class="empty">No IVRs configured</div></div>';
+      document.getElementById('ivr-summary').textContent = '';
+      return;
+    }
+
+    document.getElementById('ivr-summary').textContent = d.ivrs.length + ' IVR(s)';
+
+    container.innerHTML = d.ivrs.map(function(ivr) {
+      var greetingName = ivr.greeting ? ivr.greeting.split('/').pop() : 'none';
+
+      // Build visual DTMF map
+      var optHtml = '';
+      if (ivr.options && ivr.options.length) {
+        optHtml = '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">';
+        ivr.options.forEach(function(o) {
+          optHtml += '<div style="display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--bg-surface);border-radius:var(--radius);min-width:160px">' +
+            '<span style="font-size:16px;font-weight:700;font-family:var(--mono);width:24px;height:24px;display:flex;align-items:center;justify-content:center;background:var(--bg-card);border:0.5px solid var(--border);border-radius:4px">' + esc(o.digit) + '</span>' +
+            '<span style="font-size:11px;color:var(--text-tertiary)">→</span>' +
+            '<span style="font-size:12px">' + destLabel(o.destination) + '</span>' +
+          '</div>';
+        });
+        optHtml += '</div>';
+      }
+
+      return '<div class="card" style="margin-bottom:12px">' +
+        '<div class="card-head">' +
+          '<div style="display:flex;align-items:center;gap:10px">' +
+            '<span class="card-title">' + esc(ivr.name) + '</span>' +
+            '<span class="mono muted" style="font-size:11px">#' + esc(ivr.number) + '</span>' +
+            '<span class="pill ' + (ivr.enabled !== false ? 'p-ok' : 'p-gray') + '">' + (ivr.enabled !== false ? 'active' : 'disabled') + '</span>' +
+          '</div>' +
+          '<div style="display:flex;gap:6px">' +
+            '<button class="btn btn-sm" onclick=\'showEdit(' + JSON.stringify(ivr).replace(/'/g, "&#39;") + ')\'>Edit</button>' +
+            '<button class="btn btn-sm btn-danger" onclick="del(\'' + esc(ivr.number) + '\',\'' + esc(ivr.name) + '\')">Delete</button>' +
+          '</div>' +
+        '</div>' +
+        '<div style="display:flex;gap:20px;font-size:12px;color:var(--text-secondary);margin-bottom:4px">' +
+          '<span>Greeting: <span class="mono">' + esc(greetingName) + '</span></span>' +
+          '<span>Timeout: <span class="mono">' + (ivr.timeout || 10) + 's</span></span>' +
+          '<span>Retries: <span class="mono">' + (ivr.maxRetries || 3) + '</span></span>' +
+          '<span>On timeout: ' + destLabel(ivr.timeoutDest) + '</span>' +
+        '</div>' +
+        '<div style="font-size:11px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.4px;margin-top:10px">DTMF Map (' + (ivr.options ? ivr.options.length : 0) + ' options)</div>' +
+        optHtml +
+      '</div>';
+    }).join('');
+  } catch (e) { console.error('ivr load', e); }
+}
+
+async function save(e) {
+  e.preventDefault();
+  var editMode = document.getElementById('ivr-edit-mode').value;
+  var options = collectOptions();
+  if (!options.length) { showToast('Add at least one DTMF option', true); return; }
+
+  var toType = document.getElementById('ivr-to-type').value;
+  var body = {
+    number: document.getElementById('ivr-number').value,
+    name: document.getElementById('ivr-name').value,
+    greeting: document.getElementById('ivr-greeting').value,
+    options: options,
+    timeout: parseInt(document.getElementById('ivr-timeout').value) || 10,
+    maxRetries: parseInt(document.getElementById('ivr-retries').value) || 3,
+    enabled: document.getElementById('ivr-enabled').checked,
+    timeoutDest: {
+      type: toType,
+      target: toType === 'hangup' ? '' : document.getElementById('ivr-to-target').value
+    }
+  };
+
+  var url = editMode ? API + '/ivr/' + editMode : API + '/ivr';
+  var method = editMode ? 'PUT' : 'POST';
+  var r = await fetch(url, { method: method, headers: J, body: JSON.stringify(body) });
+  var d = await r.json();
+  if (d.success) {
+    hideAdd();
+    showToast(editMode ? 'IVR updated' : 'IVR created');
+    load();
+  } else {
+    showToast(d.error || 'Failed', true);
+  }
+}
+
+async function del(number, name) {
+  if (!confirm('Delete IVR "' + name + '" (' + number + ')?')) return;
+  await fetch(API + '/ivr/' + number, { method: 'DELETE', headers: H });
+  showToast('IVR deleted');
+  load();
+}
+
+// ─── Init ───
+loadAudioFiles().then(load);
+</script>
 <%- include('../partials/foot') %>
