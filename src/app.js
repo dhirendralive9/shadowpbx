@@ -16,6 +16,7 @@ const IvrHandler = require('./services/ivr-handler');
 const DtmfListener = require('./services/dtmf-listener');
 const MonitorHandler = require('./services/monitor-handler');
 const TimeConditionService = require('./services/time-condition');
+const PresenceHandler = require('./services/presence-handler');
 const createApiRouter = require('./routes/api');
 const { convertAllPending } = require('./utils/converter');
 
@@ -131,6 +132,9 @@ async function main() {
   const monitorHandler = new MonitorHandler(srf, rtpengine, callHandler, registrar);
   callHandler.monitorHandler = monitorHandler;
 
+  const presenceHandler = new PresenceHandler(srf, registrar, callHandler);
+  callHandler.presenceHandler = presenceHandler;
+
   // 5. Initialize trunks (register with providers)
   try {
     await trunkManager.initialize();
@@ -152,6 +156,13 @@ async function main() {
   srf.invite((req, res) => {
     callHandler.handleInvite(req, res).catch(err => {
       logger.error(`Invite error: ${err.message}`);
+      if (!res.finalResponseSent) res.send(500);
+    });
+  });
+
+  srf.subscribe((req, res) => {
+    presenceHandler.handleSubscribe(req, res).catch(err => {
+      logger.error(`Subscribe error: ${err.message}`);
       if (!res.finalResponseSent) res.send(500);
     });
   });
@@ -180,7 +191,7 @@ async function main() {
     next();
   });
 
-  app.use('/api', createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler, monitorHandler, timeConditionService));
+  app.use('/api', createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler, monitorHandler, timeConditionService, presenceHandler));
   app.get('/health', (req, res) => res.json({ status: 'ok', service: 'ShadowPBX', version: '2.0.0' }));
 
   // Web GUI routes
@@ -218,10 +229,11 @@ async function main() {
         VoicemailMessage.countDocuments({ read: false })
       ]);
 
-      // Enrich extensions with registration data
+      // Enrich extensions with registration data and BLF state
       const enrichedExts = extensions.map(e => {
         const contacts = registrar.getContactsSync ? registrar.getContactsSync(e.extension) : [];
-        return { ...e, registrations: contacts, online: contacts.length > 0 };
+        const presence = presenceHandler ? presenceHandler.getState(e.extension) : { state: 'idle' };
+        return { ...e, registrations: contacts, online: contacts.length > 0, presence: presence.state };
       });
 
       const state = {
@@ -230,7 +242,8 @@ async function main() {
         trunks,
         todayCalls,
         recentCDR,
-        unreadVM
+        unreadVM,
+        presenceStats: presenceHandler ? { subscriptions: presenceHandler.subscriptions.size } : null
       };
 
       if (target.emit) {

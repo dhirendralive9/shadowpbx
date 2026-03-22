@@ -2,7 +2,10 @@
 
 <div class="sec-head">
   <span class="sec-title">Extensions</span>
-  <button class="btn btn-sm" onclick="showAddForm()">+ Add extension</button>
+  <div style="display:flex;align-items:center;gap:10px">
+    <span class="muted" style="font-size:11px" id="ext-summary"></span>
+    <button class="btn btn-sm" onclick="showAddForm()">+ Add extension</button>
+  </div>
 </div>
 
 <div id="add-form" style="display:none; margin-bottom:16px;" class="card">
@@ -20,66 +23,131 @@
 </div>
 
 <table class="tbl">
-  <thead><tr><th>Status</th><th>Extension</th><th>Name</th><th>User agent</th><th>IP address</th><th>Expires</th><th></th></tr></thead>
+  <thead><tr><th>Status</th><th>Extension</th><th>Name</th><th>Presence</th><th>User agent</th><th>IP address</th><th>Expires</th><th></th></tr></thead>
   <tbody id="ext-body">
-    <tr><td colspan="7" class="empty">Loading...</td></tr>
+    <tr><td colspan="8" class="empty">Loading...</td></tr>
   </tbody>
 </table>
 
 <script>
-const API = '/api';
-const KEY = '<%= apiKey %>';
-const headers = { 'X-API-Key': KEY };
+var API = '/api';
+var KEY = '<%= apiKey %>';
+var headers = { 'X-API-Key': KEY };
 
 function showAddForm() { document.getElementById('add-form').style.display = 'block'; }
 function hideAddForm() { document.getElementById('add-form').style.display = 'none'; }
 
+function presencePill(p, remote) {
+  if (!p || p === 'idle') return '<span class="pill p-gray">idle</span>';
+  if (p === 'ringing') return '<span class="pill p-ring">ringing</span>' + (remote ? ' <span class="mono muted" style="font-size:10px">' + esc(remote) + '</span>' : '');
+  if (p === 'confirmed') return '<span class="pill p-ok">in call</span>' + (remote ? ' <span class="mono muted" style="font-size:10px">' + esc(remote) + '</span>' : '');
+  if (p === 'held') return '<span class="pill p-hold">on hold</span>' + (remote ? ' <span class="mono muted" style="font-size:10px">' + esc(remote) + '</span>' : '');
+  if (p === 'dnd') return '<span class="pill p-miss">DND</span>';
+  return '<span class="pill p-gray">' + esc(p) + '</span>';
+}
+
+function statusDot(reg, presence) {
+  if (!reg) return '<span class="dot dot-gray" title="Offline"></span>';
+  if (presence === 'ringing') return '<span class="dot dot-amber" title="Ringing" style="animation:pulse 0.6s infinite"></span>';
+  if (presence === 'confirmed') return '<span class="dot dot-red" title="In call"></span>';
+  if (presence === 'held') return '<span class="dot dot-blue" title="On hold"></span>';
+  if (presence === 'dnd') return '<span class="dot dot-red" title="DND"></span>';
+  return '<span class="dot dot-green" title="Available"></span>';
+}
+
+function esc(s) { if (!s) return ''; var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
 async function loadExtensions() {
-  const r = await fetch(API + '/extensions', { headers });
-  const d = await r.json();
-  if (!d.success) return;
-  const tbody = document.getElementById('ext-body');
-  if (!d.extensions.length) { tbody.innerHTML = '<tr><td colspan="7" class="empty">No extensions configured</td></tr>'; return; }
-  tbody.innerHTML = d.extensions.map(e => {
-    const reg = e.registrations && e.registrations.length > 0;
-    const r0 = reg ? e.registrations[0] : {};
-    return `<tr>
-      <td><span class="dot ${reg ? 'dot-green' : 'dot-gray'}"></span></td>
-      <td class="mono">${e.extension}</td>
-      <td>${e.name || ''}</td>
-      <td class="muted" style="font-size:11px">${r0.userAgent || '-'}</td>
-      <td class="mono" style="font-size:11px">${reg ? r0.ip + ':' + r0.port : '-'}</td>
-      <td class="muted">${r0.expires ? r0.expires + 's' : '-'}</td>
-      <td><button class="act-btn" title="Delete" onclick="deleteExt('${e._id}','${e.extension}')">
-        <svg viewBox="0 0 24 24" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
-      </button></td>
-    </tr>`;
-  }).join('');
+  try {
+    var r = await fetch(API + '/extensions', { headers: headers });
+    var d = await r.json();
+    if (!d.success) return;
+    var tbody = document.getElementById('ext-body');
+
+    if (!d.extensions.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="empty">No extensions configured</td></tr>';
+      document.getElementById('ext-summary').textContent = '';
+      return;
+    }
+
+    // Summary counts
+    var online = 0, inCall = 0;
+    d.extensions.forEach(function(e) {
+      if (e.registered) online++;
+      if (e.presence === 'confirmed' || e.presence === 'ringing' || e.presence === 'held') inCall++;
+    });
+    document.getElementById('ext-summary').textContent = online + ' online' + (inCall > 0 ? ', ' + inCall + ' in call' : '');
+
+    tbody.innerHTML = d.extensions.map(function(e) {
+      var reg = e.registered;
+      var c0 = (e.contacts && e.contacts.length > 0) ? e.contacts[0] : {};
+      var p = e.presence || 'idle';
+
+      return '<tr>' +
+        '<td>' + statusDot(reg, p) + '</td>' +
+        '<td class="mono">' + esc(e.extension) + '</td>' +
+        '<td>' + esc(e.name || '') + '</td>' +
+        '<td>' + (reg ? presencePill(p, e.presenceRemote) : '<span class="pill p-gray">offline</span>') + '</td>' +
+        '<td class="muted" style="font-size:11px">' + esc(c0.userAgent || '-') + '</td>' +
+        '<td class="mono" style="font-size:11px">' + (reg ? esc(c0.ip + ':' + c0.port) : '-') + '</td>' +
+        '<td class="muted">' + (c0.expires ? formatExpires(c0.expires) : '-') + '</td>' +
+        '<td><button class="act-btn" title="Delete" onclick="deleteExt(\'' + esc(e.extension) + '\')">' +
+          '<svg viewBox="0 0 24 24" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>' +
+        '</button></td>' +
+      '</tr>';
+    }).join('');
+  } catch (err) { console.error('ext load', err); }
+}
+
+function formatExpires(exp) {
+  if (!exp) return '-';
+  var d = new Date(exp);
+  var secs = Math.max(0, Math.round((d.getTime() - Date.now()) / 1000));
+  if (secs <= 0) return 'expired';
+  return secs + 's';
 }
 
 async function addExtension(e) {
   e.preventDefault();
-  const body = {
+  var body = {
     extension: document.getElementById('new-ext').value,
     name: document.getElementById('new-name').value,
     password: document.getElementById('new-pass').value
   };
-  await fetch(API + '/extensions', {
-    method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+  var r = await fetch(API + '/extensions', {
+    method: 'POST', headers: { 'X-API-Key': KEY, 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   });
-  hideAddForm();
+  var d = await r.json();
+  if (d.success) {
+    hideAddForm();
+    document.getElementById('new-ext').value = '';
+    document.getElementById('new-name').value = '';
+    document.getElementById('new-pass').value = '';
+    showToast('Extension created');
+  } else {
+    showToast(d.error || 'Failed', true);
+  }
   loadExtensions();
 }
 
-async function deleteExt(id, ext) {
+async function deleteExt(ext) {
   if (!confirm('Delete extension ' + ext + '?')) return;
-  await fetch(API + '/extensions/' + id, { method: 'DELETE', headers });
+  await fetch(API + '/extensions/' + ext, { method: 'DELETE', headers: headers });
+  showToast('Extension deleted');
   loadExtensions();
+}
+
+function showToast(msg, isError) {
+  var el = document.createElement('div');
+  el.className = 'toast ' + (isError ? 'toast-error' : 'toast-success');
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(function() { el.remove(); }, 3000);
 }
 
 loadExtensions();
-setInterval(loadExtensions, 10000);
+setInterval(loadExtensions, 3000);
 </script>
 
 <%- include('../partials/foot') %>

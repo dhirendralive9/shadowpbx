@@ -18,10 +18,18 @@ class CallHandler {
     this.parkHandler = null;     // set after construction
     this.voicemailHandler = null; // set after construction
     this.ivrHandler = null;       // set after construction
+    this.presenceHandler = null;  // set after construction (BLF/presence)
     this.rtpengineConfig = {
       host: process.env.RTPENGINE_HOST || '127.0.0.1',
       port: parseInt(process.env.RTPENGINE_PORT) || 22222
     };
+  }
+
+  // BLF state change helper — safe to call even if presence is not wired
+  _emitPresence(ext, state, meta) {
+    if (this.presenceHandler && ext) {
+      try { this.presenceHandler.setState(ext, state, meta); } catch (e) {}
+    }
   }
 
   // Extract extension number from a SIP URI, handling various formats
@@ -118,6 +126,10 @@ class CallHandler {
 
     const cdr = await this._createCDR(fromExt, toExt, 'internal', callId, req.source_address);
 
+    // BLF: both parties ringing
+    this._emitPresence(fromExt, 'ringing', { callId, remoteParty: toExt, direction: 'initiator' });
+    this._emitPresence(toExt, 'ringing', { callId, remoteParty: fromExt, direction: 'recipient' });
+
     try {
       const contact = this._getLatestContact(calleeContacts);
       const targetUri = `sip:${toExt}@${contact.ip}:${contact.port}`;
@@ -141,8 +153,16 @@ class CallHandler {
       cdr.recorded = !!rtpOffer;
       await cdr.save();
       logger.info(`CALL ANSWERED ${fromExt} -> ${toExt} [${callId}]`);
+
+      // BLF: both parties in call
+      this._emitPresence(fromExt, 'confirmed', { callId, remoteParty: toExt, direction: 'initiator' });
+      this._emitPresence(toExt, 'confirmed', { callId, remoteParty: fromExt, direction: 'recipient' });
+
       this._trackCall(callId, uas, uac, cdr, fromExt, toExt, from.params.tag);
     } catch (err) {
+      // BLF: call failed, both go idle
+      this._emitPresence(fromExt, 'idle');
+      this._emitPresence(toExt, 'idle');
       await this._failCall(cdr, err, fromExt, toExt);
     }
   }
@@ -212,6 +232,9 @@ class CallHandler {
         return res.send(480);
       }
 
+      // BLF: target extension is ringing
+      this._emitPresence(target, 'ringing', { callId, remoteParty: callerID, direction: 'recipient' });
+
       const contact = this._getLatestContact(contacts);
       const targetUri = `sip:${target}@${contact.ip}:${contact.port}`;
       logger.info(`INBOUND: dialing ${target} at ${contact.ip}:${contact.port}`);
@@ -228,6 +251,9 @@ class CallHandler {
         await cdr.save();
         logger.info(`INBOUND ANSWERED: ${callerID} -> ${target} [${callId}]`);
 
+        // BLF: target extension is in call
+        this._emitPresence(target, 'confirmed', { callId, remoteParty: callerID, direction: 'recipient' });
+
         // Track the call
         this.activeCalls.set(callId, { uas, uac, cdr, fromExt: callerID, toExt: target });
         const onDestroy = async (hangupBy) => {
@@ -238,6 +264,8 @@ class CallHandler {
         uac.on('destroy', () => { uas.destroy(); onDestroy('callee'); });
       } catch (err) {
         logger.error(`INBOUND DIAL FAILED: ${target} error=${err.message} status=${err.status}`);
+        // BLF: target goes idle on failure
+        this._emitPresence(target, 'idle');
         // On no-answer/timeout/busy → try voicemail
         if (this.voicemailHandler && !res.finalResponseSent) {
           const handled = await this.voicemailHandler.handleVoicemail(req, res, callerID, target, cdr);
@@ -364,14 +392,23 @@ class CallHandler {
     cdr.trunkUsed = route.trunk;
     await cdr.save();
 
+    // BLF: caller is ringing outbound
+    this._emitPresence(fromExt, 'ringing', { callId, remoteParty: dialedNumber, direction: 'initiator' });
+
     try {
       const { uas, uac } = await this.trunkManager.sendOutbound(req, res, trunk, processedNumber, callerId);
       cdr.status = 'answered';
       cdr.answerTime = new Date();
       await cdr.save();
       logger.info(`OUTBOUND ANSWERED: ${fromExt} -> ${processedNumber} via ${route.trunk} [${callId}]`);
+
+      // BLF: caller is in call
+      this._emitPresence(fromExt, 'confirmed', { callId, remoteParty: dialedNumber, direction: 'initiator' });
+
       this._trackCall(callId, uas, uac, cdr, fromExt, dialedNumber, null);
     } catch (err) {
+      // BLF: caller goes idle on failure
+      this._emitPresence(fromExt, 'idle');
       await this._failCall(cdr, err, fromExt, dialedNumber);
     }
   }
@@ -428,6 +465,10 @@ class CallHandler {
     cdr.hangupCause = 'normal_clearing';
     await cdr.save();
     logger.info(`CALL ENDED ${cdr.from} -> ${cdr.to} duration=${cdr.talkTime}s hangup=${hangupBy}`);
+
+    // BLF: both parties go idle
+    this._emitPresence(cdr.from, 'idle');
+    this._emitPresence(cdr.to, 'idle');
   }
 
   async _failCall(cdr, err, from, to) {

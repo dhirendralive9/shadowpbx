@@ -2,7 +2,7 @@ const express = require('express');
 const { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, CDR } = require('../models');
 const logger = require('../utils/logger');
 
-function createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler, monitorHandler, timeConditionService) {
+function createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler, monitorHandler, timeConditionService, presenceHandler) {
   const router = express.Router();
 
   // ============================================================
@@ -11,12 +11,18 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   router.get('/extensions', async (req, res) => {
     try {
       const extensions = await Extension.find({}, '-password').sort('extension');
-      const result = extensions.map(ext => ({
-        extension: ext.extension, name: ext.name, email: ext.email,
-        enabled: ext.enabled, registered: ext.isRegistered(),
-        contacts: ext.getActiveContacts().map(c => ({ ip: c.ip, port: c.port, userAgent: c.userAgent, expires: c.expires })),
-        createdAt: ext.createdAt
-      }));
+      const result = extensions.map(ext => {
+        const presence = presenceHandler ? presenceHandler.getState(ext.extension) : { state: 'idle' };
+        return {
+          extension: ext.extension, name: ext.name, email: ext.email,
+          enabled: ext.enabled, registered: ext.isRegistered(),
+          contacts: ext.getActiveContacts().map(c => ({ ip: c.ip, port: c.port, userAgent: c.userAgent, expires: c.expires })),
+          presence: presence.state || 'idle',
+          presenceRemote: presence.remoteParty || null,
+          presenceSince: presence.since || null,
+          createdAt: ext.createdAt
+        };
+      });
       res.json({ success: true, extensions: result });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
@@ -473,6 +479,25 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
     try {
       if (!monitorHandler) return res.json({ success: true, monitors: [] });
       res.json({ success: true, monitors: monitorHandler.getActiveMonitors() });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // ============================================================
+  // BLF / Presence
+  // ============================================================
+  router.get('/presence', async (req, res) => {
+    try {
+      if (!presenceHandler) return res.json({ success: true, states: {}, totalSubscriptions: 0, monitoredExtensions: 0 });
+      const stats = presenceHandler.getStats();
+      res.json({ success: true, ...stats });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.get('/presence/:ext', async (req, res) => {
+    try {
+      if (!presenceHandler) return res.json({ success: true, state: 'idle' });
+      const state = presenceHandler.getState(req.params.ext);
+      res.json({ success: true, extension: req.params.ext, ...state });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
 

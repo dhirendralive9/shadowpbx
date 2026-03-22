@@ -121,9 +121,26 @@ class HoldHandler {
       if (isHold) {
         this.holdState.set(callId, { held: true, heldBy: initiatedBy, mohPlaying: false });
         await this._startMoh(callId, cdr, initiatedBy);
+        // BLF: emit held state for the extension that was put on hold
+        if (this.callHandler && this.callHandler.presenceHandler) {
+          const call = this.callHandler.activeCalls.get(callId);
+          if (call) {
+            const heldExt = initiatedBy === 'caller' ? call.toExt : call.fromExt;
+            const holderExt = initiatedBy === 'caller' ? call.fromExt : call.toExt;
+            this.callHandler._emitPresence(heldExt, 'held', { callId, remoteParty: holderExt });
+          }
+        }
       } else if (isResume) {
         await this._stopMoh(callId, cdr);
         this.holdState.delete(callId);
+        // BLF: emit confirmed (back in call) for the extension that was resumed
+        if (this.callHandler && this.callHandler.presenceHandler) {
+          const call = this.callHandler.activeCalls.get(callId);
+          if (call) {
+            this.callHandler._emitPresence(call.fromExt, 'confirmed', { callId, remoteParty: call.toExt });
+            this.callHandler._emitPresence(call.toExt, 'confirmed', { callId, remoteParty: call.fromExt });
+          }
+        }
       }
 
     } catch (err) {
