@@ -11,14 +11,38 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   router.get('/extensions', async (req, res) => {
     try {
       const extensions = await Extension.find({}, '-password').sort('extension');
+
+      // Build a map of extensions currently in active calls for fallback
+      const activeCallMap = {};
+      if (callHandler && callHandler.activeCalls) {
+        for (const [id, call] of callHandler.activeCalls) {
+          const holdState = callHandler.holdHandler ? callHandler.holdHandler.holdState.get(id) : null;
+          const isHeld = holdState && holdState.held;
+          const fromExt = call.fromExt || (call.cdr && call.cdr.from);
+          const toExt = call.toExt || (call.cdr && call.cdr.to);
+          if (fromExt) activeCallMap[fromExt] = { state: isHeld ? 'held' : 'confirmed', remoteParty: toExt, callId: id };
+          if (toExt) activeCallMap[toExt] = { state: isHeld ? 'held' : 'confirmed', remoteParty: fromExt, callId: id };
+        }
+      }
+
       const result = extensions.map(ext => {
-        const presence = presenceHandler ? presenceHandler.getState(ext.extension) : { state: 'idle' };
+        // Get presence from handler first, then fallback to active calls map
+        let presence = presenceHandler ? presenceHandler.getState(ext.extension) : { state: 'idle' };
+        let pState = presence.state || 'idle';
+        let pRemote = presence.remoteParty || null;
+
+        // Fallback: if presence says idle but activeCalls shows this ext in a call
+        if (pState === 'idle' && activeCallMap[ext.extension]) {
+          pState = activeCallMap[ext.extension].state;
+          pRemote = activeCallMap[ext.extension].remoteParty;
+        }
+
         return {
           extension: ext.extension, name: ext.name, email: ext.email,
           enabled: ext.enabled, registered: ext.isRegistered(),
           contacts: ext.getActiveContacts().map(c => ({ ip: c.ip, port: c.port, userAgent: c.userAgent, expires: c.expires })),
-          presence: presence.state || 'idle',
-          presenceRemote: presence.remoteParty || null,
+          presence: pState,
+          presenceRemote: pRemote,
           presenceSince: presence.since || null,
           createdAt: ext.createdAt
         };

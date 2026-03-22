@@ -171,6 +171,12 @@ class CallHandler {
     logger.info(`CALL ${fromExt} -> RG:${ringGroup.number} (${ringGroup.name}) [${callId}]`);
     const cdr = await this._createCDR(fromExt, `RG:${ringGroup.number}`, 'internal', callId, req.source_address);
 
+    // BLF: caller is ringing, all ring group members are ringing
+    this._emitPresence(fromExt, 'ringing', { callId, remoteParty: 'RG:' + ringGroup.number, direction: 'initiator' });
+    if (ringGroup.members) {
+      ringGroup.members.forEach(m => this._emitPresence(m, 'ringing', { callId, remoteParty: fromExt, direction: 'recipient' }));
+    }
+
     try {
       const result = await this.ringGroupHandler.ringGroup(req, res, ringGroup, cdr);
       if (result && result.uas && result.uac) {
@@ -178,15 +184,34 @@ class CallHandler {
         cdr.answerTime = new Date();
         if (result.answeredBy) cdr.to = result.answeredBy;
         await cdr.save();
+
+        // BLF: caller + answerer in call, other members go idle
+        this._emitPresence(fromExt, 'confirmed', { callId, remoteParty: result.answeredBy || ringGroup.number, direction: 'initiator' });
+        if (ringGroup.members) {
+          ringGroup.members.forEach(m => {
+            if (m === result.answeredBy) {
+              this._emitPresence(m, 'confirmed', { callId, remoteParty: fromExt, direction: 'recipient' });
+            } else {
+              this._emitPresence(m, 'idle');
+            }
+          });
+        }
+
         const onDestroy = async (hangupBy) => {
           await this._endCall(cdr, hangupBy);
           this.activeCalls.delete(callId);
         };
         result.uas.on('destroy', () => { result.uac.destroy(); onDestroy('caller'); });
         result.uac.on('destroy', () => { result.uas.destroy(); onDestroy('callee'); });
-        this.activeCalls.set(callId, { uas: result.uas, uac: result.uac, cdr, fromExt });
+        this.activeCalls.set(callId, { uas: result.uas, uac: result.uac, cdr, fromExt, toExt: result.answeredBy });
+      } else {
+        // Nobody answered — everyone goes idle
+        this._emitPresence(fromExt, 'idle');
+        if (ringGroup.members) ringGroup.members.forEach(m => this._emitPresence(m, 'idle'));
       }
     } catch (err) {
+      this._emitPresence(fromExt, 'idle');
+      if (ringGroup.members) ringGroup.members.forEach(m => this._emitPresence(m, 'idle'));
       await this._failCall(cdr, err, fromExt, `RG:${ringGroup.number}`);
     }
   }
@@ -281,6 +306,11 @@ class CallHandler {
         return res.send(404);
       }
 
+      // BLF: all ring group members ringing
+      if (ringGroup.members) {
+        ringGroup.members.forEach(m => this._emitPresence(m, 'ringing', { callId, remoteParty: callerID, direction: 'recipient' }));
+      }
+
       try {
         const result = await this.ringGroupHandler.ringGroup(req, res, ringGroup, cdr);
         if (result && result.uas && result.uac) {
@@ -289,6 +319,17 @@ class CallHandler {
           if (result.answeredBy) cdr.to = result.answeredBy;
           await cdr.save();
           logger.info(`INBOUND ANSWERED via RG: ${callerID} -> ${result.answeredBy || target} [${callId}]`);
+
+          // BLF: answerer in call, others idle
+          if (ringGroup.members) {
+            ringGroup.members.forEach(m => {
+              if (m === result.answeredBy) {
+                this._emitPresence(m, 'confirmed', { callId, remoteParty: callerID, direction: 'recipient' });
+              } else {
+                this._emitPresence(m, 'idle');
+              }
+            });
+          }
 
           // Get the RTPEngine call-id and from-tag stored by the ring group
           const rtpCallId = result.uas._rtpCallId || null;
@@ -318,7 +359,8 @@ class CallHandler {
           result.uac.on('destroy', () => { result.uas.destroy(); onDestroy('callee'); });
           this.activeCalls.set(callId, { uas: result.uas, uac: result.uac, cdr, fromExt: callerID, toExt: result.answeredBy });
         } else {
-          // Ring group returned null — nobody answered → try voicemail
+          // Ring group returned null — nobody answered → all idle
+          if (ringGroup.members) ringGroup.members.forEach(m => this._emitPresence(m, 'idle'));
           // Use first ring group member as voicemail target
           const vmTarget = ringGroup.members && ringGroup.members[0] ? ringGroup.members[0] : target;
           if (this.voicemailHandler && !res.finalResponseSent) {
@@ -328,6 +370,8 @@ class CallHandler {
           }
         }
       } catch (err) {
+        // Ring group threw an error → all idle
+        if (ringGroup.members) ringGroup.members.forEach(m => this._emitPresence(m, 'idle'));
         // Ring group threw an error → try voicemail
         const vmTarget = ringGroup.members && ringGroup.members[0] ? ringGroup.members[0] : target;
         if (this.voicemailHandler && !res.finalResponseSent) {
