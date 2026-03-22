@@ -1,8 +1,320 @@
-<%- include('../partials/head', { title: '${page}', active: '${page}' }) %>
+<%- include('../partials/head', { title: 'Ring Groups', active: 'ringgroups' }) %>
+
 <div class="sec-head">
-  <span class="sec-title">${page}</span>
+  <span class="sec-title">Ring groups</span>
+  <div style="display:flex;align-items:center;gap:10px">
+    <span class="muted" style="font-size:11px" id="rg-summary"></span>
+    <button class="btn btn-sm" onclick="showAdd()">+ Add ring group</button>
+  </div>
 </div>
-<div class="card">
-  <div class="empty">Page under construction. Data available via API.</div>
+
+<!-- ═══════════════════ ADD / EDIT FORM ═══════════════════ -->
+<div id="add-form" style="display:none;margin-bottom:16px" class="card">
+  <form onsubmit="save(event)">
+    <input type="hidden" id="rg-edit-mode" value="">
+
+    <div class="grid-3" style="margin-bottom:0">
+      <div class="form-group"><label class="form-label">Number</label><input class="form-input" id="rg-number" placeholder="601" required></div>
+      <div class="form-group"><label class="form-label">Name</label><input class="form-input" id="rg-name" placeholder="Sales Team" required></div>
+      <div class="form-group"><label class="form-label">Strategy</label>
+        <select class="form-select" id="rg-strategy">
+          <option value="ringall">Ring all (simultaneous)</option>
+          <option value="sequential">Sequential (in order)</option>
+          <option value="roundrobin">Round robin</option>
+          <option value="random">Random</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="grid-3" style="margin-bottom:0">
+      <div class="form-group"><label class="form-label">Ring time (seconds)</label><input class="form-input" id="rg-ringtime" type="number" value="30" min="5" max="120"></div>
+      <div class="form-group"><label class="form-label">Caller ID prefix</label><input class="form-input" id="rg-cidprefix" placeholder="e.g. SALES:"></div>
+      <div class="form-group" style="display:flex;align-items:flex-end;gap:16px;padding-bottom:14px">
+        <label style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="rg-sticky"> Sticky agent</label>
+      </div>
+    </div>
+
+    <!-- Members -->
+    <div style="margin-bottom:12px">
+      <label class="form-label">Members (extensions)</label>
+      <div id="member-rows"></div>
+      <div style="display:flex;gap:8px;margin-top:6px">
+        <button type="button" class="btn btn-sm" onclick="addMemberRow()">+ Add member</button>
+        <button type="button" class="btn btn-sm" onclick="addFromExtensions()" style="font-size:11px">Add all registered</button>
+      </div>
+    </div>
+
+    <!-- No-answer destination -->
+    <div class="grid-3" style="margin-bottom:0">
+      <div class="form-group"><label class="form-label">No-answer destination</label>
+        <select class="form-select" id="rg-nadest-type" onchange="toggleNaTarget()">
+          <option value="hangup">Hang up</option>
+          <option value="voicemail">Voicemail</option>
+          <option value="extension">Extension</option>
+          <option value="ringgroup">Ring group</option>
+        </select>
+      </div>
+      <div class="form-group" id="rg-nadest-wrap"><label class="form-label">Target</label><input class="form-input" id="rg-nadest-target" placeholder="2001"></div>
+      <div class="form-group" style="display:flex;align-items:flex-end">
+        <div style="display:flex;gap:8px">
+          <button type="submit" class="btn btn-primary btn-sm" id="rg-submit-btn">Create</button>
+          <button type="button" class="btn btn-sm" onclick="hideAdd()">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </form>
 </div>
+
+<!-- ═══════════════════ RING GROUPS LIST ═══════════════════ -->
+<div id="rg-list"></div>
+
+<script>
+var API = '/api', KEY = '<%= apiKey %>', H = { 'X-API-Key': KEY };
+var J = { 'X-API-Key': KEY, 'Content-Type': 'application/json' };
+var allExtensions = [];
+
+// ─── Member row management ───
+var memberRowId = 0;
+function addMemberRow(ext) {
+  var id = memberRowId++;
+  var val = ext || '';
+  var html = '<div style="display:flex;gap:8px;align-items:center;margin-bottom:4px" id="mr-' + id + '">' +
+    '<input class="form-input" id="mr-ext-' + id + '" placeholder="2001" value="' + esc(val) + '" style="width:140px">' +
+    '<span class="muted" style="font-size:11px" id="mr-name-' + id + '"></span>' +
+    '<div style="flex:1"></div>' +
+    '<button type="button" class="act-btn" onclick="document.getElementById(\'mr-' + id + '\').remove()">' +
+      '<svg viewBox="0 0 24 24" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
+    '</button></div>';
+  document.getElementById('member-rows').insertAdjacentHTML('beforeend', html);
+  // Try to resolve name
+  if (val) resolveName(id, val);
+  // Auto-resolve on blur
+  var input = document.getElementById('mr-ext-' + id);
+  if (input) input.addEventListener('blur', function() { resolveName(id, this.value); });
+}
+
+function resolveName(rowId, ext) {
+  var label = document.getElementById('mr-name-' + rowId);
+  if (!label || !ext) { if (label) label.textContent = ''; return; }
+  var found = allExtensions.find(function(e) { return e.extension === ext; });
+  if (found) {
+    label.textContent = found.name + (found.registered ? '' : ' (offline)');
+    label.style.color = found.registered ? 'var(--green)' : 'var(--text-tertiary)';
+  } else {
+    label.textContent = 'not found';
+    label.style.color = 'var(--red)';
+  }
+}
+
+function collectMembers() {
+  var rows = document.getElementById('member-rows').children;
+  var members = [];
+  for (var i = 0; i < rows.length; i++) {
+    var id = rows[i].id.replace('mr-', '');
+    var input = document.getElementById('mr-ext-' + id);
+    if (input && input.value.trim() && members.indexOf(input.value.trim()) === -1) {
+      members.push(input.value.trim());
+    }
+  }
+  return members;
+}
+
+function addFromExtensions() {
+  var current = collectMembers();
+  allExtensions.forEach(function(e) {
+    if (e.registered && current.indexOf(e.extension) === -1) {
+      addMemberRow(e.extension);
+    }
+  });
+}
+
+// ─── Helpers ───
+function esc(s) { if (!s) return ''; var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+function strategyLabel(s) {
+  if (s === 'ringall' || s === 'simultaneously') return 'Ring all';
+  if (s === 'sequential' || s === 'orderby') return 'Sequential';
+  if (s === 'roundrobin') return 'Round robin';
+  if (s === 'random') return 'Random';
+  return s;
+}
+
+function destLabel(d) {
+  if (!d || !d.type || d.type === 'hangup') return '<span class="muted">hang up</span>';
+  var cls = d.type === 'voicemail' ? 'p-warn' : d.type === 'extension' ? 'p-ok' : 'p-info';
+  var label = d.type === 'voicemail' ? 'VM' : d.type === 'ringgroup' ? 'RG' : 'Ext';
+  return '<span class="pill ' + cls + '">' + label + '</span> <span class="mono">' + esc(d.target || '') + '</span>';
+}
+
+function toggleNaTarget() {
+  var t = document.getElementById('rg-nadest-type').value;
+  document.getElementById('rg-nadest-wrap').style.display = t === 'hangup' ? 'none' : 'block';
+}
+
+function showToast(msg, isError) {
+  var el = document.createElement('div');
+  el.className = 'toast ' + (isError ? 'toast-error' : 'toast-success');
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(function() { el.remove(); }, 3000);
+}
+
+// ─── Load extensions for name resolution ───
+async function loadExtensionsList() {
+  try {
+    var d = await (await fetch(API + '/extensions', { headers: H })).json();
+    if (d.success) allExtensions = d.extensions;
+  } catch (e) {}
+}
+
+// ─── Form show/hide ───
+function showAdd() {
+  document.getElementById('rg-edit-mode').value = '';
+  document.getElementById('rg-number').value = '';
+  document.getElementById('rg-number').disabled = false;
+  document.getElementById('rg-name').value = '';
+  document.getElementById('rg-strategy').value = 'ringall';
+  document.getElementById('rg-ringtime').value = '30';
+  document.getElementById('rg-cidprefix').value = '';
+  document.getElementById('rg-sticky').checked = false;
+  document.getElementById('rg-nadest-type').value = 'hangup';
+  document.getElementById('rg-nadest-target').value = '';
+  document.getElementById('rg-submit-btn').textContent = 'Create';
+  document.getElementById('member-rows').innerHTML = '';
+  memberRowId = 0;
+  addMemberRow();
+  toggleNaTarget();
+  document.getElementById('add-form').style.display = 'block';
+}
+
+function showEdit(rg) {
+  document.getElementById('rg-edit-mode').value = rg.number;
+  document.getElementById('rg-number').value = rg.number;
+  document.getElementById('rg-number').disabled = true;
+  document.getElementById('rg-name').value = rg.name;
+  var strat = rg.strategy || 'ringall';
+  if (strat === 'simultaneously') strat = 'ringall';
+  if (strat === 'orderby') strat = 'sequential';
+  document.getElementById('rg-strategy').value = strat;
+  document.getElementById('rg-ringtime').value = rg.ringTime || 30;
+  document.getElementById('rg-cidprefix').value = rg.callerIdPrefix || '';
+  document.getElementById('rg-sticky').checked = !!rg.stickyAgent;
+  document.getElementById('rg-nadest-type').value = (rg.noAnswerDest && rg.noAnswerDest.type) || 'hangup';
+  document.getElementById('rg-nadest-target').value = (rg.noAnswerDest && rg.noAnswerDest.target) || '';
+  document.getElementById('rg-submit-btn').textContent = 'Update';
+  document.getElementById('member-rows').innerHTML = '';
+  memberRowId = 0;
+  if (rg.members && rg.members.length) {
+    rg.members.forEach(function(m) { addMemberRow(m); });
+  } else {
+    addMemberRow();
+  }
+  toggleNaTarget();
+  document.getElementById('add-form').style.display = 'block';
+}
+
+function hideAdd() { document.getElementById('add-form').style.display = 'none'; }
+
+// ─── CRUD ───
+async function load() {
+  try {
+    var d = await (await fetch(API + '/ringgroups', { headers: H })).json();
+    var container = document.getElementById('rg-list');
+
+    if (!d.success || !d.ringgroups || !d.ringgroups.length) {
+      container.innerHTML = '<div class="card"><div class="empty">No ring groups configured</div></div>';
+      document.getElementById('rg-summary').textContent = '';
+      return;
+    }
+
+    document.getElementById('rg-summary').textContent = d.ringgroups.length + ' group(s)';
+
+    container.innerHTML = d.ringgroups.map(function(rg) {
+      // Build member pills with online/offline status
+      var memberPills = (rg.members || []).map(function(m) {
+        var ext = allExtensions.find(function(e) { return e.extension === m; });
+        var online = ext && ext.registered;
+        var name = ext ? ext.name : m;
+        var presence = ext ? (ext.presence || 'idle') : 'offline';
+        var dotCls = !online ? 'dot-gray' : (presence === 'confirmed' ? 'dot-red' : presence === 'ringing' ? 'dot-amber' : 'dot-green');
+        return '<span style="display:inline-flex;align-items:center;gap:4px;padding:3px 8px;background:var(--bg-surface);border-radius:4px;font-size:12px;margin:2px">' +
+          '<span class="dot ' + dotCls + '" style="width:6px;height:6px"></span>' +
+          '<span class="mono">' + esc(m) + '</span>' +
+          '<span class="muted" style="font-size:10px">' + esc(name !== m ? name : '') + '</span>' +
+        '</span>';
+      }).join(' ');
+
+      return '<div class="card" style="margin-bottom:12px">' +
+        '<div class="card-head">' +
+          '<div style="display:flex;align-items:center;gap:10px">' +
+            '<span class="card-title">' + esc(rg.name) + '</span>' +
+            '<span class="mono muted" style="font-size:11px">#' + esc(rg.number) + '</span>' +
+            '<span class="pill p-info">' + strategyLabel(rg.strategy) + '</span>' +
+            '<span class="muted" style="font-size:11px">' + esc(String(rg.ringTime || 30)) + 's ring</span>' +
+            (rg.callerIdPrefix ? '<span class="pill p-gray">' + esc(rg.callerIdPrefix) + '</span>' : '') +
+            (rg.stickyAgent ? '<span class="pill p-warn">sticky</span>' : '') +
+          '</div>' +
+          '<div style="display:flex;gap:6px">' +
+            '<button class="btn btn-sm" onclick=\'showEdit(' + JSON.stringify(rg).replace(/'/g, "&#39;") + ')\'>Edit</button>' +
+            '<button class="btn btn-sm btn-danger" onclick="del(\'' + esc(rg.number) + '\',\'' + esc(rg.name) + '\')">Delete</button>' +
+          '</div>' +
+        '</div>' +
+        '<div style="margin-top:4px">' +
+          '<div style="font-size:11px;color:var(--text-tertiary);margin-bottom:4px">MEMBERS (' + (rg.members || []).length + ')</div>' +
+          '<div style="display:flex;flex-wrap:wrap;gap:0">' + (memberPills || '<span class="muted">none</span>') + '</div>' +
+        '</div>' +
+        '<div style="margin-top:10px;font-size:11px;color:var(--text-tertiary)">' +
+          'No answer: ' + destLabel(rg.noAnswerDest) +
+        '</div>' +
+      '</div>';
+    }).join('');
+
+  } catch (e) { console.error('rg load', e); }
+}
+
+async function save(e) {
+  e.preventDefault();
+  var editMode = document.getElementById('rg-edit-mode').value;
+  var members = collectMembers();
+  if (!members.length) { showToast('Add at least one member', true); return; }
+
+  var naType = document.getElementById('rg-nadest-type').value;
+  var body = {
+    number: document.getElementById('rg-number').value,
+    name: document.getElementById('rg-name').value,
+    strategy: document.getElementById('rg-strategy').value,
+    members: members,
+    ringTime: parseInt(document.getElementById('rg-ringtime').value) || 30,
+    callerIdPrefix: document.getElementById('rg-cidprefix').value,
+    stickyAgent: document.getElementById('rg-sticky').checked,
+    noAnswerDest: {
+      type: naType,
+      target: naType === 'hangup' ? '' : document.getElementById('rg-nadest-target').value
+    }
+  };
+
+  var url = editMode ? API + '/ringgroups/' + editMode : API + '/ringgroups';
+  var method = editMode ? 'PUT' : 'POST';
+  var r = await fetch(url, { method: method, headers: J, body: JSON.stringify(body) });
+  var d = await r.json();
+  if (d.success) {
+    hideAdd();
+    showToast(editMode ? 'Ring group updated' : 'Ring group created');
+    load();
+  } else {
+    showToast(d.error || 'Failed', true);
+  }
+}
+
+async function del(number, name) {
+  if (!confirm('Delete ring group "' + name + '" (' + number + ')?')) return;
+  await fetch(API + '/ringgroups/' + number, { method: 'DELETE', headers: H });
+  showToast('Ring group deleted');
+  load();
+}
+
+// ─── Init ───
+loadExtensionsList().then(function() { load(); });
+setInterval(function() { loadExtensionsList().then(load); }, 10000);
+</script>
 <%- include('../partials/foot') %>
