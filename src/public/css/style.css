@@ -69,7 +69,11 @@ a:hover { text-decoration: underline; }
 .header {
   display: flex; align-items: center; gap: 12px;
   padding: 16px 0; border-bottom: 0.5px solid var(--border);
-  margin-bottom: 20px;
+}
+.header-wrap {
+  position: sticky; top: 0; z-index: 50;
+  background: var(--bg-page);
+  margin: 0 -24px; padding: 0 24px;
 }
 .brand { display: flex; align-items: center; gap: 8px; }
 .brand-mark { width: 6px; height: 22px; background: var(--accent); border-radius: 2px; }
@@ -99,13 +103,22 @@ a:hover { text-decoration: underline; }
   margin-left: 8px; cursor: pointer;
 }
 .header-logout:hover { color: var(--red); }
+.header-gh {
+  display: inline-flex; align-items: center;
+  margin-left: 8px; color: var(--text-tertiary);
+  transition: color 0.15s;
+}
+.header-gh:hover { color: var(--text-primary); text-decoration: none; }
+.header-gh svg { width: 16px; height: 16px; }
 
 /* Tabs */
 .tabs {
   display: flex; gap: 0;
   border-bottom: 0.5px solid var(--border);
-  margin-bottom: 20px; overflow-x: auto;
+  margin-bottom: 0; overflow-x: auto;
+  padding-bottom: 0;
 }
+.header-wrap + main { padding-top: 20px; }
 .tab {
   padding: 10px 14px; font-size: 13px;
   color: var(--text-tertiary); cursor: pointer;

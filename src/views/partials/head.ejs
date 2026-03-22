@@ -10,8 +10,10 @@
 <body>
   <% if (typeof noLayout === 'undefined' || !noLayout) { %>
   <div class="layout">
-    <%- include('header') %>
-    <%- include('tabs', { active: typeof active !== 'undefined' ? active : 'dashboard', role: typeof role !== 'undefined' ? role : 'admin' }) %>
+    <div class="header-wrap">
+      <%- include('header') %>
+      <%- include('tabs', { active: typeof active !== 'undefined' ? active : 'dashboard', role: typeof role !== 'undefined' ? role : 'admin' }) %>
+    </div>
     <main>
 </head>
 <% } %>
