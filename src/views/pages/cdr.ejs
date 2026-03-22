@@ -1,10 +1,15 @@
 <%- include('../partials/head', { title: 'Call history', active: 'cdr' }) %>
 <div class="sec-head">
   <span class="sec-title">Call detail records</span>
+  <button class="btn btn-sm" onclick="exportCSV()" title="Export filtered results as CSV">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px;margin-right:4px"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Export CSV
+  </button>
 </div>
-<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">
-  <input class="form-input" style="max-width:200px" id="search" placeholder="Search caller/ext...">
-  <select class="form-select" style="max-width:140px" id="filter-status">
+
+<!-- Filters row 1: search + status + direction -->
+<div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;align-items:center">
+  <input class="form-input" style="max-width:180px" id="search" placeholder="Search caller/ext...">
+  <select class="form-select" style="max-width:130px" id="filter-status">
     <option value="">All statuses</option>
     <option value="answered">Answered</option>
     <option value="completed">Completed</option>
@@ -12,14 +17,31 @@
     <option value="voicemail">Voicemail</option>
     <option value="failed">Failed</option>
   </select>
-  <select class="form-select" style="max-width:140px" id="filter-dir">
+  <select class="form-select" style="max-width:130px" id="filter-dir">
     <option value="">All directions</option>
     <option value="inbound">Inbound</option>
     <option value="outbound">Outbound</option>
     <option value="internal">Internal</option>
   </select>
-  <button class="btn btn-sm" onclick="loadCDR()">Search</button>
+  <button class="btn btn-primary btn-sm" onclick="page=1;loadCDR()">Search</button>
 </div>
+
+<!-- Filters row 2: date presets + custom range -->
+<div style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap;align-items:center">
+  <span class="muted" style="font-size:11px;margin-right:4px">Period:</span>
+  <button class="btn btn-sm date-preset active" data-preset="today" onclick="setPreset('today')">Today</button>
+  <button class="btn btn-sm date-preset" data-preset="yesterday" onclick="setPreset('yesterday')">Yesterday</button>
+  <button class="btn btn-sm date-preset" data-preset="week" onclick="setPreset('week')">This week</button>
+  <button class="btn btn-sm date-preset" data-preset="lastweek" onclick="setPreset('lastweek')">Last week</button>
+  <button class="btn btn-sm date-preset" data-preset="month" onclick="setPreset('month')">This month</button>
+  <button class="btn btn-sm date-preset" data-preset="lastmonth" onclick="setPreset('lastmonth')">Last month</button>
+  <button class="btn btn-sm date-preset" data-preset="all" onclick="setPreset('all')">All time</button>
+  <span style="border-left:0.5px solid var(--border);height:20px;margin:0 6px"></span>
+  <input type="date" class="form-input" style="max-width:140px;padding:5px 8px;font-size:12px" id="date-from" onchange="setPreset('custom')">
+  <span class="muted" style="font-size:11px">to</span>
+  <input type="date" class="form-input" style="max-width:140px;padding:5px 8px;font-size:12px" id="date-to" onchange="setPreset('custom')">
+</div>
+
 <table class="tbl">
   <thead><tr><th></th><th>From</th><th>To</th><th>Duration</th><th>Talk</th><th>Status</th><th>Disposition</th><th>Recording</th><th>Notes</th><th>Time</th></tr></thead>
   <tbody id="cdr-body"><tr><td colspan="10" class="empty">Loading...</td></tr></tbody>
@@ -38,8 +60,6 @@
         <svg viewBox="0 0 24 24" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </button>
     </div>
-
-    <!-- Disposition -->
     <div style="margin-bottom:12px">
       <label class="form-label">Disposition</label>
       <select class="form-select" id="nm-disposition" onchange="saveDisposition()">
@@ -52,21 +72,21 @@
         <option value="spam">Spam</option>
       </select>
     </div>
-
-    <!-- Existing notes -->
     <div id="nm-notes-list" style="margin-bottom:12px"></div>
-
-    <!-- Add note -->
     <div style="display:flex;gap:8px">
       <input class="form-input" id="nm-new-note" placeholder="Add a note..." style="flex:1">
       <button class="btn btn-primary btn-sm" onclick="addNote()">Add</button>
     </div>
-
     <div style="margin-top:12px">
       <button class="btn btn-sm" onclick="closeNotes()">Close</button>
     </div>
   </div>
 </div>
+
+<style>
+.date-preset { font-size:11px; padding:4px 8px; }
+.date-preset.active { background:var(--accent); color:var(--bg-card); border-color:var(--accent); }
+</style>
 
 <script>
 var API = '/api', KEY = '<%= apiKey %>', H = { 'X-API-Key': KEY };
@@ -75,6 +95,9 @@ var page = 1, limit = 20;
 var currentCallId = null;
 var currentUser = '<%= typeof user !== "undefined" ? user : "admin" %>';
 var currentRole = '<%= typeof role !== "undefined" ? role : "admin" %>';
+var agentExt = '<%= typeof userExt !== "undefined" ? userExt : "" %>';
+var dateFrom = '', dateTo = '';
+var lastResults = []; // store for CSV export
 
 function dur(s) { if (!s) return '-'; return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'); }
 function fmtTime(t) { if (!t) return ''; var d = new Date(t); return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
@@ -91,6 +114,64 @@ function dispPill(d) {
   return '<span class="pill ' + cls + '" style="font-size:9px">' + esc(d) + '</span>';
 }
 
+// ─── Date presets ───
+function setPreset(preset) {
+  // Update active button
+  document.querySelectorAll('.date-preset').forEach(function(b) { b.classList.remove('active'); });
+  var btn = document.querySelector('.date-preset[data-preset="' + preset + '"]');
+  if (btn) btn.classList.add('active');
+
+  var now = new Date();
+  var from = '', to = '';
+
+  if (preset === 'today') {
+    from = toDateStr(now);
+    to = toDateStr(now, 1);
+  } else if (preset === 'yesterday') {
+    from = toDateStr(now, -1);
+    to = toDateStr(now);
+  } else if (preset === 'week') {
+    var d = new Date(now); d.setDate(d.getDate() - d.getDay());
+    from = toDateStr(d);
+    to = toDateStr(now, 1);
+  } else if (preset === 'lastweek') {
+    var d = new Date(now); d.setDate(d.getDate() - d.getDay() - 7);
+    var e = new Date(d); e.setDate(e.getDate() + 7);
+    from = toDateStr(d);
+    to = toDateStr(e);
+  } else if (preset === 'month') {
+    from = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-01';
+    to = toDateStr(now, 1);
+  } else if (preset === 'lastmonth') {
+    var lm = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    var lme = new Date(now.getFullYear(), now.getMonth(), 1);
+    from = toDateStr(lm);
+    to = toDateStr(lme);
+  } else if (preset === 'custom') {
+    from = document.getElementById('date-from').value;
+    to = document.getElementById('date-to').value;
+    if (to) { var td = new Date(to); td.setDate(td.getDate() + 1); to = toDateStr(td); }
+  } else {
+    // all time
+    from = ''; to = '';
+  }
+
+  dateFrom = from;
+  dateTo = to;
+  if (preset !== 'custom') {
+    document.getElementById('date-from').value = from ? from : '';
+    document.getElementById('date-to').value = to ? (function() { var d = new Date(to); d.setDate(d.getDate() - 1); return toDateStr(d); })() : '';
+  }
+  page = 1;
+  loadCDR();
+}
+
+function toDateStr(d, addDays) {
+  if (addDays) { d = new Date(d); d.setDate(d.getDate() + addDays); }
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+// ─── Load CDR ───
 async function loadCDR() {
   var q = document.getElementById('search').value;
   var st = document.getElementById('filter-status').value;
@@ -99,13 +180,15 @@ async function loadCDR() {
   if (q) url += '&search=' + encodeURIComponent(q);
   if (st) url += '&status=' + st;
   if (dir) url += '&direction=' + dir;
-  // Agent: scope to their extension only
-  if (currentRole === 'agent' && '<%= typeof userExt !== "undefined" ? userExt : "" %>') {
-    url += '&extension=' + encodeURIComponent('<%= typeof userExt !== "undefined" ? userExt : "" %>');
+  if (dateFrom) url += '&from=' + encodeURIComponent(dateFrom);
+  if (dateTo) url += '&to=' + encodeURIComponent(dateTo);
+  if (currentRole === 'agent' && agentExt) {
+    url += '&extension=' + encodeURIComponent(agentExt);
   }
   var d = await (await fetch(API + url, { headers: H })).json();
   var b = document.getElementById('cdr-body');
   if (d.success && d.cdrs && d.cdrs.length) {
+    lastResults = d.cdrs;
     b.innerHTML = d.cdrs.map(function(c) {
       var noteCount = (c.notes && c.notes.length) || 0;
       return '<tr>' +
@@ -118,7 +201,7 @@ async function loadCDR() {
         '<td>' + dispPill(c.disposition) + '</td>' +
         '<td style="white-space:nowrap">' +
           (c.recordingPath
-            ? '<button class="act-btn" onclick="playRec(\'' + esc(c.callId) + '\',this)" title="Play" id="play-' + esc(c.callId) + '"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg></button>' +
+            ? '<button class="act-btn" onclick="playRec(\'' + esc(c.callId) + '\',this)" title="Play"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg></button>' +
               '<a class="act-btn" href="' + API + '/cdr/' + c.callId + '/recording" download title="Download"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a>'
             : '<span class="muted" style="font-size:10px">-</span>') +
         '</td>' +
@@ -136,11 +219,36 @@ async function loadCDR() {
     document.getElementById('prev-btn').disabled = p.page <= 1;
     document.getElementById('next-btn').disabled = p.page >= p.pages;
   } else {
+    lastResults = [];
     b.innerHTML = '<tr><td colspan="10" class="empty">No records found</td></tr>';
     document.getElementById('cdr-info').textContent = '0 records';
+    document.getElementById('prev-btn').disabled = true;
+    document.getElementById('next-btn').disabled = true;
   }
 }
 
+// ─── CSV export ───
+function exportCSV() {
+  if (!lastResults.length) { alert('No records to export. Run a search first.'); return; }
+  var csv = 'Direction,From,To,Duration,Talk Time,Status,Disposition,Recorded,Time\n';
+  lastResults.forEach(function(c) {
+    csv += '"' + (c.direction || '') + '","' + (c.from || '') + '","' + (c.to || '') + '","' +
+      dur(c.duration) + '","' + dur(c.talkTime) + '","' + (c.status || '') + '","' +
+      (c.disposition || '') + '","' + (c.recordingPath ? 'Yes' : 'No') + '","' +
+      (c.startTime ? new Date(c.startTime).toLocaleString() : '') + '"\n';
+  });
+  var blob = new Blob([csv], { type: 'text/csv' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = 'shadowpbx-cdr-' + (dateFrom || 'all') + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// ─── Audio play/pause ───
 var ICON_PLAY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>';
 var ICON_PAUSE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>';
 
@@ -180,7 +288,6 @@ async function openNotes(callId) {
   document.getElementById('nm-callid').textContent = callId;
   document.getElementById('nm-new-note').value = '';
   document.getElementById('notes-modal').style.display = 'flex';
-
   var d = await (await fetch(API + '/cdr/' + callId + '/notes', { headers: H })).json();
   if (d.success) {
     document.getElementById('nm-disposition').value = d.disposition || '';
@@ -236,6 +343,8 @@ function prevPage() { page--; loadCDR(); }
 function nextPage() { page++; loadCDR(); }
 document.getElementById('search').addEventListener('keypress', function(e) { if (e.key === 'Enter') { page = 1; loadCDR(); } });
 document.getElementById('nm-new-note').addEventListener('keypress', function(e) { if (e.key === 'Enter') addNote(); });
-loadCDR();
+
+// Init with today's calls
+setPreset('today');
 </script>
 <%- include('../partials/foot') %>
