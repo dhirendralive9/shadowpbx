@@ -1,0 +1,308 @@
+<%- include('../partials/head', { title: 'Queues', active: 'queues' }) %>
+
+<div class="sec-head">
+  <span class="sec-title">Call queues</span>
+  <div style="display:flex;align-items:center;gap:10px">
+    <span class="muted" style="font-size:11px" id="q-summary"></span>
+    <button class="btn btn-sm" onclick="showAdd()">+ Add queue</button>
+  </div>
+</div>
+
+<!-- ═══════════════════ ADD / EDIT FORM ═══════════════════ -->
+<div id="add-form" style="display:none;margin-bottom:16px" class="card">
+  <form onsubmit="save(event)">
+    <input type="hidden" id="q-edit-mode" value="">
+    <div class="grid-3" style="margin-bottom:0">
+      <div class="form-group"><label class="form-label">Number</label><input class="form-input" id="q-number" placeholder="700" required></div>
+      <div class="form-group"><label class="form-label">Name</label><input class="form-input" id="q-name" placeholder="Support Queue" required></div>
+      <div class="form-group"><label class="form-label">Strategy</label>
+        <select class="form-select" id="q-strategy">
+          <option value="longest-idle">Longest idle</option>
+          <option value="round-robin">Round robin</option>
+          <option value="fewest-calls">Fewest calls</option>
+          <option value="ringall">Ring all</option>
+          <option value="random">Random</option>
+        </select>
+      </div>
+    </div>
+    <div class="grid-3" style="margin-bottom:0">
+      <div class="form-group"><label class="form-label">Max wait (seconds)</label><input class="form-input" id="q-maxwait" type="number" value="300" min="10" max="3600"></div>
+      <div class="form-group"><label class="form-label">Ring timeout (seconds)</label><input class="form-input" id="q-ringtimeout" type="number" value="20" min="5" max="120"></div>
+      <div class="form-group"><label class="form-label">Wrap-up time (seconds)</label><input class="form-input" id="q-wrapup" type="number" value="10" min="0" max="300"></div>
+    </div>
+    <div class="grid-3" style="margin-bottom:0">
+      <div class="form-group"><label class="form-label">Retry delay (seconds)</label><input class="form-input" id="q-retry" type="number" value="5" min="1" max="60"></div>
+      <div class="form-group"><label class="form-label">Max callers</label><input class="form-input" id="q-maxcallers" type="number" value="20" min="1" max="100"></div>
+      <div class="form-group"><label class="form-label">Announce frequency (0=off)</label><input class="form-input" id="q-announce" type="number" value="30" min="0" max="300"></div>
+    </div>
+
+    <!-- Agents -->
+    <div style="margin-bottom:12px">
+      <label class="form-label">Agents</label>
+      <div id="agent-rows"></div>
+      <button type="button" class="btn btn-sm" onclick="addAgentRow()" style="margin-top:6px">+ Add agent</button>
+    </div>
+
+    <!-- Overflow destination -->
+    <div class="grid-3" style="margin-bottom:0">
+      <div class="form-group"><label class="form-label">Overflow type</label>
+        <select class="form-select" id="q-overflow-type">
+          <option value="voicemail">Voicemail</option>
+          <option value="extension">Extension</option>
+          <option value="ringgroup">Ring group</option>
+          <option value="ivr">IVR</option>
+          <option value="hangup">Hang up</option>
+        </select>
+      </div>
+      <div class="form-group"><label class="form-label">Overflow target</label><input class="form-input" id="q-overflow-target" placeholder="2001"></div>
+      <div class="form-group" style="display:flex;align-items:flex-end">
+        <div style="display:flex;gap:8px">
+          <button type="submit" class="btn btn-primary btn-sm" id="q-submit-btn">Create</button>
+          <button type="button" class="btn btn-sm" onclick="hideAdd()">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </form>
+</div>
+
+<!-- ═══════════════════ QUEUES TABLE ═══════════════════ -->
+<div id="queues-list"></div>
+
+<script>
+var API = '/api', KEY = '<%= apiKey %>', H = { 'X-API-Key': KEY };
+var J = { 'X-API-Key': KEY, 'Content-Type': 'application/json' };
+
+// ─── Agent row management ───
+var agentRowId = 0;
+function addAgentRow(data) {
+  var id = agentRowId++;
+  var ext = (data && data.extension) || '';
+  var pri = (data && data.priority) || 1;
+  var html = '<div style="display:flex;gap:8px;align-items:center;margin-bottom:4px" id="ar-' + id + '">' +
+    '<input class="form-input" id="ar-ext-' + id + '" placeholder="2001" value="' + esc(ext) + '" style="width:120px">' +
+    '<span class="muted" style="font-size:11px">priority</span>' +
+    '<input class="form-input" id="ar-pri-' + id + '" type="number" value="' + pri + '" min="1" max="10" style="width:60px">' +
+    '<button type="button" class="act-btn" onclick="document.getElementById(\'ar-' + id + '\').remove()">' +
+      '<svg viewBox="0 0 24 24" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
+    '</button></div>';
+  document.getElementById('agent-rows').insertAdjacentHTML('beforeend', html);
+}
+
+function collectAgents() {
+  var rows = document.getElementById('agent-rows').children;
+  var agents = [];
+  for (var i = 0; i < rows.length; i++) {
+    var id = rows[i].id.replace('ar-', '');
+    var ext = document.getElementById('ar-ext-' + id);
+    var pri = document.getElementById('ar-pri-' + id);
+    if (ext && ext.value.trim()) {
+      agents.push({ extension: ext.value.trim(), priority: parseInt(pri.value) || 1 });
+    }
+  }
+  return agents;
+}
+
+// ─── Helpers ───
+function esc(s) { if (!s) return ''; var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function dur(s) { if (!s) return '0s'; if (s < 60) return s + 's'; return Math.floor(s/60) + 'm ' + (s%60) + 's'; }
+
+function agentStatePill(state) {
+  if (state === 'logged-in') return '<span class="pill p-ok">idle</span>';
+  if (state === 'busy') return '<span class="pill p-miss">busy</span>';
+  if (state === 'wrapup') return '<span class="pill p-warn">wrapup</span>';
+  return '<span class="pill p-gray">logged out</span>';
+}
+
+function showToast(msg, isError) {
+  var el = document.createElement('div');
+  el.className = 'toast ' + (isError ? 'toast-error' : 'toast-success');
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(function() { el.remove(); }, 3000);
+}
+
+// ─── Form ───
+function showAdd() {
+  document.getElementById('q-edit-mode').value = '';
+  document.getElementById('q-number').value = '';
+  document.getElementById('q-number').disabled = false;
+  document.getElementById('q-name').value = '';
+  document.getElementById('q-strategy').value = 'longest-idle';
+  document.getElementById('q-maxwait').value = '300';
+  document.getElementById('q-ringtimeout').value = '20';
+  document.getElementById('q-wrapup').value = '10';
+  document.getElementById('q-retry').value = '5';
+  document.getElementById('q-maxcallers').value = '20';
+  document.getElementById('q-announce').value = '30';
+  document.getElementById('q-overflow-type').value = 'voicemail';
+  document.getElementById('q-overflow-target').value = '';
+  document.getElementById('q-submit-btn').textContent = 'Create';
+  document.getElementById('agent-rows').innerHTML = '';
+  agentRowId = 0;
+  addAgentRow();
+  document.getElementById('add-form').style.display = 'block';
+}
+
+function showEdit(q) {
+  document.getElementById('q-edit-mode').value = q.number;
+  document.getElementById('q-number').value = q.number;
+  document.getElementById('q-number').disabled = true;
+  document.getElementById('q-name').value = q.name;
+  document.getElementById('q-strategy').value = q.strategy || 'longest-idle';
+  document.getElementById('q-maxwait').value = q.maxWait || 300;
+  document.getElementById('q-ringtimeout').value = q.ringTimeout || 20;
+  document.getElementById('q-wrapup').value = q.wrapUpTime || 10;
+  document.getElementById('q-retry').value = q.retryDelay || 5;
+  document.getElementById('q-maxcallers').value = q.maxCallers || 20;
+  document.getElementById('q-announce').value = q.announceFrequency || 30;
+  document.getElementById('q-overflow-type').value = (q.overflowDest && q.overflowDest.type) || 'voicemail';
+  document.getElementById('q-overflow-target').value = (q.overflowDest && q.overflowDest.target) || '';
+  document.getElementById('q-submit-btn').textContent = 'Update';
+  document.getElementById('agent-rows').innerHTML = '';
+  agentRowId = 0;
+  if (q.agents && q.agents.length) {
+    q.agents.forEach(function(a) { addAgentRow(a); });
+  } else {
+    addAgentRow();
+  }
+  document.getElementById('add-form').style.display = 'block';
+}
+
+function hideAdd() { document.getElementById('add-form').style.display = 'none'; }
+
+// ─── CRUD ───
+async function load() {
+  try {
+    var d = await (await fetch(API + '/queues', { headers: H })).json();
+    var container = document.getElementById('queues-list');
+
+    if (!d.success || !d.queues || !d.queues.length) {
+      container.innerHTML = '<div class="card"><div class="empty">No queues configured</div></div>';
+      document.getElementById('q-summary').textContent = '';
+      return;
+    }
+
+    var totalCallers = 0;
+    d.queues.forEach(function(q) { if (q.stats) totalCallers += q.stats.callers || 0; });
+    document.getElementById('q-summary').textContent = d.queues.length + ' queue(s)' + (totalCallers > 0 ? ', ' + totalCallers + ' caller(s)' : '');
+
+    container.innerHTML = d.queues.map(function(q) {
+      var s = q.stats || { callers: 0, callersWaiting: 0, agents: { total: 0, loggedIn: 0, idle: 0, busy: 0 }, agentList: [], callerList: [] };
+
+      // Queue header card
+      var html = '<div class="card" style="margin-bottom:16px">';
+      html += '<div class="card-head">';
+      html += '<div style="display:flex;align-items:center;gap:10px">';
+      html += '<span class="card-title">' + esc(q.name) + '</span>';
+      html += '<span class="mono muted" style="font-size:11px">#' + esc(q.number) + '</span>';
+      html += '<span class="pill p-gray">' + esc(q.strategy) + '</span>';
+      if (s.callersWaiting > 0) html += '<span class="pill p-ring">' + s.callersWaiting + ' waiting</span>';
+      html += '</div>';
+      html += '<div style="display:flex;gap:6px">';
+      html += '<button class="btn btn-sm" onclick=\'showEdit(' + JSON.stringify(q).replace(/'/g, "&#39;") + ')\'>Edit</button>';
+      html += '<button class="btn btn-sm btn-danger" onclick="del(\'' + esc(q.number) + '\',\'' + esc(q.name) + '\')">Delete</button>';
+      html += '</div></div>';
+
+      // Stats row
+      html += '<div class="kpi-row" style="margin-bottom:12px">';
+      html += '<div class="kpi"><div class="kpi-label">Waiting</div><div class="kpi-val">' + (s.callersWaiting || 0) + '</div></div>';
+      html += '<div class="kpi"><div class="kpi-label">In call</div><div class="kpi-val">' + (s.callersBridged || 0) + '</div></div>';
+      html += '<div class="kpi"><div class="kpi-label">Avg wait</div><div class="kpi-val">' + dur(s.avgWaitTime || 0) + '</div></div>';
+      html += '<div class="kpi"><div class="kpi-label">Agents</div><div class="kpi-val">' + (s.agents.loggedIn || 0) + '/' + (s.agents.total || 0) + '</div><div class="kpi-sub">' + (s.agents.idle || 0) + ' idle, ' + (s.agents.busy || 0) + ' busy</div></div>';
+      html += '</div>';
+
+      // Agent table
+      html += '<div class="sec-head" style="margin-bottom:6px"><span class="sec-title" style="font-size:11px">Agents</span></div>';
+      html += '<table class="tbl"><thead><tr><th>Extension</th><th>State</th><th>Calls</th><th></th></tr></thead><tbody>';
+      if (s.agentList && s.agentList.length) {
+        html += s.agentList.map(function(a) {
+          var isLoggedIn = a.state !== 'logged-out';
+          return '<tr>' +
+            '<td class="mono">' + esc(a.extension) + '</td>' +
+            '<td>' + agentStatePill(a.state) + '</td>' +
+            '<td class="mono muted">' + (a.callCount || 0) + '</td>' +
+            '<td>' +
+              (isLoggedIn
+                ? '<button class="btn btn-sm" onclick="agentAction(\'' + esc(q.number) + '\',\'' + esc(a.extension) + '\',\'logout\')">Logout</button>'
+                : '<button class="btn btn-sm" onclick="agentAction(\'' + esc(q.number) + '\',\'' + esc(a.extension) + '\',\'login\')">Login</button>') +
+            '</td></tr>';
+        }).join('');
+      } else {
+        html += '<tr><td colspan="4" class="empty" style="padding:12px">No agents configured</td></tr>';
+      }
+      html += '</tbody></table>';
+
+      // Callers in queue
+      if (s.callerList && s.callerList.length) {
+        html += '<div class="sec-head" style="margin-top:12px;margin-bottom:6px"><span class="sec-title" style="font-size:11px">Callers in queue</span></div>';
+        html += '<table class="tbl"><thead><tr><th>Pos</th><th>Caller ID</th><th>Wait time</th><th>Status</th></tr></thead><tbody>';
+        html += s.callerList.map(function(c, i) {
+          return '<tr>' +
+            '<td class="mono">' + (i + 1) + '</td>' +
+            '<td class="mono">' + esc(c.callerID) + '</td>' +
+            '<td class="mono">' + dur(c.waitTime) + '</td>' +
+            '<td>' + (c.bridged ? '<span class="pill p-ok">connected</span>' : '<span class="pill p-ring">waiting</span>') + '</td>' +
+          '</tr>';
+        }).join('');
+        html += '</tbody></table>';
+      }
+
+      html += '</div>';
+      return html;
+    }).join('');
+
+  } catch (e) { console.error('queue load', e); }
+}
+
+async function save(e) {
+  e.preventDefault();
+  var editMode = document.getElementById('q-edit-mode').value;
+  var body = {
+    number: document.getElementById('q-number').value,
+    name: document.getElementById('q-name').value,
+    strategy: document.getElementById('q-strategy').value,
+    agents: collectAgents(),
+    maxWait: parseInt(document.getElementById('q-maxwait').value) || 300,
+    ringTimeout: parseInt(document.getElementById('q-ringtimeout').value) || 20,
+    wrapUpTime: parseInt(document.getElementById('q-wrapup').value) || 10,
+    retryDelay: parseInt(document.getElementById('q-retry').value) || 5,
+    maxCallers: parseInt(document.getElementById('q-maxcallers').value) || 20,
+    announceFrequency: parseInt(document.getElementById('q-announce').value) || 30,
+    overflowDest: {
+      type: document.getElementById('q-overflow-type').value,
+      target: document.getElementById('q-overflow-target').value || ''
+    }
+  };
+
+  var url = editMode ? API + '/queues/' + editMode : API + '/queues';
+  var method = editMode ? 'PUT' : 'POST';
+  var r = await fetch(url, { method: method, headers: J, body: JSON.stringify(body) });
+  var d = await r.json();
+  if (d.success) {
+    hideAdd();
+    showToast(editMode ? 'Queue updated' : 'Queue created');
+    load();
+  } else {
+    showToast(d.error || 'Failed', true);
+  }
+}
+
+async function del(number, name) {
+  if (!confirm('Delete queue "' + name + '" (' + number + ')?')) return;
+  await fetch(API + '/queues/' + number, { method: 'DELETE', headers: H });
+  showToast('Queue deleted');
+  load();
+}
+
+async function agentAction(qNum, ext, action) {
+  await fetch(API + '/queues/' + qNum + '/agents/' + action, {
+    method: 'POST', headers: J, body: JSON.stringify({ extension: ext })
+  });
+  load();
+}
+
+// ─── Init ───
+load();
+setInterval(load, 5000);
+</script>
+<%- include('../partials/foot') %>

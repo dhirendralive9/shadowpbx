@@ -84,7 +84,7 @@ const inboundRouteSchema = new mongoose.Schema({
   name: { type: String, required: true },
   trunk: { type: String },
   destination: {
-    type: { type: String, enum: ['extension', 'ringgroup', 'ivr', 'timecondition', 'hangup'], required: true },
+    type: { type: String, enum: ['extension', 'ringgroup', 'ivr', 'timecondition', 'queue', 'hangup'], required: true },
     target: { type: String, required: true }
   },
   enabled: { type: Boolean, default: true },
@@ -136,6 +136,38 @@ const timeConditionSchema = new mongoose.Schema({
     type: { type: String, enum: ['extension', 'ringgroup', 'ivr', 'voicemail', 'hangup'], required: true },
     target: { type: String, required: true }
   },
+  enabled: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now }
+});
+
+// ============================================================
+// Call Queue / ACD
+// ============================================================
+const queueSchema = new mongoose.Schema({
+  number: { type: String, required: true, unique: true, index: true },
+  name: { type: String, required: true },
+  strategy: {
+    type: String,
+    enum: ['ringall', 'longest-idle', 'round-robin', 'fewest-calls', 'random'],
+    default: 'longest-idle'
+  },
+  agents: [{
+    extension: { type: String, required: true },
+    priority: { type: Number, default: 1 },      // lower = higher priority
+    penalty: { type: Number, default: 0 }         // 0 = no penalty
+  }],
+  maxWait: { type: Number, default: 300 },         // max seconds in queue before overflow
+  wrapUpTime: { type: Number, default: 10 },       // seconds agent is unavailable after call
+  ringTimeout: { type: Number, default: 20 },      // seconds to ring agent before trying next
+  retryDelay: { type: Number, default: 5 },        // seconds between retry attempts
+  maxCallers: { type: Number, default: 20 },        // max callers in queue at once
+  moh: { type: String, default: '' },               // MOH file/directory
+  announceFrequency: { type: Number, default: 30 }, // seconds between position announcements (0=off)
+  overflowDest: {
+    type: { type: String, enum: ['extension', 'ringgroup', 'ivr', 'voicemail', 'hangup'], default: 'voicemail' },
+    target: { type: String, default: '' }
+  },
+  joinMessage: { type: String, default: '' },       // WAV played when caller joins queue
   enabled: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now }
 });
@@ -239,8 +271,9 @@ const InboundRoute = mongoose.model('InboundRoute', inboundRouteSchema);
 const OutboundRoute = mongoose.model('OutboundRoute', outboundRouteSchema);
 const IVR = mongoose.model('IVR', ivrSchema);
 const TimeCondition = mongoose.model('TimeCondition', timeConditionSchema);
+const Queue = mongoose.model('Queue', queueSchema);
 const CDR = mongoose.model('CDR', cdrSchema);
 const VoicemailMessage = mongoose.model('VoicemailMessage', voicemailMessageSchema);
 const ActiveCall = mongoose.model('ActiveCall', activeCallSchema);
 
-module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, IVR, TimeCondition, CDR, VoicemailMessage, ActiveCall };
+module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, IVR, TimeCondition, Queue, CDR, VoicemailMessage, ActiveCall };

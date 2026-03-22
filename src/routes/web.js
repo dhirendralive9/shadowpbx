@@ -150,6 +150,10 @@ function createWebRouter(apiKey) {
     res.render('pages/timeconditions', { apiKey });
   });
 
+  router.get('/queues', authMiddleware, (req, res) => {
+    res.render('pages/queues', { apiKey });
+  });
+
   router.get('/settings', authMiddleware, (req, res) => {
     res.render('pages/settings', { apiKey });
   });

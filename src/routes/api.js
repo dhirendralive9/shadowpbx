@@ -2,7 +2,7 @@ const express = require('express');
 const { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, CDR } = require('../models');
 const logger = require('../utils/logger');
 
-function createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler, monitorHandler, timeConditionService, presenceHandler) {
+function createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler, monitorHandler, timeConditionService, presenceHandler, queueHandler) {
   const router = express.Router();
 
   // ============================================================
@@ -333,6 +333,96 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
       const tc = await TimeCondition.findOneAndDelete({ number: req.params.number });
       if (!tc) return res.status(404).json({ success: false, error: 'Time condition not found' });
       res.json({ success: true, message: `Time condition ${req.params.number} deleted` });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // ============================================================
+  // Call Queues / ACD
+  // ============================================================
+  const { Queue } = require('../models');
+
+  router.get('/queues', async (req, res) => {
+    try {
+      const queues = await Queue.find({}).sort('number');
+      const result = queues.map(q => {
+        const obj = q.toObject();
+        if (queueHandler) obj.stats = queueHandler.getStats(q.number);
+        return obj;
+      });
+      res.json({ success: true, queues: result });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.get('/queues/:number', async (req, res) => {
+    try {
+      const q = await Queue.findOne({ number: req.params.number });
+      if (!q) return res.status(404).json({ success: false, error: 'Queue not found' });
+      const obj = q.toObject();
+      if (queueHandler) obj.stats = queueHandler.getStats(q.number);
+      res.json({ success: true, queue: obj });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.post('/queues', async (req, res) => {
+    try {
+      const { number, name, strategy, agents, maxWait, wrapUpTime, ringTimeout, retryDelay, maxCallers, moh, announceFrequency, overflowDest, joinMessage } = req.body;
+      if (!number || !name) return res.status(400).json({ success: false, error: 'number, name required' });
+      if (await Queue.findOne({ number })) return res.status(409).json({ success: false, error: 'Queue number already exists' });
+      const q = await Queue.create({ number, name, strategy, agents: agents || [], maxWait, wrapUpTime, ringTimeout, retryDelay, maxCallers, moh, announceFrequency, overflowDest, joinMessage });
+      // Initialize agent states
+      if (queueHandler) {
+        const stateMap = new Map();
+        for (const a of (agents || [])) stateMap.set(a.extension, { state: 'logged-out', since: Date.now(), callCount: 0, lastCallEnd: 0 });
+        queueHandler.agentStates.set(number, stateMap);
+      }
+      logger.info(`Queue created: ${number} (${name})`);
+      res.status(201).json({ success: true, queue: q });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.put('/queues/:number', async (req, res) => {
+    try {
+      const q = await Queue.findOneAndUpdate({ number: req.params.number }, req.body, { new: true });
+      if (!q) return res.status(404).json({ success: false, error: 'Queue not found' });
+      res.json({ success: true, queue: q });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.delete('/queues/:number', async (req, res) => {
+    try {
+      const q = await Queue.findOneAndDelete({ number: req.params.number });
+      if (!q) return res.status(404).json({ success: false, error: 'Queue not found' });
+      if (queueHandler) queueHandler.agentStates.delete(req.params.number);
+      res.json({ success: true, message: `Queue ${req.params.number} deleted` });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // Agent login/logout
+  router.post('/queues/:number/agents/login', async (req, res) => {
+    try {
+      if (!queueHandler) return res.status(503).json({ success: false, error: 'Queue handler not available' });
+      const { extension } = req.body;
+      if (!extension) return res.status(400).json({ success: false, error: 'extension required' });
+      queueHandler.agentLogin(req.params.number, extension);
+      res.json({ success: true, message: `Agent ${extension} logged into queue ${req.params.number}` });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.post('/queues/:number/agents/logout', async (req, res) => {
+    try {
+      if (!queueHandler) return res.status(503).json({ success: false, error: 'Queue handler not available' });
+      const { extension } = req.body;
+      if (!extension) return res.status(400).json({ success: false, error: 'extension required' });
+      queueHandler.agentLogout(req.params.number, extension);
+      res.json({ success: true, message: `Agent ${extension} logged out of queue ${req.params.number}` });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // Queue stats
+  router.get('/queues/:number/stats', async (req, res) => {
+    try {
+      if (!queueHandler) return res.json({ success: true, stats: {} });
+      res.json({ success: true, stats: queueHandler.getStats(req.params.number) });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
 

@@ -394,6 +394,22 @@ class CallHandler {
       }
       return res.send(404);
 
+    } else if (type === 'queue') {
+      if (this.queueHandler) {
+        const { Queue } = require('../models');
+        const queueConfig = await Queue.findOne({ number: target, enabled: true });
+        if (queueConfig) {
+          logger.info(`INBOUND: routing to queue ${target} (${queueConfig.name})`);
+          const handled = await this.queueHandler.handleQueue(req, res, queueConfig, cdr, callerID);
+          if (handled) return;
+        }
+        logger.warn(`INBOUND: queue ${target} not found`);
+      } else {
+        logger.warn(`INBOUND: queue handler not available`);
+      }
+      if (!res.finalResponseSent) res.send(404);
+      return;
+
     } else if (type === 'voicemail') {
       if (this.voicemailHandler) {
         logger.info(`INBOUND: routing to voicemail for ${target}`);

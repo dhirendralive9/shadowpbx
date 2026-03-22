@@ -20,6 +20,7 @@
           <option value="ringgroup">Ring group</option>
           <option value="ivr">IVR</option>
           <option value="timecondition">Time condition</option>
+          <option value="queue">Queue</option>
           <option value="hangup">Hang up</option>
         </select>
       </div>
@@ -88,6 +89,7 @@ function destLabel(d) {
   if (d.type === 'ringgroup')  { icon = 'RG';  cls = 'p-info'; }
   if (d.type === 'ivr')        { icon = 'IVR'; cls = 'p-warn'; }
   if (d.type === 'timecondition') { icon = 'TC'; cls = 'p-info'; }
+  if (d.type === 'queue')         { icon = 'Queue'; cls = 'p-warn'; }
   if (d.type === 'hangup')     { icon = 'Hangup'; cls = 'p-err'; }
   return '<span class="pill ' + cls + '">' + icon + '</span> ' +
     (d.type === 'hangup' ? '' : '<span class="mono">' + (d.target || '') + '</span>');

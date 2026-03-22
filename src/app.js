@@ -17,6 +17,7 @@ const DtmfListener = require('./services/dtmf-listener');
 const MonitorHandler = require('./services/monitor-handler');
 const TimeConditionService = require('./services/time-condition');
 const PresenceHandler = require('./services/presence-handler');
+const QueueHandler = require('./services/queue-handler');
 const createApiRouter = require('./routes/api');
 const { convertAllPending } = require('./utils/converter');
 
@@ -135,6 +136,9 @@ async function main() {
   const presenceHandler = new PresenceHandler(srf, registrar, callHandler);
   callHandler.presenceHandler = presenceHandler;
 
+  const queueHandler = new QueueHandler(srf, rtpengine, registrar, callHandler, voicemailHandler);
+  callHandler.queueHandler = queueHandler;
+
   // 5. Initialize trunks (register with providers)
   try {
     await trunkManager.initialize();
@@ -191,7 +195,7 @@ async function main() {
     next();
   });
 
-  app.use('/api', createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler, monitorHandler, timeConditionService, presenceHandler));
+  app.use('/api', createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler, monitorHandler, timeConditionService, presenceHandler, queueHandler));
   app.get('/health', (req, res) => res.json({ status: 'ok', service: 'ShadowPBX', version: '2.0.0' }));
 
   // Web GUI routes
