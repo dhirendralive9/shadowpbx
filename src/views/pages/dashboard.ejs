@@ -38,12 +38,12 @@
 
 <div class="grid-3">
   <div class="mini-card">
-    <div class="mc-title">Extensions</div>
-    <div id="ext-list"><div class="mc-row"><span class="muted">Connecting...</span></div></div>
+    <div class="mc-title">Extensions <span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0" id="ext-online-count"></span></div>
+    <div id="ext-list" style="max-height:220px;overflow-y:auto"><div class="mc-row"><span class="muted">Connecting...</span></div></div>
   </div>
   <div class="mini-card">
     <div class="mc-title">Trunks</div>
-    <div id="trunk-list"><div class="mc-row"><span class="muted">Connecting...</span></div></div>
+    <div id="trunk-list" style="max-height:220px;overflow-y:auto"><div class="mc-row"><span class="muted">Connecting...</span></div></div>
   </div>
   <div class="mini-card">
     <div class="mc-title">System</div>
@@ -128,18 +128,33 @@ socket.on('dashboard', function(data) {
     tbody.innerHTML = '<tr><td colspan="5" class="empty">No active calls</td></tr>';
   }
 
-  // Extensions
+  // Extensions — online only
   var el = document.getElementById('ext-list');
   if (exts.length > 0) {
-    var html = '';
+    var onlineExts = [];
     for (var i = 0; i < exts.length; i++) {
-      var e = exts[i], regs = e.registrations || [], isOn = regs.length > 0;
-      var ua = isOn && regs[0] && regs[0].userAgent ? ' · ' + regs[0].userAgent.split('/')[0] : '';
-      html += '<div class="mc-row"><span class="mc-name"><span class="dot ' + (isOn ? 'dot-green' : 'dot-gray') + '" style="margin-right:6px"></span>' + (e.name || e.extension) + ua + '</span>';
-      html += '<span class="pill ' + (isOn ? 'p-ok' : 'p-gray') + '">' + e.extension + ' ' + (isOn ? 'online' : 'offline') + '</span></div>';
+      var e = exts[i], regs = e.registrations || [];
+      if (regs.length > 0) onlineExts.push(e);
     }
-    el.innerHTML = html;
+    document.getElementById('ext-online-count').textContent = '(' + onlineExts.length + '/' + exts.length + ')';
+    if (onlineExts.length > 0) {
+      var html = '';
+      for (var i = 0; i < onlineExts.length; i++) {
+        var e = onlineExts[i], regs = e.registrations || [];
+        var ua = regs[0] && regs[0].userAgent ? ' · ' + regs[0].userAgent.split('/')[0] : '';
+        var p = e.presence || 'idle';
+        var dotCls = p === 'confirmed' ? 'dot-red' : p === 'ringing' ? 'dot-amber' : p === 'held' ? 'dot-blue' : 'dot-green';
+        var pLabel = p === 'confirmed' ? 'in call' : p === 'ringing' ? 'ringing' : p === 'held' ? 'on hold' : 'ready';
+        var pCls = p === 'confirmed' ? 'p-miss' : p === 'ringing' ? 'p-ring' : p === 'held' ? 'p-hold' : 'p-ok';
+        html += '<div class="mc-row"><span class="mc-name"><span class="dot ' + dotCls + '" style="margin-right:6px"></span>' + (e.name || e.extension) + ua + '</span>';
+        html += '<span class="pill ' + pCls + '">' + e.extension + ' ' + pLabel + '</span></div>';
+      }
+      el.innerHTML = html;
+    } else {
+      el.innerHTML = '<div class="mc-row"><span class="muted">No extensions online</span></div>';
+    }
   } else {
+    document.getElementById('ext-online-count').textContent = '';
     el.innerHTML = '<div class="mc-row"><span class="muted">No extensions</span></div>';
   }
 
