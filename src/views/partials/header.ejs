@@ -6,6 +6,9 @@
   </div>
   <div class="header-spacer"></div>
   <div class="header-status"><span class="header-dot"></span> Online</div>
-  <span class="header-user">admin</span>
+  <% if (typeof role !== 'undefined' && role) { %>
+    <span class="pill <%= role === 'admin' ? 'p-miss' : role === 'supervisor' ? 'p-warn' : 'p-info' %>" style="margin-left:12px;font-size:9px"><%= role %></span>
+  <% } %>
+  <span class="header-user"><%= typeof userName !== 'undefined' && userName ? userName : (typeof user !== 'undefined' ? user : 'admin') %></span>
   <a href="/logout" class="header-logout">Sign out</a>
 </header>

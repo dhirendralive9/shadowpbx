@@ -190,6 +190,25 @@ const outboundRouteSchema = new mongoose.Schema({
 outboundRouteSchema.index({ priority: 1 });
 
 // ============================================================
+// User (RBAC)
+// ============================================================
+const userSchema = new mongoose.Schema({
+  username: { type: String, required: true, unique: true, index: true },
+  password: { type: String, required: true },  // bcrypt hash
+  role: { type: String, enum: ['admin', 'supervisor', 'agent'], required: true, default: 'agent' },
+  name: { type: String, default: '' },
+  email: { type: String, default: '' },
+  extension: { type: String, default: '' },        // linked extension (for agents)
+  assignedExtensions: [{ type: String }],           // supervisor: extensions they manage
+  assignedRingGroups: [{ type: String }],            // supervisor: ring groups they manage
+  assignedQueues: [{ type: String }],                // supervisor: queues they manage
+  assignedIVRs: [{ type: String }],                  // supervisor: IVRs they can view
+  enabled: { type: Boolean, default: true },
+  lastLogin: Date,
+  createdAt: { type: Date, default: Date.now }
+});
+
+// ============================================================
 // CDR
 // ============================================================
 const cdrSchema = new mongoose.Schema({
@@ -202,6 +221,17 @@ const cdrSchema = new mongoose.Schema({
     enum: ['ringing', 'answered', 'completed', 'missed', 'failed', 'busy', 'voicemail'],
     default: 'ringing'
   },
+  disposition: {
+    type: String,
+    enum: ['', 'resolved', 'follow-up', 'escalated', 'no-action', 'spam', 'callback'],
+    default: ''
+  },
+  notes: [{
+    text: { type: String, required: true },
+    author: { type: String, required: true },     // username
+    authorRole: { type: String },                  // role at time of note
+    createdAt: { type: Date, default: Date.now }
+  }],
   startTime: { type: Date, default: Date.now },
   answerTime: Date,
   endTime: Date,
@@ -272,8 +302,9 @@ const OutboundRoute = mongoose.model('OutboundRoute', outboundRouteSchema);
 const IVR = mongoose.model('IVR', ivrSchema);
 const TimeCondition = mongoose.model('TimeCondition', timeConditionSchema);
 const Queue = mongoose.model('Queue', queueSchema);
+const User = mongoose.model('User', userSchema);
 const CDR = mongoose.model('CDR', cdrSchema);
 const VoicemailMessage = mongoose.model('VoicemailMessage', voicemailMessageSchema);
 const ActiveCall = mongoose.model('ActiveCall', activeCallSchema);
 
-module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, IVR, TimeCondition, Queue, CDR, VoicemailMessage, ActiveCall };
+module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, IVR, TimeCondition, Queue, User, CDR, VoicemailMessage, ActiveCall };

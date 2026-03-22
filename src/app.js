@@ -50,6 +50,22 @@ async function main() {
     } catch (cleanErr) {
       logger.warn(`Startup registration cleanup: ${cleanErr.message}`);
     }
+
+    // Seed default admin user if no users exist
+    try {
+      const { User } = require('./models');
+      const bcrypt = require('bcryptjs');
+      const userCount = await User.countDocuments();
+      if (userCount === 0) {
+        const adminUser = process.env.ADMIN_USER || 'admin';
+        const adminPass = process.env.ADMIN_PASSWORD || 'admin';
+        const hash = await bcrypt.hash(adminPass, 10);
+        await User.create({ username: adminUser, password: hash, role: 'admin', name: 'Administrator', enabled: true });
+        logger.info(`Startup: default admin user "${adminUser}" created`);
+      }
+    } catch (seedErr) {
+      logger.warn(`Admin seed: ${seedErr.message}`);
+    }
   } catch (err) {
     logger.error(`MongoDB failed: ${err.message}`);
     process.exit(1);

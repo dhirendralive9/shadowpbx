@@ -1,0 +1,274 @@
+<%- include('../partials/head', { title: 'Users', active: 'users' }) %>
+
+<div class="sec-head">
+  <span class="sec-title">User management</span>
+  <div style="display:flex;align-items:center;gap:10px">
+    <span class="muted" style="font-size:11px" id="user-summary"></span>
+    <button class="btn btn-sm" onclick="showAdd()">+ Add user</button>
+  </div>
+</div>
+
+<!-- ═══════════════════ ADD / EDIT FORM ═══════════════════ -->
+<div id="add-form" style="display:none;margin-bottom:16px" class="card">
+  <form onsubmit="saveUser(event)">
+    <input type="hidden" id="u-edit-id" value="">
+    <div class="grid-3" style="margin-bottom:0">
+      <div class="form-group"><label class="form-label">Username</label><input class="form-input" id="u-username" placeholder="john" required></div>
+      <div class="form-group"><label class="form-label">Password <span class="muted" style="font-weight:400">(leave blank to keep)</span></label><input class="form-input" id="u-password" type="password" placeholder="••••••••"></div>
+      <div class="form-group"><label class="form-label">Role</label>
+        <select class="form-select" id="u-role" onchange="toggleRoleFields()">
+          <option value="agent">Agent</option>
+          <option value="supervisor">Supervisor</option>
+          <option value="admin">Admin</option>
+        </select>
+      </div>
+    </div>
+    <div class="grid-3" style="margin-bottom:0">
+      <div class="form-group"><label class="form-label">Display name</label><input class="form-input" id="u-name" placeholder="John Smith"></div>
+      <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="u-email" type="email" placeholder="john@example.com"></div>
+      <div class="form-group"><label class="form-label">Linked extension</label>
+        <select class="form-select" id="u-ext"><option value="">— none —</option></select>
+      </div>
+    </div>
+
+    <!-- Supervisor assignments -->
+    <div id="supervisor-fields" style="display:none">
+      <div style="font-size:11px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.4px;margin:12px 0 8px">Supervisor scope — what this user can manage</div>
+      <div class="grid-2" style="margin-bottom:0">
+        <div class="form-group">
+          <label class="form-label">Extensions</label>
+          <div id="u-assign-ext" style="max-height:120px;overflow-y:auto;border:0.5px solid var(--border);border-radius:var(--radius);padding:8px"></div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Ring groups</label>
+          <div id="u-assign-rg" style="max-height:120px;overflow-y:auto;border:0.5px solid var(--border);border-radius:var(--radius);padding:8px"></div>
+        </div>
+      </div>
+      <div class="grid-2" style="margin-bottom:0">
+        <div class="form-group">
+          <label class="form-label">Queues</label>
+          <div id="u-assign-q" style="max-height:120px;overflow-y:auto;border:0.5px solid var(--border);border-radius:var(--radius);padding:8px"></div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">IVRs</label>
+          <div id="u-assign-ivr" style="max-height:120px;overflow-y:auto;border:0.5px solid var(--border);border-radius:var(--radius);padding:8px"></div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button type="submit" class="btn btn-primary btn-sm" id="u-submit-btn">Create</button>
+      <button type="button" class="btn btn-sm" onclick="hideAdd()">Cancel</button>
+    </div>
+  </form>
+</div>
+
+<!-- ═══════════════════ USERS TABLE ═══════════════════ -->
+<table class="tbl">
+  <thead><tr><th>Status</th><th>Username</th><th>Name</th><th>Role</th><th>Extension</th><th>Last login</th><th></th></tr></thead>
+  <tbody id="user-body"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody>
+</table>
+
+<script>
+var API = '/api', KEY = '<%= apiKey %>', H = { 'X-API-Key': KEY };
+var J = { 'X-API-Key': KEY, 'Content-Type': 'application/json' };
+var allExtensions = [], allRingGroups = [], allQueues = [], allIVRs = [];
+
+function esc(s) { if (!s) return ''; var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function fmtTime(t) { if (!t) return 'never'; var d = new Date(t); return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
+
+function rolePill(r) {
+  if (r === 'admin') return '<span class="pill p-miss">admin</span>';
+  if (r === 'supervisor') return '<span class="pill p-warn">supervisor</span>';
+  return '<span class="pill p-info">agent</span>';
+}
+
+function showToast(msg, isError) {
+  var el = document.createElement('div');
+  el.className = 'toast ' + (isError ? 'toast-error' : 'toast-success');
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(function() { el.remove(); }, 3000);
+}
+
+// ─── Load reference data ───
+async function loadRefData() {
+  try {
+    var [extR, rgR, qR, ivrR] = await Promise.all([
+      fetch(API + '/extensions', { headers: H }).then(function(r) { return r.json(); }),
+      fetch(API + '/ringgroups', { headers: H }).then(function(r) { return r.json(); }),
+      fetch(API + '/queues', { headers: H }).then(function(r) { return r.json(); }),
+      fetch(API + '/ivr', { headers: H }).then(function(r) { return r.json(); })
+    ]);
+    allExtensions = (extR.success && extR.extensions) || [];
+    allRingGroups = (rgR.success && rgR.ringgroups) || [];
+    allQueues = (qR.success && qR.queues) || [];
+    allIVRs = (ivrR.success && ivrR.ivrs) || [];
+
+    // Populate extension dropdown
+    var sel = document.getElementById('u-ext');
+    sel.innerHTML = '<option value="">— none —</option>';
+    allExtensions.forEach(function(e) {
+      sel.innerHTML += '<option value="' + esc(e.extension) + '">' + esc(e.extension) + ' — ' + esc(e.name) + '</option>';
+    });
+  } catch (e) { console.error('ref data', e); }
+}
+
+function buildCheckboxes(containerId, items, selected) {
+  var el = document.getElementById(containerId);
+  if (!items.length) { el.innerHTML = '<span class="muted" style="font-size:11px">None available</span>'; return; }
+  el.innerHTML = items.map(function(item) {
+    var val = item.number || item.extension;
+    var label = (item.name || val) + ' (' + val + ')';
+    var checked = selected && selected.indexOf(val) >= 0 ? ' checked' : '';
+    return '<label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;padding:2px 0">' +
+      '<input type="checkbox" class="' + containerId + '-cb" value="' + esc(val) + '"' + checked + '>' + esc(label) +
+    '</label>';
+  }).join('');
+}
+
+function collectCheckboxes(containerId) {
+  var cbs = document.querySelectorAll('.' + containerId + '-cb:checked');
+  var vals = [];
+  cbs.forEach(function(cb) { vals.push(cb.value); });
+  return vals;
+}
+
+function toggleRoleFields() {
+  var role = document.getElementById('u-role').value;
+  document.getElementById('supervisor-fields').style.display = role === 'supervisor' ? 'block' : 'none';
+  if (role === 'supervisor') {
+    buildCheckboxes('u-assign-ext', allExtensions, []);
+    buildCheckboxes('u-assign-rg', allRingGroups, []);
+    buildCheckboxes('u-assign-q', allQueues, []);
+    buildCheckboxes('u-assign-ivr', allIVRs, []);
+  }
+}
+
+// ─── Form ───
+function showAdd() {
+  document.getElementById('u-edit-id').value = '';
+  document.getElementById('u-username').value = '';
+  document.getElementById('u-username').disabled = false;
+  document.getElementById('u-password').value = '';
+  document.getElementById('u-password').placeholder = 'Password';
+  document.getElementById('u-password').required = true;
+  document.getElementById('u-role').value = 'agent';
+  document.getElementById('u-name').value = '';
+  document.getElementById('u-email').value = '';
+  document.getElementById('u-ext').value = '';
+  document.getElementById('u-submit-btn').textContent = 'Create';
+  toggleRoleFields();
+  document.getElementById('add-form').style.display = 'block';
+}
+
+function showEdit(u) {
+  document.getElementById('u-edit-id').value = u._id;
+  document.getElementById('u-username').value = u.username;
+  document.getElementById('u-username').disabled = true;
+  document.getElementById('u-password').value = '';
+  document.getElementById('u-password').placeholder = '••••••• (leave blank to keep)';
+  document.getElementById('u-password').required = false;
+  document.getElementById('u-role').value = u.role;
+  document.getElementById('u-name').value = u.name || '';
+  document.getElementById('u-email').value = u.email || '';
+  document.getElementById('u-ext').value = u.extension || '';
+  document.getElementById('u-submit-btn').textContent = 'Update';
+
+  if (u.role === 'supervisor') {
+    document.getElementById('supervisor-fields').style.display = 'block';
+    buildCheckboxes('u-assign-ext', allExtensions, u.assignedExtensions || []);
+    buildCheckboxes('u-assign-rg', allRingGroups, u.assignedRingGroups || []);
+    buildCheckboxes('u-assign-q', allQueues, u.assignedQueues || []);
+    buildCheckboxes('u-assign-ivr', allIVRs, u.assignedIVRs || []);
+  } else {
+    toggleRoleFields();
+  }
+  document.getElementById('add-form').style.display = 'block';
+}
+
+function hideAdd() { document.getElementById('add-form').style.display = 'none'; }
+
+// ─── CRUD ───
+async function load() {
+  try {
+    var d = await (await fetch(API + '/users', { headers: H })).json();
+    var b = document.getElementById('user-body');
+    if (!d.success || !d.users || !d.users.length) {
+      b.innerHTML = '<tr><td colspan="7" class="empty">No users</td></tr>';
+      document.getElementById('user-summary').textContent = '';
+      return;
+    }
+
+    var admins = 0, supers = 0, agents = 0;
+    d.users.forEach(function(u) { if (u.role === 'admin') admins++; else if (u.role === 'supervisor') supers++; else agents++; });
+    document.getElementById('user-summary').textContent = admins + ' admin, ' + supers + ' supervisor, ' + agents + ' agent';
+
+    b.innerHTML = d.users.map(function(u) {
+      return '<tr>' +
+        '<td><span class="dot ' + (u.enabled !== false ? 'dot-green' : 'dot-gray') + '"></span></td>' +
+        '<td class="mono">' + esc(u.username) + '</td>' +
+        '<td>' + esc(u.name || '') + '</td>' +
+        '<td>' + rolePill(u.role) + '</td>' +
+        '<td class="mono">' + esc(u.extension || '-') + '</td>' +
+        '<td class="muted" style="font-size:11px">' + fmtTime(u.lastLogin) + '</td>' +
+        '<td style="white-space:nowrap">' +
+          '<button class="act-btn" title="Edit" onclick=\'showEdit(' + JSON.stringify(u).replace(/'/g, "&#39;") + ')\'>' +
+            '<svg viewBox="0 0 24 24" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>' +
+          '</button>' +
+          '<button class="act-btn" title="Delete" onclick="delUser(\'' + u._id + '\',\'' + esc(u.username) + '\')">' +
+            '<svg viewBox="0 0 24 24" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>' +
+          '</button>' +
+        '</td>' +
+      '</tr>';
+    }).join('');
+  } catch (e) { console.error('user load', e); }
+}
+
+async function saveUser(e) {
+  e.preventDefault();
+  var editId = document.getElementById('u-edit-id').value;
+  var role = document.getElementById('u-role').value;
+  var body = {
+    username: document.getElementById('u-username').value,
+    role: role,
+    name: document.getElementById('u-name').value,
+    email: document.getElementById('u-email').value,
+    extension: document.getElementById('u-ext').value
+  };
+
+  var pw = document.getElementById('u-password').value;
+  if (pw) body.password = pw;
+  if (!editId && !pw) { showToast('Password required for new user', true); return; }
+
+  if (role === 'supervisor') {
+    body.assignedExtensions = collectCheckboxes('u-assign-ext');
+    body.assignedRingGroups = collectCheckboxes('u-assign-rg');
+    body.assignedQueues = collectCheckboxes('u-assign-q');
+    body.assignedIVRs = collectCheckboxes('u-assign-ivr');
+  }
+
+  var url = editId ? API + '/users/' + editId : API + '/users';
+  var method = editId ? 'PUT' : 'POST';
+  var r = await fetch(url, { method: method, headers: J, body: JSON.stringify(body) });
+  var d = await r.json();
+  if (d.success) {
+    hideAdd();
+    showToast(editId ? 'User updated' : 'User created');
+    load();
+  } else {
+    showToast(d.error || 'Failed', true);
+  }
+}
+
+async function delUser(id, username) {
+  if (!confirm('Delete user "' + username + '"?')) return;
+  await fetch(API + '/users/' + id, { method: 'DELETE', headers: H });
+  showToast('User deleted');
+  load();
+}
+
+// ─── Init ───
+loadRefData().then(load);
+</script>
+<%- include('../partials/foot') %>

@@ -706,6 +706,107 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   });
 
   // ============================================================
+  // Users (RBAC)
+  // ============================================================
+  const { User } = require('../models');
+  const bcrypt = require('bcryptjs');
+
+  router.get('/users', async (req, res) => {
+    try {
+      const users = await User.find({}, '-password').sort('username');
+      res.json({ success: true, users });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.get('/users/:id', async (req, res) => {
+    try {
+      const user = await User.findById(req.params.id, '-password');
+      if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+      res.json({ success: true, user });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.post('/users', async (req, res) => {
+    try {
+      const { username, password, role, name, email, extension, assignedExtensions, assignedRingGroups, assignedQueues, assignedIVRs } = req.body;
+      if (!username || !password || !role) return res.status(400).json({ success: false, error: 'username, password, role required' });
+      if (!['admin', 'supervisor', 'agent'].includes(role)) return res.status(400).json({ success: false, error: 'role must be admin, supervisor, or agent' });
+      if (await User.findOne({ username })) return res.status(409).json({ success: false, error: 'Username already exists' });
+      const hash = await bcrypt.hash(password, 10);
+      const user = await User.create({
+        username, password: hash, role, name, email, extension,
+        assignedExtensions: assignedExtensions || [],
+        assignedRingGroups: assignedRingGroups || [],
+        assignedQueues: assignedQueues || [],
+        assignedIVRs: assignedIVRs || []
+      });
+      logger.info(`User created: ${username} (${role})`);
+      res.status(201).json({ success: true, user: { _id: user._id, username, role, name, email, extension } });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.put('/users/:id', async (req, res) => {
+    try {
+      const updates = {};
+      ['name', 'email', 'role', 'extension', 'enabled', 'assignedExtensions', 'assignedRingGroups', 'assignedQueues', 'assignedIVRs'].forEach(k => {
+        if (req.body[k] !== undefined) updates[k] = req.body[k];
+      });
+      if (req.body.password) {
+        updates.password = await bcrypt.hash(req.body.password, 10);
+      }
+      const user = await User.findByIdAndUpdate(req.params.id, updates, { new: true, select: '-password' });
+      if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+      res.json({ success: true, user });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.delete('/users/:id', async (req, res) => {
+    try {
+      const user = await User.findByIdAndDelete(req.params.id);
+      if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+      res.json({ success: true, message: `User ${user.username} deleted` });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // ============================================================
+  // Call Notes + Disposition
+  // ============================================================
+
+  // Add note to a call
+  router.post('/cdr/:callId/notes', async (req, res) => {
+    try {
+      const { text, author, authorRole } = req.body;
+      if (!text || !author) return res.status(400).json({ success: false, error: 'text, author required' });
+      const cdr = await CDR.findOne({ callId: req.params.callId });
+      if (!cdr) return res.status(404).json({ success: false, error: 'Call not found' });
+      cdr.notes.push({ text, author, authorRole: authorRole || '', createdAt: new Date() });
+      await cdr.save();
+      res.json({ success: true, notes: cdr.notes });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // Get notes for a call
+  router.get('/cdr/:callId/notes', async (req, res) => {
+    try {
+      const cdr = await CDR.findOne({ callId: req.params.callId });
+      if (!cdr) return res.status(404).json({ success: false, error: 'Call not found' });
+      res.json({ success: true, notes: cdr.notes || [], disposition: cdr.disposition || '' });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // Set call disposition
+  router.post('/cdr/:callId/disposition', async (req, res) => {
+    try {
+      const { disposition } = req.body;
+      const cdr = await CDR.findOne({ callId: req.params.callId });
+      if (!cdr) return res.status(404).json({ success: false, error: 'Call not found' });
+      cdr.disposition = disposition || '';
+      await cdr.save();
+      res.json({ success: true, disposition: cdr.disposition });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // ============================================================
   // CDR Recording playback
   // ============================================================
   router.get('/cdr/:callId/recording', async (req, res) => {

@@ -21,55 +21,192 @@
   <button class="btn btn-sm" onclick="loadCDR()">Search</button>
 </div>
 <table class="tbl">
-  <thead><tr><th></th><th>From</th><th>To</th><th>Duration</th><th>Talk</th><th>Status</th><th>Recording</th><th>Time</th></tr></thead>
-  <tbody id="cdr-body"><tr><td colspan="8" class="empty">Loading...</td></tr></tbody>
+  <thead><tr><th></th><th>From</th><th>To</th><th>Duration</th><th>Talk</th><th>Status</th><th>Disposition</th><th>Recording</th><th>Notes</th><th>Time</th></tr></thead>
+  <tbody id="cdr-body"><tr><td colspan="10" class="empty">Loading...</td></tr></tbody>
 </table>
 <div style="display:flex;justify-content:space-between;margin-top:12px;font-size:12px;color:var(--text-tertiary)">
   <span id="cdr-info">-</span>
   <div><button class="btn btn-sm" id="prev-btn" onclick="prevPage()" disabled>Prev</button> <button class="btn btn-sm" id="next-btn" onclick="nextPage()" disabled>Next</button></div>
 </div>
+
+<!-- Notes modal -->
+<div id="notes-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:100;align-items:center;justify-content:center">
+  <div class="card" style="max-width:550px;width:90%;max-height:80vh;overflow-y:auto">
+    <div class="card-head">
+      <span class="card-title">Call Notes — <span id="nm-callid" class="mono" style="font-size:11px"></span></span>
+      <button class="act-btn" onclick="closeNotes()">
+        <svg viewBox="0 0 24 24" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+
+    <!-- Disposition -->
+    <div style="margin-bottom:12px">
+      <label class="form-label">Disposition</label>
+      <select class="form-select" id="nm-disposition" onchange="saveDisposition()">
+        <option value="">— none —</option>
+        <option value="resolved">Resolved</option>
+        <option value="follow-up">Follow-up needed</option>
+        <option value="escalated">Escalated</option>
+        <option value="callback">Callback</option>
+        <option value="no-action">No action</option>
+        <option value="spam">Spam</option>
+      </select>
+    </div>
+
+    <!-- Existing notes -->
+    <div id="nm-notes-list" style="margin-bottom:12px"></div>
+
+    <!-- Add note -->
+    <div style="display:flex;gap:8px">
+      <input class="form-input" id="nm-new-note" placeholder="Add a note..." style="flex:1">
+      <button class="btn btn-primary btn-sm" onclick="addNote()">Add</button>
+    </div>
+
+    <div style="margin-top:12px">
+      <button class="btn btn-sm" onclick="closeNotes()">Close</button>
+    </div>
+  </div>
+</div>
+
 <script>
-const API='/api',KEY='<%= apiKey %>',H={'X-API-Key':KEY};
-let page=1,limit=20;
-function dur(s){if(!s)return'-';return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0')}
-function fmtTime(t){if(!t)return'';const d=new Date(t);return d.toLocaleDateString([],{month:'short',day:'numeric'})+' '+d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}
-function pillCls(s){if(['answered','completed'].includes(s))return'p-ok';if(s==='voicemail')return'p-vm';if(['missed','failed','busy'].includes(s))return'p-miss';return'p-gray'}
-async function loadCDR(){
-  const q=document.getElementById('search').value;
-  const st=document.getElementById('filter-status').value;
-  const dir=document.getElementById('filter-dir').value;
-  let url=`/cdr?page=${page}&limit=${limit}`;
-  if(q)url+=`&search=${encodeURIComponent(q)}`;
-  if(st)url+=`&status=${st}`;
-  if(dir)url+=`&direction=${dir}`;
-  const d=await(await fetch(API+url,{headers:H})).json();
-  const b=document.getElementById('cdr-body');
-  if(d.success&&d.cdrs&&d.cdrs.length){
-    b.innerHTML=d.cdrs.map(c=>`<tr>
-      <td><span style="color:${c.direction==='inbound'?'var(--green)':'var(--blue)'}">${c.direction==='inbound'?'↓':'↑'}</span></td>
-      <td>${c.from||'?'}</td><td>${c.to||'?'}</td>
-      <td class="mono">${dur(c.duration)}</td><td class="mono">${dur(c.talkTime)}</td>
-      <td><span class="pill ${pillCls(c.status)}">${c.status}</span></td>
-      <td>${c.recordingPath ? '<button class="btn btn-sm" onclick="playRec(\''+c.callId+'\',this)" title="Play">&#9654;</button> <a class="btn btn-sm" href="'+API+'/cdr/'+c.callId+'/recording" download title="Download">&#8615;</a>' : '<span class="muted" style="font-size:10px">-</span>'}</td>
-      <td class="muted" style="font-size:11px">${fmtTime(c.startTime)}</td>
-    </tr>`).join('');
-    const p=d.pagination;
-    document.getElementById('cdr-info').textContent=`Showing ${(p.page-1)*limit+1}-${Math.min(p.page*limit,p.total)} of ${p.total}`;
-    document.getElementById('prev-btn').disabled=p.page<=1;
-    document.getElementById('next-btn').disabled=p.page>=p.pages;
-  }else{b.innerHTML='<tr><td colspan="8" class="empty">No records found</td></tr>';document.getElementById('cdr-info').textContent='0 records';}
+var API = '/api', KEY = '<%= apiKey %>', H = { 'X-API-Key': KEY };
+var J = { 'X-API-Key': KEY, 'Content-Type': 'application/json' };
+var page = 1, limit = 20;
+var currentCallId = null;
+var currentUser = '<%= typeof user !== "undefined" ? user : "admin" %>';
+var currentRole = '<%= typeof role !== "undefined" ? role : "admin" %>';
+
+function dur(s) { if (!s) return '-'; return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'); }
+function fmtTime(t) { if (!t) return ''; var d = new Date(t); return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
+function pillCls(s) { if (['answered', 'completed'].includes(s)) return 'p-ok'; if (s === 'voicemail') return 'p-vm'; if (['missed', 'failed', 'busy'].includes(s)) return 'p-miss'; return 'p-gray'; }
+function esc(s) { if (!s) return ''; var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+function dispPill(d) {
+  if (!d) return '<span class="muted" style="font-size:10px">—</span>';
+  var cls = 'p-gray';
+  if (d === 'resolved') cls = 'p-ok';
+  if (d === 'follow-up' || d === 'callback') cls = 'p-warn';
+  if (d === 'escalated') cls = 'p-miss';
+  if (d === 'spam') cls = 'p-err';
+  return '<span class="pill ' + cls + '" style="font-size:9px">' + esc(d) + '</span>';
 }
-let currentAudio=null;
-function playRec(callId,btn){
-  if(currentAudio){currentAudio.pause();currentAudio=null;}
-  const a=new Audio(API+'/cdr/'+callId+'/recording');
-  a.onended=function(){btn.textContent='\u25B6';currentAudio=null;};
-  a.onerror=function(){btn.textContent='\u25B6';alert('Recording not available');currentAudio=null;};
-  a.play();btn.textContent='\u25A0';currentAudio=a;
+
+async function loadCDR() {
+  var q = document.getElementById('search').value;
+  var st = document.getElementById('filter-status').value;
+  var dir = document.getElementById('filter-dir').value;
+  var url = '/cdr?page=' + page + '&limit=' + limit;
+  if (q) url += '&search=' + encodeURIComponent(q);
+  if (st) url += '&status=' + st;
+  if (dir) url += '&direction=' + dir;
+  var d = await (await fetch(API + url, { headers: H })).json();
+  var b = document.getElementById('cdr-body');
+  if (d.success && d.cdrs && d.cdrs.length) {
+    b.innerHTML = d.cdrs.map(function(c) {
+      var noteCount = (c.notes && c.notes.length) || 0;
+      return '<tr>' +
+        '<td><span style="color:' + (c.direction === 'inbound' ? 'var(--green)' : c.direction === 'outbound' ? 'var(--blue)' : 'var(--text-secondary)') + '">' + (c.direction === 'inbound' ? '↓' : c.direction === 'outbound' ? '↑' : '↔') + '</span></td>' +
+        '<td>' + esc(c.from || '?') + '</td>' +
+        '<td>' + esc(c.to || '?') + '</td>' +
+        '<td class="mono">' + dur(c.duration) + '</td>' +
+        '<td class="mono">' + dur(c.talkTime) + '</td>' +
+        '<td><span class="pill ' + pillCls(c.status) + '">' + esc(c.status) + '</span></td>' +
+        '<td>' + dispPill(c.disposition) + '</td>' +
+        '<td>' +
+          (c.recordingPath
+            ? '<button class="btn btn-sm" onclick="playRec(\'' + esc(c.callId) + '\',this)" title="Play">&#9654;</button> ' +
+              '<a class="btn btn-sm" href="' + API + '/cdr/' + c.callId + '/recording" download title="Download">&#8615;</a>'
+            : '<span class="muted" style="font-size:10px">-</span>') +
+        '</td>' +
+        '<td>' +
+          '<button class="btn btn-sm" onclick="openNotes(\'' + esc(c.callId) + '\')" title="Notes">' +
+            (noteCount > 0 ? '&#128221; ' + noteCount : '&#128221;') +
+          '</button>' +
+        '</td>' +
+        '<td class="muted" style="font-size:11px">' + fmtTime(c.startTime) + '</td>' +
+      '</tr>';
+    }).join('');
+    var p = d.pagination;
+    document.getElementById('cdr-info').textContent = 'Showing ' + ((p.page - 1) * limit + 1) + '-' + Math.min(p.page * limit, p.total) + ' of ' + p.total;
+    document.getElementById('prev-btn').disabled = p.page <= 1;
+    document.getElementById('next-btn').disabled = p.page >= p.pages;
+  } else {
+    b.innerHTML = '<tr><td colspan="10" class="empty">No records found</td></tr>';
+    document.getElementById('cdr-info').textContent = '0 records';
+  }
 }
-function prevPage(){page--;loadCDR()}
-function nextPage(){page++;loadCDR()}
-document.getElementById('search').addEventListener('keypress',e=>{if(e.key==='Enter'){page=1;loadCDR()}});
+
+var currentAudio = null;
+function playRec(callId, btn) {
+  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+  var a = new Audio(API + '/cdr/' + callId + '/recording');
+  a.onended = function() { btn.textContent = '\u25B6'; currentAudio = null; };
+  a.onerror = function() { btn.textContent = '\u25B6'; alert('Recording not available'); currentAudio = null; };
+  a.play(); btn.textContent = '\u25A0'; currentAudio = a;
+}
+
+// ─── Notes modal ───
+async function openNotes(callId) {
+  currentCallId = callId;
+  document.getElementById('nm-callid').textContent = callId;
+  document.getElementById('nm-new-note').value = '';
+  document.getElementById('notes-modal').style.display = 'flex';
+
+  var d = await (await fetch(API + '/cdr/' + callId + '/notes', { headers: H })).json();
+  if (d.success) {
+    document.getElementById('nm-disposition').value = d.disposition || '';
+    renderNotes(d.notes || []);
+  }
+}
+
+function renderNotes(notes) {
+  var el = document.getElementById('nm-notes-list');
+  if (!notes.length) { el.innerHTML = '<div class="muted" style="font-size:12px;padding:8px 0">No notes yet</div>'; return; }
+  el.innerHTML = notes.map(function(n) {
+    var roleCls = n.authorRole === 'admin' ? 'p-miss' : n.authorRole === 'supervisor' ? 'p-warn' : 'p-info';
+    return '<div style="padding:8px 0;border-bottom:0.5px solid var(--border)">' +
+      '<div style="display:flex;justify-content:space-between;margin-bottom:2px">' +
+        '<span style="font-size:12px;font-weight:500">' + esc(n.author) + ' <span class="pill ' + roleCls + '" style="font-size:8px">' + esc(n.authorRole || '') + '</span></span>' +
+        '<span class="muted" style="font-size:10px">' + fmtTime(n.createdAt) + '</span>' +
+      '</div>' +
+      '<div style="font-size:13px">' + esc(n.text) + '</div>' +
+    '</div>';
+  }).join('');
+}
+
+async function addNote() {
+  var text = document.getElementById('nm-new-note').value.trim();
+  if (!text || !currentCallId) return;
+  var d = await (await fetch(API + '/cdr/' + currentCallId + '/notes', {
+    method: 'POST', headers: J,
+    body: JSON.stringify({ text: text, author: currentUser, authorRole: currentRole })
+  })).json();
+  if (d.success) {
+    document.getElementById('nm-new-note').value = '';
+    renderNotes(d.notes);
+    loadCDR();
+  }
+}
+
+async function saveDisposition() {
+  if (!currentCallId) return;
+  var disp = document.getElementById('nm-disposition').value;
+  await fetch(API + '/cdr/' + currentCallId + '/disposition', {
+    method: 'POST', headers: J,
+    body: JSON.stringify({ disposition: disp })
+  });
+  loadCDR();
+}
+
+function closeNotes() {
+  document.getElementById('notes-modal').style.display = 'none';
+  currentCallId = null;
+}
+
+function prevPage() { page--; loadCDR(); }
+function nextPage() { page++; loadCDR(); }
+document.getElementById('search').addEventListener('keypress', function(e) { if (e.key === 'Enter') { page = 1; loadCDR(); } });
+document.getElementById('nm-new-note').addEventListener('keypress', function(e) { if (e.key === 'Enter') addNote(); });
 loadCDR();
 </script>
 <%- include('../partials/foot') %>

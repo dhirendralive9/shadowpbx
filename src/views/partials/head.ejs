@@ -11,7 +11,7 @@
   <% if (typeof noLayout === 'undefined' || !noLayout) { %>
   <div class="layout">
     <%- include('header') %>
-    <%- include('tabs', { active: typeof active !== 'undefined' ? active : 'dashboard' }) %>
+    <%- include('tabs', { active: typeof active !== 'undefined' ? active : 'dashboard', role: typeof role !== 'undefined' ? role : 'admin' }) %>
     <main>
 </head>
 <% } %>
