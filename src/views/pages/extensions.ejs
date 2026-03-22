@@ -38,7 +38,7 @@ function showAddForm() { document.getElementById('add-form').style.display = 'bl
 function hideAddForm() { document.getElementById('add-form').style.display = 'none'; }
 
 function presencePill(p, remote) {
-  if (!p || p === 'idle') return '<span class="pill p-gray">idle</span>';
+  if (!p || p === 'idle') return '<span class="pill p-info">ready</span>';
   if (p === 'ringing') return '<span class="pill p-ring">ringing</span>' + (remote ? ' <span class="mono muted" style="font-size:10px">' + esc(remote) + '</span>' : '');
   if (p === 'confirmed') return '<span class="pill p-ok">in call</span>' + (remote ? ' <span class="mono muted" style="font-size:10px">' + esc(remote) + '</span>' : '');
   if (p === 'held') return '<span class="pill p-hold">on hold</span>' + (remote ? ' <span class="mono muted" style="font-size:10px">' + esc(remote) + '</span>' : '');
