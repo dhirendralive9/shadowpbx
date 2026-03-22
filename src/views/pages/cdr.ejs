@@ -50,7 +50,7 @@ async function loadCDR(){
       <td>${c.from||'?'}</td><td>${c.to||'?'}</td>
       <td class="mono">${dur(c.duration)}</td><td class="mono">${dur(c.talkTime)}</td>
       <td><span class="pill ${pillCls(c.status)}">${c.status}</span></td>
-      <td>${c.recordingPath ? '<button class="btn btn-sm" onclick="playRec(\''+c.callId+'\',this)" title="Play recording">&#9654;</button>' : '<span class="muted" style="font-size:10px">-</span>'}</td>
+      <td>${c.recordingPath ? '<button class="btn btn-sm" onclick="playRec(\''+c.callId+'\',this)" title="Play">&#9654;</button> <a class="btn btn-sm" href="'+API+'/cdr/'+c.callId+'/recording" download title="Download">&#8615;</a>' : '<span class="muted" style="font-size:10px">-</span>'}</td>
       <td class="muted" style="font-size:11px">${fmtTime(c.startTime)}</td>
     </tr>`).join('');
     const p=d.pagination;
