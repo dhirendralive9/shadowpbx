@@ -76,7 +76,7 @@ apt-get install -y -qq \
   libcurl4-openssl-dev libssl-dev \
   pkg-config openssl ca-certificates \
   software-properties-common unzip htop \
-  sox libsox-fmt-all
+  sox libsox-fmt-all ffmpeg
 
 # Install tshark non-interactively (for pcap→wav recording conversion)
 echo "wireshark-common wireshark-common/install-setuid boolean false" | debconf-set-selections

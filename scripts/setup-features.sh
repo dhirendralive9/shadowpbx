@@ -70,6 +70,17 @@ if ! command -v sox &> /dev/null; then
   apt-get install -y -qq sox libsox-fmt-all 2>/dev/null || apt-get install -y -qq sox 2>/dev/null
 fi
 
+# Check if ffmpeg is installed (needed for IVR audio upload conversion)
+if ! command -v ffmpeg &> /dev/null; then
+  echo "  Installing ffmpeg for audio conversion..."
+  apt-get install -y -qq ffmpeg 2>/dev/null
+  if command -v ffmpeg &> /dev/null; then
+    log "ffmpeg installed"
+  else
+    warn "ffmpeg install failed — uploaded audio files won't be auto-converted to 8kHz WAV"
+  fi
+fi
+
 # Generate beep tone (0.5s 1000Hz sine wave, 8kHz mono u-law)
 if [ ! -f "${AUDIO_DIR}/beep.wav" ] || [ ! -s "${AUDIO_DIR}/beep.wav" ]; then
   if command -v sox &> /dev/null; then
