@@ -351,6 +351,51 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
 
+  // Serve audio file for playback
+  router.get('/audio/play/:filename', (req, res) => {
+    try {
+      const fs = require('fs');
+      const filePath = require('path').join(audioDir, req.params.filename);
+      if (!fs.existsSync(filePath)) return res.status(404).json({ success: false, error: 'File not found' });
+      const ext = req.params.filename.split('.').pop().toLowerCase();
+      res.setHeader('Content-Type', ext === 'mp3' ? 'audio/mpeg' : 'audio/wav');
+      res.setHeader('Content-Disposition', `inline; filename="${req.params.filename}"`);
+      fs.createReadStream(filePath).pipe(res);
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // Rename audio file
+  router.post('/audio/rename', (req, res) => {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const { oldName, newName } = req.body;
+      if (!oldName || !newName) return res.status(400).json({ success: false, error: 'oldName and newName required' });
+      const safeName = newName.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const ext = path.extname(oldName) || '.wav';
+      const finalName = safeName.endsWith(ext) ? safeName : safeName + ext;
+      const oldPath = path.join(audioDir, oldName);
+      const newPath = path.join(audioDir, finalName);
+      if (!fs.existsSync(oldPath)) return res.status(404).json({ success: false, error: 'File not found' });
+      if (fs.existsSync(newPath) && oldPath !== newPath) return res.status(409).json({ success: false, error: 'A file with that name already exists' });
+      fs.renameSync(oldPath, newPath);
+      logger.info(`Audio renamed: ${oldName} -> ${finalName}`);
+      res.json({ success: true, oldName, newName: finalName, path: newPath });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // Delete audio file
+  router.delete('/audio/:filename', (req, res) => {
+    try {
+      const fs = require('fs');
+      const filePath = require('path').join(audioDir, req.params.filename);
+      if (!fs.existsSync(filePath)) return res.status(404).json({ success: false, error: 'File not found' });
+      fs.unlinkSync(filePath);
+      logger.info(`Audio deleted: ${req.params.filename}`);
+      res.json({ success: true, message: `${req.params.filename} deleted` });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
   router.get('/ivr', async (req, res) => {
     try {
       const ivrs = await IVR.find({}).sort('number');

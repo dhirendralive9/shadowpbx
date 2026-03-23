@@ -232,6 +232,20 @@ async function main() {
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
 
+  // Public audio file playback (for settings page player)
+  const audioDir = process.env.MOH_DIR || '/opt/shadowpbx/audio';
+  app.get('/api/audio/play/:filename', (req, res) => {
+    try {
+      const safeName = req.params.filename.replace(/\.\./g, '');
+      const filePath = require('path').join(audioDir, safeName);
+      if (!fs.existsSync(filePath)) return res.status(404).json({ success: false, error: 'File not found' });
+      const ext = safeName.split('.').pop().toLowerCase();
+      res.setHeader('Content-Type', ext === 'mp3' ? 'audio/mpeg' : 'audio/wav');
+      res.setHeader('Content-Disposition', `inline; filename="${safeName}"`);
+      fs.createReadStream(filePath).pipe(res);
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
   // API auth middleware
   app.use('/api', (req, res, next) => {
     const token = req.headers['x-api-key'] || req.query.apikey;

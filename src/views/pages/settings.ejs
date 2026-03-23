@@ -142,8 +142,14 @@ async function loadAudioFiles() {
           '<td class="muted">' + Math.round(f.size / 1024) + ' KB</td>' +
           '<td class="muted" style="font-size:11px">' + fmtTime(f.modified) + '</td>' +
           '<td style="white-space:nowrap">' +
-            '<button class="act-btn" onclick="playAudio(\'' + esc(f.path) + '\',this)" title="Play">' +
+            '<button class="act-btn" onclick="playAudio(\'' + esc(f.name) + '\',this)" title="Play">' +
               '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>' +
+            '</button>' +
+            '<button class="act-btn" onclick="renameAudio(\'' + esc(f.name) + '\')" title="Rename">' +
+              '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>' +
+            '</button>' +
+            '<button class="act-btn" onclick="deleteAudio(\'' + esc(f.name) + '\')" title="Delete">' +
+              '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>' +
             '</button>' +
           '</td>' +
         '</tr>';
@@ -154,11 +160,66 @@ async function loadAudioFiles() {
   } catch (e) { console.error('audio', e); }
 }
 
+var ICON_PLAY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>';
+var ICON_PAUSE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>';
 var currentAudio = null;
-function playAudio(path, btn) {
-  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
-  // Serve audio via a simple endpoint — for now open in new tab
-  showToast('Audio files play via IVR/MOH on calls');
+var currentBtn = null;
+
+function playAudio(filename, btn) {
+  if (currentAudio && currentBtn === btn) {
+    if (currentAudio.paused) {
+      currentAudio.play();
+      btn.innerHTML = ICON_PAUSE;
+      btn.title = 'Pause';
+    } else {
+      currentAudio.pause();
+      btn.innerHTML = ICON_PLAY;
+      btn.title = 'Resume';
+    }
+    return;
+  }
+  if (currentAudio) {
+    currentAudio.pause();
+    currentAudio = null;
+    if (currentBtn) { currentBtn.innerHTML = ICON_PLAY; currentBtn.title = 'Play'; }
+  }
+  var a = new Audio(API + '/audio/play/' + encodeURIComponent(filename));
+  a.onended = function() { btn.innerHTML = ICON_PLAY; btn.title = 'Play'; currentAudio = null; currentBtn = null; };
+  a.onerror = function() { btn.innerHTML = ICON_PLAY; btn.title = 'Play'; showToast('Could not play file', true); currentAudio = null; currentBtn = null; };
+  a.play();
+  btn.innerHTML = ICON_PAUSE;
+  btn.title = 'Pause';
+  currentAudio = a;
+  currentBtn = btn;
+}
+
+async function renameAudio(oldName) {
+  var baseName = oldName.replace(/\.[^.]+$/, '');
+  var newName = prompt('Rename "' + oldName + '" to:', baseName);
+  if (!newName || newName === baseName) return;
+  var r = await fetch(API + '/audio/rename', {
+    method: 'POST', headers: J,
+    body: JSON.stringify({ oldName: oldName, newName: newName })
+  });
+  var d = await r.json();
+  if (d.success) {
+    showToast('Renamed to ' + d.newName);
+    loadAudioFiles();
+  } else {
+    showToast(d.error || 'Rename failed', true);
+  }
+}
+
+async function deleteAudio(filename) {
+  if (!confirm('Delete "' + filename + '"?\n\nIf this file is used by an IVR or MOH, it will stop working.')) return;
+  var r = await fetch(API + '/audio/' + encodeURIComponent(filename), { method: 'DELETE', headers: H });
+  var d = await r.json();
+  if (d.success) {
+    showToast(filename + ' deleted');
+    loadAudioFiles();
+  } else {
+    showToast(d.error || 'Delete failed', true);
+  }
 }
 
 async function uploadAudioFile(input) {
