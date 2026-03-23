@@ -321,6 +321,8 @@ class CallHandler {
         };
         uas.on('destroy', () => { try { uac.destroy(); } catch(e) {} onDestroy('caller'); });
         uac.on('destroy', () => { try { uas.destroy(); } catch(e) {} onDestroy('callee'); });
+      } catch (err) {
+        logger.error(`INBOUND DIAL FAILED: ${target} error=${err.message} status=${err.status}`);
         // BLF: target goes idle on failure
         this._emitPresence(target, 'idle');
         // On no-answer/timeout/busy → try voicemail
@@ -389,6 +391,7 @@ class CallHandler {
           };
           result.uas.on('destroy', () => { try { result.uac.destroy(); } catch(e) {} onDestroy('caller'); });
           result.uac.on('destroy', () => { try { result.uas.destroy(); } catch(e) {} onDestroy('callee'); });
+          this.activeCalls.set(callId, { uas: result.uas, uac: result.uac, cdr, fromExt: callerID, toExt: result.answeredBy });
         } else {
           // Ring group returned null — nobody answered → all idle
           if (ringGroup.members) ringGroup.members.forEach(m => this._emitPresence(m, 'idle'));
@@ -544,6 +547,9 @@ class CallHandler {
     };
     uas.on('destroy', () => { try { uac.destroy(); } catch(e) {} onDestroy('caller'); });
     uac.on('destroy', () => { try { uas.destroy(); } catch(e) {} onDestroy('callee'); });
+  }
+
+  async _endCall(cdr, hangupBy) {
     const endTime = new Date();
     cdr.status = 'completed';
     cdr.endTime = endTime;
