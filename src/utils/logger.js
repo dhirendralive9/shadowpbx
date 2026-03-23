@@ -9,7 +9,6 @@ const logger = winston.createLogger({
     })
   ),
   transports: [
-    new winston.transports.Console(),
     new winston.transports.File({
       filename: '/var/log/shadowpbx/shadowpbx.log',
       maxsize: 10 * 1024 * 1024, // 10MB

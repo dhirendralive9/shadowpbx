@@ -3,6 +3,18 @@ const Srf = require('drachtio-srf');
 const mongoose = require('mongoose');
 const express = require('express');
 const logger = require('./utils/logger');
+
+// ============================================================
+// Crash prevention — catch unhandled errors so the PBX stays up
+// ============================================================
+process.on('uncaughtException', (err) => {
+  logger.error(`Uncaught exception: ${err.message}`);
+  logger.error(err.stack || '');
+});
+process.on('unhandledRejection', (reason) => {
+  logger.error(`Unhandled rejection: ${reason && reason.message ? reason.message : reason}`);
+});
+
 const Registrar = require('./services/registrar');
 const CallHandler = require('./services/call-handler');
 const RingGroupHandler = require('./services/ring-group');

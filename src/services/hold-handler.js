@@ -105,7 +105,13 @@ class HoldHandler {
 
     try {
       // Forward re-INVITE to the other leg
-      await otherDialog.modify(sdp);
+      try {
+        await otherDialog.modify(sdp);
+      } catch (modErr) {
+        logger.warn(`RE-INVITE forward failed [${callId}]: ${modErr.message}`);
+        try { res.send(200, { body: originatorDialog.local.sdp }); } catch(e) {}
+        return;
+      }
       logger.debug(`RE-INVITE forwarded to other leg [${callId}]`);
 
       // Respond to originator with 200 OK using other leg's SDP
@@ -319,7 +325,11 @@ class HoldHandler {
     const holdSdp = this._makeSendonly(currentSdp);
 
     try {
-      await uac.modify(holdSdp);
+      try {
+        await uac.modify(holdSdp);
+      } catch (modErr) {
+        throw new Error(`Callee modify failed: ${modErr.message}`);
+      }
       logger.info(`API HOLD: callee put on hold [${callId}]`);
 
       // Also re-INVITE caller to sendonly
@@ -357,7 +367,11 @@ class HoldHandler {
     try {
       await this._stopMoh(activeCall.sipCallId, cdr);
 
-      await uac.modify(resumeSdp);
+      try {
+        await uac.modify(resumeSdp);
+      } catch (modErr) {
+        throw new Error(`Callee modify failed: ${modErr.message}`);
+      }
       logger.info(`API RESUME: callee resumed [${callId}]`);
 
       // Also re-INVITE caller back to sendrecv

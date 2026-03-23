@@ -197,8 +197,8 @@ class CallHandler {
           await this._endCall(cdr, hangupBy);
           this.activeCalls.delete(callId);
         };
-        result.uas.on('destroy', () => { result.uac.destroy(); onDestroy('caller'); });
-        result.uac.on('destroy', () => { result.uas.destroy(); onDestroy('callee'); });
+        result.uas.on('destroy', () => { try { result.uac.destroy(); } catch(e) {} onDestroy('caller'); });
+        result.uac.on('destroy', () => { try { result.uas.destroy(); } catch(e) {} onDestroy('callee'); });
         this.activeCalls.set(callId, { uas: result.uas, uac: result.uac, cdr, fromExt, toExt: result.answeredBy });
       } else {
         // Nobody answered — everyone goes idle
@@ -319,10 +319,8 @@ class CallHandler {
           this.activeCalls.delete(callId);
           await this._rtpengineDelete(rtpCallId, rtpFromTag);
         };
-        uas.on('destroy', () => { uac.destroy(); onDestroy('caller'); });
-        uac.on('destroy', () => { uas.destroy(); onDestroy('callee'); });
-      } catch (err) {
-        logger.error(`INBOUND DIAL FAILED: ${target} error=${err.message} status=${err.status}`);
+        uas.on('destroy', () => { try { uac.destroy(); } catch(e) {} onDestroy('caller'); });
+        uac.on('destroy', () => { try { uas.destroy(); } catch(e) {} onDestroy('callee'); });
         // BLF: target goes idle on failure
         this._emitPresence(target, 'idle');
         // On no-answer/timeout/busy → try voicemail
@@ -389,9 +387,8 @@ class CallHandler {
             }
             this.activeCalls.delete(callId);
           };
-          result.uas.on('destroy', () => { result.uac.destroy(); onDestroy('caller'); });
-          result.uac.on('destroy', () => { result.uas.destroy(); onDestroy('callee'); });
-          this.activeCalls.set(callId, { uas: result.uas, uac: result.uac, cdr, fromExt: callerID, toExt: result.answeredBy });
+          result.uas.on('destroy', () => { try { result.uac.destroy(); } catch(e) {} onDestroy('caller'); });
+          result.uac.on('destroy', () => { try { result.uas.destroy(); } catch(e) {} onDestroy('callee'); });
         } else {
           // Ring group returned null — nobody answered → all idle
           if (ringGroup.members) ringGroup.members.forEach(m => this._emitPresence(m, 'idle'));
@@ -545,11 +542,8 @@ class CallHandler {
       if (this.holdHandler) this.holdHandler.cleanup(callId);
       await ActiveCall.deleteOne({ callId: cdr.callId }).catch(() => {});
     };
-    uas.on('destroy', () => { uac.destroy(); onDestroy('caller'); });
-    uac.on('destroy', () => { uas.destroy(); onDestroy('callee'); });
-  }
-
-  async _endCall(cdr, hangupBy) {
+    uas.on('destroy', () => { try { uac.destroy(); } catch(e) {} onDestroy('caller'); });
+    uac.on('destroy', () => { try { uas.destroy(); } catch(e) {} onDestroy('callee'); });
     const endTime = new Date();
     cdr.status = 'completed';
     cdr.endTime = endTime;
@@ -581,8 +575,8 @@ class CallHandler {
       cdr.recorded = false;
       await cdr.save();
       this.activeCalls.set(callId, { uas, uac, cdr });
-      uas.on('destroy', async () => { uac.destroy(); await this._endCall(cdr, 'caller'); this.activeCalls.delete(callId); });
-      uac.on('destroy', async () => { uas.destroy(); await this._endCall(cdr, 'callee'); this.activeCalls.delete(callId); });
+      uas.on('destroy', async () => { try { uac.destroy(); } catch(e) {} await this._endCall(cdr, 'caller'); this.activeCalls.delete(callId); });
+      uac.on('destroy', async () => { try { uas.destroy(); } catch(e) {} await this._endCall(cdr, 'callee'); this.activeCalls.delete(callId); });
     } catch (err) {
       await this._failCall(cdr, err, cdr.from, cdr.to);
     }
