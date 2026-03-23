@@ -319,12 +319,13 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
 
     try {
       // Convert to 8kHz mono 16-bit PCM WAV (RTPEngine standard)
-      execSync(`ffmpeg -y -i "${uploadedPath}" -ar 8000 -ac 1 -sample_fmt s16 -acodec pcm_s16le "${convertedPath}" 2>/dev/null`);
+      // Use a temp file because ffmpeg can't read and write the same file
+      const tmpPath = uploadedPath + '.tmp.wav';
+      execSync(`ffmpeg -y -i "${uploadedPath}" -ar 8000 -ac 1 -sample_fmt s16 -acodec pcm_s16le "${tmpPath}" 2>/dev/null`);
 
-      // Remove original if different from converted
-      if (uploadedPath !== convertedPath && fs.existsSync(uploadedPath)) {
-        fs.unlinkSync(uploadedPath);
-      }
+      // Replace original with converted
+      if (fs.existsSync(uploadedPath)) fs.unlinkSync(uploadedPath);
+      fs.renameSync(tmpPath, convertedPath);
 
       const stat = fs.statSync(convertedPath);
       logger.info(`Audio uploaded + converted: ${req.file.originalname} -> ${convertedPath} (8kHz mono PCM, ${Math.round(stat.size / 1024)}KB)`);
