@@ -53,7 +53,7 @@ class CallHandler {
 
     logger.debug(`INVITE raw: From-URI=${fromUri} To-URI=${to.uri || ''} Call-Id=${callId} UA=${userAgent}`);
 
-    const trunkCheck = this.trunkManager.isFromTrunk(req);
+    const trunkCheck = await this.trunkManager.isFromTrunk(req);
     if (trunkCheck.isTrunk) {
       logger.info(`INBOUND TRUNK DETECTED: trunk=${trunkCheck.trunkName} UA=${userAgent} From=${fromUri} src=${req.source_address}`);
       return this._handleInbound(req, res, trunkCheck);
