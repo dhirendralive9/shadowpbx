@@ -236,9 +236,14 @@ mkdir -p ${APP_DIR} ${LOG_DIR} ${REC_DIR}
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if [ -f "${SCRIPT_DIR}/package.json" ]; then
-  cp -r ${SCRIPT_DIR}/src ${APP_DIR}/
-  cp ${SCRIPT_DIR}/package.json ${APP_DIR}/
-  log "App files copied from ${SCRIPT_DIR}"
+  # Skip copy if already running from the app directory
+  if [ "${SCRIPT_DIR}" != "${APP_DIR}" ]; then
+    cp -r ${SCRIPT_DIR}/src ${APP_DIR}/
+    cp ${SCRIPT_DIR}/package.json ${APP_DIR}/
+    log "App files copied from ${SCRIPT_DIR}"
+  else
+    log "Already running from ${APP_DIR} — skipping file copy"
+  fi
 else
   warn "No source files found in ${SCRIPT_DIR} - copy them manually to ${APP_DIR}"
 fi
