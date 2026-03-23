@@ -1,60 +1,90 @@
 <%- include('../partials/head', { title: 'Settings', active: 'settings' }) %>
 
-<!-- ═══════════════════ BLOCKLIST ═══════════════════ -->
-<div class="sec-head">
-  <span class="sec-title">Blocked numbers</span>
-  <div style="display:flex;align-items:center;gap:10px">
-    <span class="muted" style="font-size:11px" id="bl-summary"></span>
-    <button class="btn btn-sm" onclick="showBlockAdd()">+ Block a number</button>
-  </div>
+<!-- Sub-navigation -->
+<div style="display:flex;gap:0;border-bottom:0.5px solid var(--border);margin-bottom:20px">
+  <a href="#blocklist" class="settings-tab active" data-tab="blocklist" onclick="switchTab('blocklist')">Blocklist</a>
+  <a href="#audio" class="settings-tab" data-tab="audio" onclick="switchTab('audio')">Audio library</a>
+  <a href="#system" class="settings-tab" data-tab="system" onclick="switchTab('system')">System</a>
 </div>
 
-<div id="block-add" style="display:none;margin-bottom:16px" class="card">
-  <form onsubmit="addBlock(event)">
-    <div class="grid-3" style="margin-bottom:0">
-      <div class="form-group"><label class="form-label">Phone number</label><input class="form-input" id="bl-number" placeholder="919778988634" required></div>
-      <div class="form-group"><label class="form-label">Reason (optional)</label><input class="form-input" id="bl-reason" placeholder="Spam / Telemarketer / etc."></div>
-      <div class="form-group" style="display:flex;align-items:flex-end">
-        <div style="display:flex;gap:8px">
-          <button type="submit" class="btn btn-primary btn-sm">Block</button>
-          <button type="button" class="btn btn-sm" onclick="document.getElementById('block-add').style.display='none'">Cancel</button>
+<style>
+.settings-tab {
+  padding: 10px 18px; font-size: 13px; color: var(--text-tertiary);
+  cursor: pointer; border-bottom: 2px solid transparent;
+  text-decoration: none; transition: color 0.15s;
+}
+.settings-tab:hover { color: var(--text-secondary); text-decoration: none; }
+.settings-tab.active { color: var(--text-primary); border-bottom-color: var(--accent); }
+.settings-panel { display: none; }
+.settings-panel.active { display: block; }
+</style>
+
+<!-- ═══════════════════ BLOCKLIST ═══════════════════ -->
+<div id="panel-blocklist" class="settings-panel active">
+  <div class="sec-head">
+    <span class="sec-title">Blocked numbers</span>
+    <div style="display:flex;align-items:center;gap:10px">
+      <span class="muted" style="font-size:11px" id="bl-summary"></span>
+      <button class="btn btn-sm" onclick="showBlockAdd()">+ Block a number</button>
+    </div>
+  </div>
+
+  <div id="block-add" style="display:none;margin-bottom:16px" class="card">
+    <form onsubmit="addBlock(event)">
+      <div class="grid-3" style="margin-bottom:0">
+        <div class="form-group"><label class="form-label">Phone number</label><input class="form-input" id="bl-number" placeholder="919778988634" required></div>
+        <div class="form-group"><label class="form-label">Reason (optional)</label><input class="form-input" id="bl-reason" placeholder="Spam / Telemarketer / etc."></div>
+        <div class="form-group" style="display:flex;align-items:flex-end">
+          <div style="display:flex;gap:8px">
+            <button type="submit" class="btn btn-primary btn-sm">Block</button>
+            <button type="button" class="btn btn-sm" onclick="document.getElementById('block-add').style.display='none'">Cancel</button>
+          </div>
         </div>
       </div>
-    </div>
-  </form>
+    </form>
+  </div>
+
+  <table class="tbl">
+    <thead><tr><th>Number</th><th>Reason</th><th>Blocked by</th><th>Date</th><th></th></tr></thead>
+    <tbody id="bl-body"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody>
+  </table>
 </div>
 
-<table class="tbl">
-  <thead><tr><th>Number</th><th>Reason</th><th>Blocked by</th><th>Date</th><th></th></tr></thead>
-  <tbody id="bl-body"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody>
-</table>
-
-<!-- ═══════════════════ AUDIO FILES ═══════════════════ -->
-<div style="margin-top:28px">
+<!-- ═══════════════════ AUDIO LIBRARY ═══════════════════ -->
+<div id="panel-audio" class="settings-panel">
   <div class="sec-head">
-    <span class="sec-title">Audio files</span>
-    <div style="display:flex;gap:8px">
+    <span class="sec-title">Audio library</span>
+    <div style="display:flex;gap:8px;align-items:center">
+      <span class="muted" style="font-size:11px" id="audio-summary"></span>
       <button class="btn btn-sm" onclick="document.getElementById('audio-upload-settings').click()">Upload audio</button>
       <input type="file" id="audio-upload-settings" accept=".wav,.mp3" style="display:none" onchange="uploadAudioFile(this)">
     </div>
   </div>
   <p class="muted" style="font-size:11px;margin-bottom:10px">Audio files used for IVR greetings, MOH, and voicemail greetings. Uploaded files are auto-converted to 8kHz mono PCM WAV.</p>
+
   <table class="tbl">
     <thead><tr><th>Filename</th><th>Size</th><th>Modified</th><th></th></tr></thead>
     <tbody id="audio-body"><tr><td colspan="4" class="empty">Loading...</td></tr></tbody>
   </table>
 </div>
 
-<!-- ═══════════════════ SYSTEM INFO ═══════════════════ -->
-<div style="margin-top:28px">
+<!-- ═══════════════════ SYSTEM ═══════════════════ -->
+<div id="panel-system" class="settings-panel">
   <div class="sec-head">
-    <span class="sec-title">System</span>
+    <span class="sec-title">System information</span>
   </div>
   <div class="card">
     <div class="grid-3">
       <div><span class="muted" style="font-size:11px">Version</span><div style="font-size:14px;font-weight:500">ShadowPBX v2.0</div></div>
       <div><span class="muted" style="font-size:11px">Uptime</span><div style="font-size:14px;font-weight:500" id="sys-uptime">—</div></div>
       <div><span class="muted" style="font-size:11px">Server time</span><div style="font-size:14px;font-weight:500" id="sys-time">—</div></div>
+    </div>
+  </div>
+
+  <div style="margin-top:20px">
+    <div class="sec-head"><span class="sec-title">Quick actions</span></div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <a href="https://github.com/dhirendralive9/shadowpbx" target="_blank" class="btn btn-sm">GitHub repo</a>
     </div>
   </div>
 </div>
@@ -74,6 +104,22 @@ function showToast(msg, isError) {
   setTimeout(function() { el.remove(); }, 3000);
 }
 
+// ─── Sub-tab switching ───
+function switchTab(tab) {
+  document.querySelectorAll('.settings-tab').forEach(function(t) { t.classList.remove('active'); });
+  document.querySelectorAll('.settings-panel').forEach(function(p) { p.classList.remove('active'); });
+  var tabEl = document.querySelector('.settings-tab[data-tab="' + tab + '"]');
+  var panelEl = document.getElementById('panel-' + tab);
+  if (tabEl) tabEl.classList.add('active');
+  if (panelEl) panelEl.classList.add('active');
+  window.location.hash = tab;
+
+  // Load data for the tab
+  if (tab === 'blocklist') loadBlocklist();
+  if (tab === 'audio') loadAudioFiles();
+  if (tab === 'system') loadSystem();
+}
+
 // ═══════════════════ BLOCKLIST ═══════════════════
 function showBlockAdd() {
   document.getElementById('bl-number').value = '';
@@ -86,16 +132,14 @@ async function loadBlocklist() {
     var d = await (await fetch(API + '/blocklist', { headers: H })).json();
     var b = document.getElementById('bl-body');
     if (d.success && d.blocked && d.blocked.length) {
-      document.getElementById('bl-summary').textContent = d.blocked.length + ' blocked number(s)';
+      document.getElementById('bl-summary').textContent = d.blocked.length + ' blocked';
       b.innerHTML = d.blocked.map(function(n) {
         return '<tr>' +
           '<td class="mono" style="font-weight:500">' + esc(n.number) + '</td>' +
           '<td class="muted">' + esc(n.reason || '—') + '</td>' +
           '<td class="muted" style="font-size:11px">' + esc(n.blockedBy || '—') + '</td>' +
           '<td class="muted" style="font-size:11px">' + fmtTime(n.createdAt) + '</td>' +
-          '<td>' +
-            '<button class="btn btn-sm" onclick="unblock(\'' + esc(n.number) + '\')">Unblock</button>' +
-          '</td>' +
+          '<td><button class="btn btn-sm" onclick="unblock(\'' + esc(n.number) + '\')">Unblock</button></td>' +
         '</tr>';
       }).join('');
     } else {
@@ -136,6 +180,7 @@ async function loadAudioFiles() {
     var d = await (await fetch(API + '/audio/list', { headers: H })).json();
     var b = document.getElementById('audio-body');
     if (d.success && d.files && d.files.length) {
+      document.getElementById('audio-summary').textContent = d.files.length + ' file(s)';
       b.innerHTML = d.files.map(function(f) {
         return '<tr>' +
           '<td class="mono" style="font-size:12px">' + esc(f.name) + '</td>' +
@@ -155,6 +200,7 @@ async function loadAudioFiles() {
         '</tr>';
       }).join('');
     } else {
+      document.getElementById('audio-summary').textContent = '';
       b.innerHTML = '<tr><td colspan="4" class="empty">No audio files</td></tr>';
     }
   } catch (e) { console.error('audio', e); }
@@ -162,64 +208,37 @@ async function loadAudioFiles() {
 
 var ICON_PLAY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>';
 var ICON_PAUSE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>';
-var currentAudio = null;
-var currentBtn = null;
+var currentAudio = null, currentBtn = null;
 
 function playAudio(filename, btn) {
   if (currentAudio && currentBtn === btn) {
-    if (currentAudio.paused) {
-      currentAudio.play();
-      btn.innerHTML = ICON_PAUSE;
-      btn.title = 'Pause';
-    } else {
-      currentAudio.pause();
-      btn.innerHTML = ICON_PLAY;
-      btn.title = 'Resume';
-    }
+    if (currentAudio.paused) { currentAudio.play(); btn.innerHTML = ICON_PAUSE; btn.title = 'Pause'; }
+    else { currentAudio.pause(); btn.innerHTML = ICON_PLAY; btn.title = 'Resume'; }
     return;
   }
-  if (currentAudio) {
-    currentAudio.pause();
-    currentAudio = null;
-    if (currentBtn) { currentBtn.innerHTML = ICON_PLAY; currentBtn.title = 'Play'; }
-  }
+  if (currentAudio) { currentAudio.pause(); if (currentBtn) { currentBtn.innerHTML = ICON_PLAY; currentBtn.title = 'Play'; } }
   var a = new Audio(API + '/audio/play/' + encodeURIComponent(filename));
   a.onended = function() { btn.innerHTML = ICON_PLAY; btn.title = 'Play'; currentAudio = null; currentBtn = null; };
-  a.onerror = function() { btn.innerHTML = ICON_PLAY; btn.title = 'Play'; showToast('Could not play file', true); currentAudio = null; currentBtn = null; };
-  a.play();
-  btn.innerHTML = ICON_PAUSE;
-  btn.title = 'Pause';
-  currentAudio = a;
-  currentBtn = btn;
+  a.onerror = function() { btn.innerHTML = ICON_PLAY; showToast('Could not play', true); currentAudio = null; currentBtn = null; };
+  a.play(); btn.innerHTML = ICON_PAUSE; btn.title = 'Pause'; currentAudio = a; currentBtn = btn;
 }
 
 async function renameAudio(oldName) {
   var baseName = oldName.replace(/\.[^.]+$/, '');
   var newName = prompt('Rename "' + oldName + '" to:', baseName);
   if (!newName || newName === baseName) return;
-  var r = await fetch(API + '/audio/rename', {
-    method: 'POST', headers: J,
-    body: JSON.stringify({ oldName: oldName, newName: newName })
-  });
+  var r = await fetch(API + '/audio/rename', { method: 'POST', headers: J, body: JSON.stringify({ oldName: oldName, newName: newName }) });
   var d = await r.json();
-  if (d.success) {
-    showToast('Renamed to ' + d.newName);
-    loadAudioFiles();
-  } else {
-    showToast(d.error || 'Rename failed', true);
-  }
+  if (d.success) { showToast('Renamed to ' + d.newName); loadAudioFiles(); }
+  else showToast(d.error || 'Rename failed', true);
 }
 
 async function deleteAudio(filename) {
-  if (!confirm('Delete "' + filename + '"?\n\nIf this file is used by an IVR or MOH, it will stop working.')) return;
+  if (!confirm('Delete "' + filename + '"?\n\nIf used by an IVR or MOH, it will stop working.')) return;
   var r = await fetch(API + '/audio/' + encodeURIComponent(filename), { method: 'DELETE', headers: H });
   var d = await r.json();
-  if (d.success) {
-    showToast(filename + ' deleted');
-    loadAudioFiles();
-  } else {
-    showToast(d.error || 'Delete failed', true);
-  }
+  if (d.success) { showToast(filename + ' deleted'); loadAudioFiles(); }
+  else showToast(d.error || 'Delete failed', true);
 }
 
 async function uploadAudioFile(input) {
@@ -229,17 +248,13 @@ async function uploadAudioFile(input) {
   try {
     var r = await fetch(API + '/audio/upload', { method: 'POST', headers: { 'X-API-Key': KEY }, body: formData });
     var d = await r.json();
-    if (d.success) {
-      showToast('Uploaded: ' + d.originalName + (d.warning ? ' (warning: ' + d.warning + ')' : ''));
-      loadAudioFiles();
-    } else {
-      showToast(d.error || 'Upload failed', true);
-    }
+    if (d.success) { showToast('Uploaded: ' + d.originalName + (d.warning ? ' (' + d.warning + ')' : '')); loadAudioFiles(); }
+    else showToast(d.error || 'Upload failed', true);
   } catch (e) { showToast('Upload failed', true); }
   input.value = '';
 }
 
-// ═══════════════════ SYSTEM INFO ═══════════════════
+// ═══════════════════ SYSTEM ═══════════════════
 async function loadSystem() {
   try {
     var d = await (await fetch(API + '/health', { headers: H })).json();
@@ -254,9 +269,9 @@ async function loadSystem() {
   } catch (e) {}
 }
 
-// ─── Init ───
-loadBlocklist();
-loadAudioFiles();
-loadSystem();
+// ─── Init: read hash and switch tab ───
+var initTab = window.location.hash.replace('#', '') || 'blocklist';
+if (['blocklist', 'audio', 'system'].indexOf(initTab) === -1) initTab = 'blocklist';
+switchTab(initTab);
 </script>
 <%- include('../partials/foot') %>
