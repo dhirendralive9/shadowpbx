@@ -171,6 +171,12 @@ function toDateStr(d, addDays) {
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 }
 
+// Convert a local date to ISO string at local midnight (timezone-aware)
+function localMidnightISO(d) {
+  var local = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
+  return local.toISOString();
+}
+
 // ─── Load CDR ───
 async function loadCDR() {
   var q = document.getElementById('search').value;
@@ -180,8 +186,17 @@ async function loadCDR() {
   if (q) url += '&search=' + encodeURIComponent(q);
   if (st) url += '&status=' + st;
   if (dir) url += '&direction=' + dir;
-  if (dateFrom) url += '&from=' + encodeURIComponent(dateFrom);
-  if (dateTo) url += '&to=' + encodeURIComponent(dateTo);
+  // Send timezone-aware ISO timestamps
+  if (dateFrom) {
+    var parts = dateFrom.split('-');
+    var fromDate = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+    url += '&from=' + encodeURIComponent(localMidnightISO(fromDate));
+  }
+  if (dateTo) {
+    var parts = dateTo.split('-');
+    var toDate = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+    url += '&to=' + encodeURIComponent(localMidnightISO(toDate));
+  }
   if (currentRole === 'agent' && agentExt) {
     url += '&extension=' + encodeURIComponent(agentExt);
   }
@@ -193,7 +208,9 @@ async function loadCDR() {
       var noteCount = (c.notes && c.notes.length) || 0;
       return '<tr>' +
         '<td><span style="color:' + (c.direction === 'inbound' ? 'var(--green)' : c.direction === 'outbound' ? 'var(--blue)' : 'var(--text-secondary)') + '">' + (c.direction === 'inbound' ? '↓' : c.direction === 'outbound' ? '↑' : '↔') + '</span></td>' +
-        '<td>' + esc(c.from || '?') + '</td>' +
+        '<td>' + esc(c.from || '?') +
+          (currentRole === 'admin' && c.direction === 'inbound' && c.from ? ' <button class="act-btn" onclick="blockNum(\'' + esc(c.from) + '\')" title="Block this number" style="opacity:0.4"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg></button>' : '') +
+        '</td>' +
         '<td>' + esc(c.to || '?') + '</td>' +
         '<td class="mono">' + dur(c.duration) + '</td>' +
         '<td class="mono">' + dur(c.talkTime) + '</td>' +
@@ -343,6 +360,30 @@ function prevPage() { page--; loadCDR(); }
 function nextPage() { page++; loadCDR(); }
 document.getElementById('search').addEventListener('keypress', function(e) { if (e.key === 'Enter') { page = 1; loadCDR(); } });
 document.getElementById('nm-new-note').addEventListener('keypress', function(e) { if (e.key === 'Enter') addNote(); });
+
+// ─── Block number ───
+async function blockNum(number) {
+  if (!confirm('Block number ' + number + '?\n\nAll future inbound calls from this number will be rejected (SIP 603).')) return;
+  var reason = prompt('Reason (optional):', '');
+  var r = await fetch(API + '/blocklist', {
+    method: 'POST', headers: J,
+    body: JSON.stringify({ number: number, reason: reason || '', blockedBy: currentUser })
+  });
+  var d = await r.json();
+  if (d.success) {
+    showToast(number + ' blocked');
+  } else {
+    showToast(d.error || 'Failed to block', true);
+  }
+}
+
+function showToast(msg, isError) {
+  var el = document.createElement('div');
+  el.className = 'toast ' + (isError ? 'toast-error' : 'toast-success');
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(function() { el.remove(); }, 3000);
+}
 
 // Init with today's calls
 setPreset('today');

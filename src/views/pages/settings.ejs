@@ -1,8 +1,201 @@
-<%- include('../partials/head', { title: '${page}', active: '${page}' }) %>
+<%- include('../partials/head', { title: 'Settings', active: 'settings' }) %>
+
+<!-- ═══════════════════ BLOCKLIST ═══════════════════ -->
 <div class="sec-head">
-  <span class="sec-title">${page}</span>
+  <span class="sec-title">Blocked numbers</span>
+  <div style="display:flex;align-items:center;gap:10px">
+    <span class="muted" style="font-size:11px" id="bl-summary"></span>
+    <button class="btn btn-sm" onclick="showBlockAdd()">+ Block a number</button>
+  </div>
 </div>
-<div class="card">
-  <div class="empty">Page under construction. Data available via API.</div>
+
+<div id="block-add" style="display:none;margin-bottom:16px" class="card">
+  <form onsubmit="addBlock(event)">
+    <div class="grid-3" style="margin-bottom:0">
+      <div class="form-group"><label class="form-label">Phone number</label><input class="form-input" id="bl-number" placeholder="919778988634" required></div>
+      <div class="form-group"><label class="form-label">Reason (optional)</label><input class="form-input" id="bl-reason" placeholder="Spam / Telemarketer / etc."></div>
+      <div class="form-group" style="display:flex;align-items:flex-end">
+        <div style="display:flex;gap:8px">
+          <button type="submit" class="btn btn-primary btn-sm">Block</button>
+          <button type="button" class="btn btn-sm" onclick="document.getElementById('block-add').style.display='none'">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </form>
 </div>
+
+<table class="tbl">
+  <thead><tr><th>Number</th><th>Reason</th><th>Blocked by</th><th>Date</th><th></th></tr></thead>
+  <tbody id="bl-body"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody>
+</table>
+
+<!-- ═══════════════════ AUDIO FILES ═══════════════════ -->
+<div style="margin-top:28px">
+  <div class="sec-head">
+    <span class="sec-title">Audio files</span>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-sm" onclick="document.getElementById('audio-upload-settings').click()">Upload audio</button>
+      <input type="file" id="audio-upload-settings" accept=".wav,.mp3" style="display:none" onchange="uploadAudioFile(this)">
+    </div>
+  </div>
+  <p class="muted" style="font-size:11px;margin-bottom:10px">Audio files used for IVR greetings, MOH, and voicemail greetings. Uploaded files are auto-converted to 8kHz mono PCM WAV.</p>
+  <table class="tbl">
+    <thead><tr><th>Filename</th><th>Size</th><th>Modified</th><th></th></tr></thead>
+    <tbody id="audio-body"><tr><td colspan="4" class="empty">Loading...</td></tr></tbody>
+  </table>
+</div>
+
+<!-- ═══════════════════ SYSTEM INFO ═══════════════════ -->
+<div style="margin-top:28px">
+  <div class="sec-head">
+    <span class="sec-title">System</span>
+  </div>
+  <div class="card">
+    <div class="grid-3">
+      <div><span class="muted" style="font-size:11px">Version</span><div style="font-size:14px;font-weight:500">ShadowPBX v2.0</div></div>
+      <div><span class="muted" style="font-size:11px">Uptime</span><div style="font-size:14px;font-weight:500" id="sys-uptime">—</div></div>
+      <div><span class="muted" style="font-size:11px">Server time</span><div style="font-size:14px;font-weight:500" id="sys-time">—</div></div>
+    </div>
+  </div>
+</div>
+
+<script>
+var API = '/api', KEY = '<%= apiKey %>', H = { 'X-API-Key': KEY };
+var J = { 'X-API-Key': KEY, 'Content-Type': 'application/json' };
+var currentUser = '<%= typeof user !== "undefined" ? user : "admin" %>';
+
+function esc(s) { if (!s) return ''; var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function fmtTime(t) { if (!t) return ''; return new Date(t).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) + ' ' + new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
+function showToast(msg, isError) {
+  var el = document.createElement('div');
+  el.className = 'toast ' + (isError ? 'toast-error' : 'toast-success');
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(function() { el.remove(); }, 3000);
+}
+
+// ═══════════════════ BLOCKLIST ═══════════════════
+function showBlockAdd() {
+  document.getElementById('bl-number').value = '';
+  document.getElementById('bl-reason').value = '';
+  document.getElementById('block-add').style.display = 'block';
+}
+
+async function loadBlocklist() {
+  try {
+    var d = await (await fetch(API + '/blocklist', { headers: H })).json();
+    var b = document.getElementById('bl-body');
+    if (d.success && d.blocked && d.blocked.length) {
+      document.getElementById('bl-summary').textContent = d.blocked.length + ' blocked number(s)';
+      b.innerHTML = d.blocked.map(function(n) {
+        return '<tr>' +
+          '<td class="mono" style="font-weight:500">' + esc(n.number) + '</td>' +
+          '<td class="muted">' + esc(n.reason || '—') + '</td>' +
+          '<td class="muted" style="font-size:11px">' + esc(n.blockedBy || '—') + '</td>' +
+          '<td class="muted" style="font-size:11px">' + fmtTime(n.createdAt) + '</td>' +
+          '<td>' +
+            '<button class="btn btn-sm" onclick="unblock(\'' + esc(n.number) + '\')">Unblock</button>' +
+          '</td>' +
+        '</tr>';
+      }).join('');
+    } else {
+      document.getElementById('bl-summary').textContent = '';
+      b.innerHTML = '<tr><td colspan="5" class="empty">No blocked numbers</td></tr>';
+    }
+  } catch (e) { console.error('blocklist', e); }
+}
+
+async function addBlock(e) {
+  e.preventDefault();
+  var number = document.getElementById('bl-number').value.trim();
+  var reason = document.getElementById('bl-reason').value.trim();
+  var r = await fetch(API + '/blocklist', {
+    method: 'POST', headers: J,
+    body: JSON.stringify({ number: number, reason: reason, blockedBy: currentUser })
+  });
+  var d = await r.json();
+  if (d.success) {
+    document.getElementById('block-add').style.display = 'none';
+    showToast(number + ' blocked');
+    loadBlocklist();
+  } else {
+    showToast(d.error || 'Failed', true);
+  }
+}
+
+async function unblock(number) {
+  if (!confirm('Unblock ' + number + '?')) return;
+  await fetch(API + '/blocklist/' + number, { method: 'DELETE', headers: H });
+  showToast(number + ' unblocked');
+  loadBlocklist();
+}
+
+// ═══════════════════ AUDIO FILES ═══════════════════
+async function loadAudioFiles() {
+  try {
+    var d = await (await fetch(API + '/audio/list', { headers: H })).json();
+    var b = document.getElementById('audio-body');
+    if (d.success && d.files && d.files.length) {
+      b.innerHTML = d.files.map(function(f) {
+        return '<tr>' +
+          '<td class="mono" style="font-size:12px">' + esc(f.name) + '</td>' +
+          '<td class="muted">' + Math.round(f.size / 1024) + ' KB</td>' +
+          '<td class="muted" style="font-size:11px">' + fmtTime(f.modified) + '</td>' +
+          '<td style="white-space:nowrap">' +
+            '<button class="act-btn" onclick="playAudio(\'' + esc(f.path) + '\',this)" title="Play">' +
+              '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>' +
+            '</button>' +
+          '</td>' +
+        '</tr>';
+      }).join('');
+    } else {
+      b.innerHTML = '<tr><td colspan="4" class="empty">No audio files</td></tr>';
+    }
+  } catch (e) { console.error('audio', e); }
+}
+
+var currentAudio = null;
+function playAudio(path, btn) {
+  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+  // Serve audio via a simple endpoint — for now open in new tab
+  showToast('Audio files play via IVR/MOH on calls');
+}
+
+async function uploadAudioFile(input) {
+  if (!input.files || !input.files[0]) return;
+  var formData = new FormData();
+  formData.append('file', input.files[0]);
+  try {
+    var r = await fetch(API + '/audio/upload', { method: 'POST', headers: { 'X-API-Key': KEY }, body: formData });
+    var d = await r.json();
+    if (d.success) {
+      showToast('Uploaded: ' + d.originalName + (d.warning ? ' (warning: ' + d.warning + ')' : ''));
+      loadAudioFiles();
+    } else {
+      showToast(d.error || 'Upload failed', true);
+    }
+  } catch (e) { showToast('Upload failed', true); }
+  input.value = '';
+}
+
+// ═══════════════════ SYSTEM INFO ═══════════════════
+async function loadSystem() {
+  try {
+    var d = await (await fetch(API + '/health', { headers: H })).json();
+    if (d.success) {
+      var up = d.uptime || 0;
+      var days = Math.floor(up / 86400);
+      var hrs = Math.floor((up % 86400) / 3600);
+      var mins = Math.floor((up % 3600) / 60);
+      document.getElementById('sys-uptime').textContent = (days > 0 ? days + 'd ' : '') + hrs + 'h ' + mins + 'm';
+    }
+    document.getElementById('sys-time').textContent = new Date().toLocaleString();
+  } catch (e) {}
+}
+
+// ─── Init ───
+loadBlocklist();
+loadAudioFiles();
+loadSystem();
+</script>
 <%- include('../partials/foot') %>

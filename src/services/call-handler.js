@@ -221,6 +221,18 @@ class CallHandler {
     const callerID = this.callRouter.extractCallerID(req);
     const did = this.callRouter.extractDID(req);
 
+    // Check blocklist
+    try {
+      const { BlockedNumber } = require('../models');
+      const blocked = await BlockedNumber.findOne({ number: callerID });
+      if (blocked) {
+        logger.info(`INBOUND BLOCKED: ${callerID} is on blocklist (reason: ${blocked.reason || 'none'})`);
+        return res.send(603); // 603 Decline
+      }
+    } catch (blErr) {
+      logger.debug(`Blocklist check error: ${blErr.message}`);
+    }
+
     logger.info(`INBOUND via ${trunkCheck.trunkName}: ${callerID} -> DID:${did} [${callId}]`);
 
     const route = await this.callRouter.findInboundRoute(did, trunkCheck.trunkName);

@@ -1004,6 +1004,47 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   });
 
   // ============================================================
+  // Blocklist
+  // ============================================================
+  const { BlockedNumber } = require('../models');
+
+  router.get('/blocklist', async (req, res) => {
+    try {
+      const numbers = await BlockedNumber.find({}).sort({ createdAt: -1 });
+      res.json({ success: true, blocked: numbers });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.post('/blocklist', async (req, res) => {
+    try {
+      const { number, reason, blockedBy } = req.body;
+      if (!number) return res.status(400).json({ success: false, error: 'number required' });
+      const clean = number.replace(/[^0-9+]/g, '');
+      if (await BlockedNumber.findOne({ number: clean })) return res.status(409).json({ success: false, error: 'Number already blocked' });
+      const blocked = await BlockedNumber.create({ number: clean, reason: reason || '', blockedBy: blockedBy || '' });
+      logger.info(`Blocklist: ${clean} blocked (by ${blockedBy || 'admin'}, reason: ${reason || 'none'})`);
+      res.status(201).json({ success: true, blocked });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.delete('/blocklist/:number', async (req, res) => {
+    try {
+      const result = await BlockedNumber.findOneAndDelete({ number: req.params.number });
+      if (!result) return res.status(404).json({ success: false, error: 'Not found' });
+      logger.info(`Blocklist: ${req.params.number} unblocked`);
+      res.json({ success: true, message: `${req.params.number} unblocked` });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // Check if a number is blocked
+  router.get('/blocklist/check/:number', async (req, res) => {
+    try {
+      const blocked = await BlockedNumber.findOne({ number: req.params.number });
+      res.json({ success: true, blocked: !!blocked, details: blocked || null });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // ============================================================
   // CDR Recording playback
   // ============================================================
   router.get('/cdr/:callId/recording', async (req, res) => {

@@ -298,6 +298,16 @@ chatMessageSchema.index({ from: 1, to: 1, createdAt: -1 });
 chatMessageSchema.index({ to: 1, read: 1 });
 
 // ============================================================
+// Blocked Number
+// ============================================================
+const blockedNumberSchema = new mongoose.Schema({
+  number: { type: String, required: true, unique: true, index: true },
+  reason: { type: String, default: '' },
+  blockedBy: { type: String, default: '' },
+  createdAt: { type: Date, default: Date.now }
+});
+
+// ============================================================
 // Active Call
 // ============================================================
 const activeCallSchema = new mongoose.Schema({
@@ -321,8 +331,9 @@ const TimeCondition = mongoose.model('TimeCondition', timeConditionSchema);
 const Queue = mongoose.model('Queue', queueSchema);
 const User = mongoose.model('User', userSchema);
 const ChatMessage = mongoose.model('ChatMessage', chatMessageSchema);
+const BlockedNumber = mongoose.model('BlockedNumber', blockedNumberSchema);
 const CDR = mongoose.model('CDR', cdrSchema);
 const VoicemailMessage = mongoose.model('VoicemailMessage', voicemailMessageSchema);
 const ActiveCall = mongoose.model('ActiveCall', activeCallSchema);
 
-module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, IVR, TimeCondition, Queue, User, ChatMessage, CDR, VoicemailMessage, ActiveCall };
+module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, IVR, TimeCondition, Queue, User, ChatMessage, BlockedNumber, CDR, VoicemailMessage, ActiveCall };
