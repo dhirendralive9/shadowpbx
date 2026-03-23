@@ -334,10 +334,10 @@ step "7/8 - Firewall + SIP brute force protection..."
 iptables -F SIP_LIMIT 2>/dev/null || true
 iptables -X SIP_LIMIT 2>/dev/null || true
 
-# Create SIP rate limiting chain
+# Create SIP rate limiting chain — 20 SIP packets/min per IP (was 30)
 iptables -N SIP_LIMIT 2>/dev/null || true
 iptables -A SIP_LIMIT -m recent --name sip_brute --set
-iptables -A SIP_LIMIT -m recent --name sip_brute --update --seconds 60 --hitcount 30 -j DROP
+iptables -A SIP_LIMIT -m recent --name sip_brute --update --seconds 60 --hitcount 20 -j DROP
 iptables -A SIP_LIMIT -j ACCEPT
 
 # Allow established
@@ -356,37 +356,92 @@ iptables -A INPUT -p udp --dport 10000:20000 -j ACCEPT
 # API - localhost only
 iptables -A INPUT -p tcp --dport 3000 -s 127.0.0.1 -j ACCEPT
 
-netfilter-persistent save 2>/dev/null || true
-log "Firewall: SIP rate limited (30/min), API localhost-only"
+# Block known SIP scanner / attacker networks (top offenders)
+# These CIDR blocks are notorious for SIP scanning
+for BADNET in \
+  5.135.0.0/16 \
+  45.143.220.0/22 \
+  185.7.214.0/24 \
+  193.32.162.0/24 \
+  194.163.128.0/17 \
+  23.137.248.0/24 \
+  45.95.147.0/24 \
+  ; do
+  iptables -I INPUT -s ${BADNET} -j DROP 2>/dev/null || true
+done
+log "Firewall: known SIP scanner networks pre-blocked"
 
-# fail2ban
+netfilter-persistent save 2>/dev/null || true
+log "Firewall: SIP rate limited (20/min), API localhost-only"
+
+# ─────────────────────────────────────────────────────────────
+# fail2ban — aggressive SIP protection
+# ─────────────────────────────────────────────────────────────
 apt-get install -y -qq fail2ban
 
 mkdir -p /etc/fail2ban/filter.d /etc/fail2ban/jail.d
 
+# ShadowPBX SIP filter — catches all auth failures and blocked attempts
 cat > /etc/fail2ban/filter.d/shadowpbx.conf << 'FBEOF'
 [Definition]
 failregex = REGISTER rejected.*from <HOST>
             REGISTER blocked.*IP <HOST>
             INVITE rejected.*from <HOST>
+            GUI: failed login.*from <HOST>
+            INBOUND BLOCKED.*from <HOST>
 ignoreregex =
 FBEOF
 
+# ShadowPBX jail — 3 failures in 5 min = 24 hour ban
 cat > /etc/fail2ban/jail.d/shadowpbx.conf << FBEOF
 [shadowpbx]
 enabled = true
 filter = shadowpbx
 logpath = ${LOG_DIR}/shadowpbx.log
-maxretry = 5
-bantime = 3600
+maxretry = 3
+bantime = 86400
 findtime = 300
-action = iptables-multiport[name=shadowpbx, port="5060", protocol=udp]
-         iptables-multiport[name=shadowpbx, port="5060", protocol=tcp]
+action = iptables-multiport[name=shadowpbx, port="5060,5061,3000", protocol=udp]
+         iptables-multiport[name=shadowpbx, port="5060,5061,3000", protocol=tcp]
+FBEOF
+
+# Recidive jail — repeat offenders banned for 7 days
+cat > /etc/fail2ban/jail.d/shadowpbx-recidive.conf << 'FBEOF'
+[shadowpbx-recidive]
+enabled = true
+filter = recidive
+logpath = /var/log/fail2ban.log
+maxretry = 3
+bantime = 604800
+findtime = 86400
+action = iptables-allports[name=shadowpbx-recidive]
+FBEOF
+
+# SSH jail — tighten SSH too
+cat > /etc/fail2ban/jail.d/sshd.conf << 'FBEOF'
+[sshd]
+enabled = true
+port = ssh
+logpath = /var/log/auth.log
+maxretry = 3
+bantime = 86400
+findtime = 600
 FBEOF
 
 systemctl enable fail2ban
 systemctl restart fail2ban
-log "fail2ban: 5 failed SIP auths = 1 hour ban"
+log "fail2ban: SIP 3 fails = 24hr ban, repeat offenders = 7 day ban, SSH 3 fails = 24hr ban"
+
+# ─────────────────────────────────────────────────────────────
+# GeoIP blocking (optional — if iptables geoip module available)
+# Uncomment and adjust country codes if your users are in specific countries
+# ─────────────────────────────────────────────────────────────
+# if iptables -m geoip --help &>/dev/null; then
+#   # Only allow SIP from India, US, UK — drop all other countries
+#   iptables -I INPUT -p udp --dport 5060 -m geoip ! --src-cc IN,US,GB -j DROP
+#   iptables -I INPUT -p tcp --dport 5060 -m geoip ! --src-cc IN,US,GB -j DROP
+#   log "GeoIP: SIP restricted to IN, US, GB"
+# fi
 
 # ============================================================
 step "8/8 - Starting ShadowPBX and verifying..."
