@@ -95,6 +95,7 @@ function pillCls(s) {
   if (['answered', 'completed', 'active'].includes(s)) return 'p-ok';
   if (s === 'voicemail') return 'p-vm';
   if (['missed', 'failed', 'busy', 'no_answer'].includes(s)) return 'p-miss';
+  if (s === 'blocked') return 'p-err';
   if (s === 'ringing') return 'p-ring';
   return 'p-gray';
 }
@@ -116,7 +117,21 @@ socket.on('dashboard', function(data) {
   document.getElementById('kpi-online').textContent = onlineCount + '/' + exts.length;
   document.getElementById('kpi-online-sub').textContent = 'extensions';
 
-  document.getElementById('kpi-today').textContent = data.todayCalls || 0;
+  // Calculate "today" calls using browser's local timezone
+  var cdrs = data.recentCDR || [];
+  var todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+  var todayCalls = 0;
+  for (var i = 0; i < cdrs.length; i++) {
+    var t = new Date(cdrs[i].startTime);
+    if (t >= todayStart) {
+      if (myRole === 'agent' && myExt) {
+        if (cdrs[i].from === myExt || cdrs[i].to === myExt) todayCalls++;
+      } else {
+        todayCalls++;
+      }
+    }
+  }
+  document.getElementById('kpi-today').textContent = todayCalls;
   document.getElementById('kpi-today-sub').textContent = 'calls';
   document.getElementById('kpi-vm').textContent = data.unreadVM || 0;
   document.getElementById('kpi-vm-sub').textContent = 'unread';

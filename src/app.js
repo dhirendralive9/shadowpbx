@@ -351,14 +351,12 @@ async function main() {
   async function emitDashboardState(target) {
     try {
       const { Extension, Trunk, CDR, VoicemailMessage } = require('./models');
-      const today = new Date(); today.setHours(0, 0, 0, 0);
 
-      const [extensions, trunks, activeCalls, todayCalls, recentCDR, unreadVM] = await Promise.all([
+      const [extensions, trunks, activeCalls, recentCDR, unreadVM] = await Promise.all([
         Extension.find({}).lean(),
         Trunk.find({}, '-password').lean(),
         Promise.resolve(callHandler.getActiveCalls()),
-        CDR.countDocuments({ startTime: { $gte: today } }),
-        CDR.find({}).sort({ startTime: -1 }).limit(8).lean(),
+        CDR.find({}).sort({ startTime: -1 }).limit(50).lean(),
         VoicemailMessage.countDocuments({ read: false })
       ]);
 
@@ -373,9 +371,9 @@ async function main() {
         activeCalls: activeCalls || [],
         extensions: enrichedExts,
         trunks,
-        todayCalls,
         recentCDR,
         unreadVM,
+        serverTime: new Date().toISOString(),
         presenceStats: presenceHandler ? { subscriptions: presenceHandler.subscriptions.size } : null
       };
 
