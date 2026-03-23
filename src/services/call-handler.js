@@ -283,8 +283,21 @@ class CallHandler {
       logger.info(`INBOUND: dialing ${target} at ${contact.ip}:${contact.port}`);
 
       try {
+        // Route through RTPEngine for proper NAT/media handling
+        const fromTag = req.getParsedHeader('From').params.tag;
+        const rtpOffer = await this._rtpengineOffer(callId, fromTag, req.body);
+        const offerSdp = rtpOffer ? rtpOffer.sdp : req.body;
+
         const { uas, uac } = await this.srf.createB2BUA(req, res, targetUri, {
-          localSdpB: req.body,
+          localSdpB: offerSdp,
+          localSdpA: (sdp) => {
+            // Answer: send the extension's SDP back through RTPEngine
+            const toTag = uas.sip ? uas.sip.localTag : '';
+            if (toTag && this.rtpengine) {
+              return this._rtpengineAnswer(callId, fromTag, toTag, sdp).then(r => r ? r.sdp : sdp);
+            }
+            return sdp;
+          },
           passFailure: false  // Don't send failure — voicemail needs req/res
         });
 
@@ -299,9 +312,12 @@ class CallHandler {
 
         // Track the call
         this.activeCalls.set(callId, { uas, uac, cdr, fromExt: callerID, toExt: target });
+        const rtpCallId = callId;
+        const rtpFromTag = fromTag;
         const onDestroy = async (hangupBy) => {
           await this._endCall(cdr, hangupBy);
           this.activeCalls.delete(callId);
+          await this._rtpengineDelete(rtpCallId, rtpFromTag);
         };
         uas.on('destroy', () => { uac.destroy(); onDestroy('caller'); });
         uac.on('destroy', () => { uas.destroy(); onDestroy('callee'); });
