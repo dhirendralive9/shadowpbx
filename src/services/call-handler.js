@@ -53,13 +53,9 @@ class CallHandler {
 
     logger.debug(`INVITE raw: From-URI=${fromUri} To-URI=${to.uri || ''} Call-Id=${callId} UA=${userAgent}`);
 
-    if (userAgent.includes('SignalWire') || userAgent.includes('Twilio') || fromUri.includes('signalwire.com') || fromUri.includes('twilio.com')) {
-      logger.info(`INBOUND TRUNK DETECTED: User-Agent=${userAgent} From=${fromUri}`);
-      return this._handleInbound(req, res, { isTrunk: true, trunkName: 'signalwire', trunk: this.trunkManager.getTrunk('signalwire') });
-    }
-
     const trunkCheck = this.trunkManager.isFromTrunk(req);
     if (trunkCheck.isTrunk) {
+      logger.info(`INBOUND TRUNK DETECTED: trunk=${trunkCheck.trunkName} UA=${userAgent} From=${fromUri} src=${req.source_address}`);
       return this._handleInbound(req, res, trunkCheck);
     }
 
@@ -227,6 +223,16 @@ class CallHandler {
       const blocked = await BlockedNumber.findOne({ number: callerID });
       if (blocked) {
         logger.info(`INBOUND BLOCKED: ${callerID} is on blocklist (reason: ${blocked.reason || 'none'})`);
+        // Create CDR for the blocked call
+        const cdr = await this._createCDR(callerID, did || 'unknown', 'inbound', callId, req.source_address);
+        cdr.status = 'blocked';
+        cdr.hangupCause = 'blocked';
+        cdr.trunkUsed = trunkCheck.trunkName;
+        cdr.didNumber = did;
+        cdr.endTime = new Date();
+        cdr.duration = 0;
+        cdr.talkTime = 0;
+        await cdr.save();
         return res.send(603); // 603 Decline
       }
     } catch (blErr) {

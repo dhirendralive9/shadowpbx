@@ -88,8 +88,11 @@ class TrunkManager {
 
   isFromTrunk(req) {
     const fromUri = req.getParsedHeader('From').uri;
+    const toUri = req.getParsedHeader('To').uri;
     const userAgent = req.get('User-Agent') || '';
+    const sourceIp = req.source_address || '';
 
+    // Check 1: From-URI or User-Agent matches known trunk providers
     for (const [name, trunk] of this.trunkEndpoints) {
       if (fromUri.includes(trunk.host) ||
           fromUri.includes('signalwire.com') ||
@@ -99,6 +102,38 @@ class TrunkManager {
         return { isTrunk: true, trunkName: name, trunk };
       }
     }
+
+    // Check 2: Source IP is Docker bridge, private network, or localhost
+    // Trunk calls arrive through Drachtio container which has Docker IPs
+    const isPrivateNetwork = /^172\.(1[6-9]|2\d|3[01])\./.test(sourceIp) ||
+                             sourceIp === '127.0.0.1' ||
+                             sourceIp === '::1' ||
+                             sourceIp.startsWith('10.') ||
+                             sourceIp.startsWith('192.168.');
+
+    if (isPrivateNetwork) {
+      const fromUser = fromUri.match(/sip:\+?(\d+)@/);
+      if (fromUser && fromUser[1].length > 6) {
+        // Long number from Docker/private network = trunk call
+        const firstTrunk = this.trunkEndpoints.entries().next().value;
+        if (firstTrunk) {
+          logger.debug(`Trunk detected via private network: src=${sourceIp} caller=${fromUser[1]} -> trunk=${firstTrunk[0]}`);
+          return { isTrunk: true, trunkName: firstTrunk[0], trunk: firstTrunk[1] };
+        }
+      }
+    }
+
+    // Check 3: The caller number is longer than typical extensions (>6 digits)
+    // and there are trunks configured — likely an inbound trunk call
+    // regardless of source IP (Drachtio may rewrite source)
+    const fromMatch = fromUri.match(/sip:\+?(\d+)@/);
+    if (fromMatch && fromMatch[1].length > 6 && this.trunkEndpoints.size > 0) {
+      // Verify it's NOT a registered extension
+      const firstTrunk = this.trunkEndpoints.entries().next().value;
+      logger.debug(`Trunk detected via long caller ID: caller=${fromMatch[1]} -> trunk=${firstTrunk[0]}`);
+      return { isTrunk: true, trunkName: firstTrunk[0], trunk: firstTrunk[1] };
+    }
+
     return { isTrunk: false };
   }
 
