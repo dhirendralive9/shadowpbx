@@ -36,10 +36,24 @@ gen_pass() {
   openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c "$1"
 }
 
+# Check if this is a re-install (existing .env with MongoDB URI)
+EXISTING_ENV="${APP_DIR}/.env"
+if [ -f "${EXISTING_ENV}" ] && grep -q "MONGODB_URI=" "${EXISTING_ENV}"; then
+  # Re-install: preserve existing credentials
+  MONGO_URI=$(grep '^MONGODB_URI=' "${EXISTING_ENV}" | cut -d= -f2-)
+  API_SECRET=$(grep '^ADMIN_SECRET=' "${EXISTING_ENV}" | cut -d= -f2-)
+  ADMIN_PASSWORD=$(grep '^ADMIN_PASSWORD=' "${EXISTING_ENV}" | cut -d= -f2-)
+  DRACHTIO_SECRET=$(grep '^DRACHTIO_SECRET=' "${EXISTING_ENV}" | cut -d= -f2-)
+  log "Re-install detected: preserving existing credentials from .env"
+  REINSTALL=true
+else
+  REINSTALL=false
+fi
+
 MONGO_ADMIN_PASS=$(gen_pass 24)
 MONGO_APP_PASS=$(gen_pass 24)
-DRACHTIO_SECRET=$(gen_pass 20)
-API_SECRET=$(gen_pass 32)
+[ -z "$DRACHTIO_SECRET" ] && DRACHTIO_SECRET=$(gen_pass 20)
+[ -z "$API_SECRET" ] && API_SECRET=$(gen_pass 32)
 EXTERNAL_IP=$(curl -4 -s ifconfig.me 2>/dev/null || curl -4 -s icanhazip.com 2>/dev/null || hostname -I | awk '{print $1}')
 
 MONGO_DB="shadowpbx"
@@ -114,8 +128,10 @@ systemctl enable mongod
 systemctl start mongod
 sleep 3
 
-# Create users (skip if auth already enabled)
-if ! grep -q "authorization: enabled" /etc/mongod.conf; then
+# Create users (skip if auth already enabled or re-install)
+if [ "$REINSTALL" = "true" ]; then
+  log "MongoDB: using existing credentials from .env"
+elif ! grep -q "authorization: enabled" /etc/mongod.conf; then
   mongosh --quiet admin << MONGOEOF
 db.createUser({
   user: "admin",
@@ -145,7 +161,10 @@ fi
 
 log "MongoDB secured (auth enabled, localhost only)"
 
-MONGO_URI="mongodb://${MONGO_USER}:${MONGO_APP_PASS}@127.0.0.1:27017/${MONGO_DB}?authSource=${MONGO_DB}"
+# Only set MONGO_URI on fresh install — re-install preserves existing
+if [ "$REINSTALL" != "true" ]; then
+  MONGO_URI="mongodb://${MONGO_USER}:${MONGO_APP_PASS}@127.0.0.1:27017/${MONGO_DB}?authSource=${MONGO_DB}"
+fi
 
 # ============================================================
 step "4/8 - Installing Docker + Drachtio SIP server..."
@@ -248,8 +267,10 @@ else
   warn "No source files found in ${SCRIPT_DIR} - copy them manually to ${APP_DIR}"
 fi
 
-# Generate admin GUI password
-ADMIN_PASSWORD=$(cat /dev/urandom | tr -dc 'A-HJ-NP-Za-hj-np-z2-9' | fold -w 16 | head -n 1)
+# Generate admin GUI password (only on fresh install)
+if [ "$REINSTALL" != "true" ] || [ -z "$ADMIN_PASSWORD" ]; then
+  ADMIN_PASSWORD=$(cat /dev/urandom | tr -dc 'A-HJ-NP-Za-hj-np-z2-9' | fold -w 16 | head -n 1)
+fi
 
 # Write .env
 cat > ${APP_DIR}/.env << EOF
