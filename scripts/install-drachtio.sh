@@ -103,6 +103,24 @@ apt-get install -y -qq iptables-persistent netfilter-persistent
 
 log "System dependencies installed"
 
+# ─────────────────────────────────────────────────────────────
+# UDP buffer tuning for VoIP — prevents RcvbufErrors under load
+# ─────────────────────────────────────────────────────────────
+if ! grep -q "net.core.rmem_max=2097152" /etc/sysctl.conf 2>/dev/null; then
+  cat >> /etc/sysctl.conf << SYSEOF
+
+# ShadowPBX — UDP buffer tuning for VoIP
+net.core.rmem_max=2097152
+net.core.rmem_default=1048576
+net.core.wmem_max=2097152
+net.core.wmem_default=1048576
+SYSEOF
+  sysctl -p > /dev/null 2>&1
+  log "UDP buffers tuned (rmem/wmem 1-2MB)"
+else
+  log "UDP buffers already configured"
+fi
+
 # ============================================================
 step "2/8 - Installing Node.js 18 LTS..."
 # ============================================================
@@ -246,6 +264,15 @@ docker run -d \
 sleep 3
 docker ps | grep -q rtpengine && log "RTPEngine v12 running (ports 10000-20000)" || err "RTPEngine failed - check: docker logs rtpengine"
 
+# Verify RTPEngine is using the correct interface IP
+RTP_IP=$(docker inspect rtpengine --format '{{json .Config.Cmd}}' 2>/dev/null | grep -o 'interface=[0-9.]*' | cut -d= -f2)
+if [ "${RTP_IP}" = "${EXTERNAL_IP}" ]; then
+  log "RTPEngine interface IP verified: ${RTP_IP}"
+else
+  warn "RTPEngine interface IP mismatch! Expected ${EXTERNAL_IP}, got ${RTP_IP}"
+  warn "Audio will not work correctly. Recreate the container with --interface=${EXTERNAL_IP}"
+fi
+
 # ============================================================
 step "6/8 - Setting up ShadowPBX application..."
 # ============================================================
@@ -341,7 +368,7 @@ ExecStart=/usr/bin/node src/app.js
 Restart=always
 RestartSec=5
 Environment=NODE_ENV=production
-StandardOutput=append:${LOG_DIR}/shadowpbx.log
+StandardOutput=null
 StandardError=append:${LOG_DIR}/error.log
 
 [Install]
