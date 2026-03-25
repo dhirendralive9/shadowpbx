@@ -254,7 +254,9 @@ docker pull jambonz/rtpengine:latest
 docker stop rtpengine 2>/dev/null || true
 docker rm rtpengine 2>/dev/null || true
 
-mkdir -p ${REC_DIR} ${REC_DIR}/pcap ${REC_DIR}/pcaps ${REC_DIR}/metadata
+mkdir -p ${REC_DIR} ${REC_DIR}/pcap ${REC_DIR}/pcaps ${REC_DIR}/metadata ${REC_DIR}/wav ${REC_DIR}/tmp
+mkdir -p /var/spool/rtpengine
+chmod 777 /var/spool/rtpengine
 mkdir -p ${AUDIO_DIR}
 mkdir -p ${VM_DIR}/greetings
 
@@ -262,7 +264,7 @@ docker run -d \
   --name rtpengine \
   --restart unless-stopped \
   --net host \
-  -v ${REC_DIR}:/recordings \
+  -v /var/spool/rtpengine:/var/spool/rtpengine \
   -v ${AUDIO_DIR}:/audio:ro \
   -v ${VM_DIR}:/voicemail \
   --entrypoint /usr/local/bin/rtpengine \
@@ -271,7 +273,7 @@ docker run -d \
     --listen-ng=127.0.0.1:22222 \
     --port-min=10000 \
     --port-max=20000 \
-    --recording-dir=/recordings \
+    --recording-dir=/var/spool/rtpengine \
     --recording-method=pcap \
     --recording-format=eth \
     --dtmf-log-dest=127.0.0.1:22223 \
@@ -374,6 +376,9 @@ PARK_SLOT_MAX=79
 # DTMF Detection
 DTMF_LISTEN_PORT=22223
 
+# Recording worker
+RECORDING_SPOOL_DIR=/var/spool/rtpengine
+
 # Registration
 MAX_REGISTRATION_EXPIRES=300
 EOF
@@ -414,6 +419,31 @@ EOF
 systemctl daemon-reload
 systemctl enable shadowpbx
 log "systemd service created"
+
+# Create recording worker systemd service
+cat > /etc/systemd/system/shadowpbx-recorder.service << EOF
+[Unit]
+Description=ShadowPBX Recording Worker
+After=network.target mongod.service docker.service shadowpbx.service
+Wants=shadowpbx.service
+
+[Service]
+Type=simple
+WorkingDirectory=${APP_DIR}
+ExecStart=/usr/bin/node src/recorder-worker.js
+Restart=always
+RestartSec=10
+Environment=NODE_ENV=production
+StandardOutput=append:${LOG_DIR}/recorder.log
+StandardError=append:${LOG_DIR}/recorder-error.log
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable shadowpbx-recorder
+log "Recording worker service created"
 
 # ============================================================
 step "7/10 - Setting up Nginx reverse proxy..."
@@ -683,6 +713,7 @@ step "10/10 - Starting ShadowPBX and verifying..."
 # ============================================================
 
 systemctl start shadowpbx
+systemctl start shadowpbx-recorder
 sleep 3
 
 echo ""
@@ -693,6 +724,7 @@ echo -n "  Drachtio:   "; docker ps --format '{{.Status}}' -f name=drachtio 2>/d
 echo -n "  RTPEngine:  "; docker ps --format '{{.Status}}' -f name=rtpengine 2>/dev/null || echo "not running"
 echo -n "  Nginx:      "; systemctl is-active nginx
 echo -n "  ShadowPBX:  "; systemctl is-active shadowpbx
+echo -n "  Recorder:   "; systemctl is-active shadowpbx-recorder
 echo -n "  fail2ban:   "; systemctl is-active fail2ban
 
 # Save credentials

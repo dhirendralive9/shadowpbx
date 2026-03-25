@@ -2,7 +2,6 @@
 const { v4: uuidv4 } = require('uuid');
 const { Extension, CDR, ActiveCall } = require('../models');
 const logger = require('../utils/logger');
-const { queueConversion } = require('../utils/converter');
 
 class CallHandler {
   constructor(srf, registrar, rtpengine, ringGroupHandler, trunkManager, callRouter) {
@@ -371,11 +370,10 @@ class CallHandler {
 
           const onDestroy = async (hangupBy) => {
             await this._endCall(cdr, hangupBy);
-            // Clean up RTPEngine session and queue recording for conversion
+            // Clean up RTPEngine session — recorder-worker handles pcap→wav conversion
             if (rtpCallId && rtpFromTag) {
               await this._rtpengineDelete(rtpCallId, rtpFromTag);
-              // Delay to let RTPEngine flush pcap, then queue for background conversion
-              setTimeout(() => queueConversion(rtpCallId, cdr.callId, cdr), 5000);
+              logger.debug(`Recording pcap released for ${cdr.callId} (sipCallId=${rtpCallId})`);
             }
             this.activeCalls.delete(callId);
           };
@@ -520,8 +518,7 @@ class CallHandler {
       await this._endCall(cdr, hangupBy);
       if (fromTag) {
         await this._rtpengineDelete(callId, fromTag);
-        // Delay to let RTPEngine flush pcap, then queue for background conversion
-        setTimeout(() => queueConversion(callId, cdr.callId, cdr), 5000);
+        logger.debug(`Recording pcap released for ${cdr.callId} (sipCallId=${callId})`);
       }
       this.activeCalls.delete(callId);
       if (this.holdHandler) this.holdHandler.cleanup(callId);
