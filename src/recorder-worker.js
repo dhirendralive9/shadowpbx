@@ -228,21 +228,16 @@ async function linkToCDR(baseName, wavPath, size) {
   if (!CDR) return;
 
   try {
-    // The pcap filename format is: sipCallId-tag.pcap
-    // Try matching by sipCallId (the full filename minus the tag)
-    const sipCallId = baseName.split('-').slice(0, 5).join('-');
+    // The pcap filename format is: rtpengineCallId-tag.pcap
+    // Extract the RTPEngine call-id (first 5 UUID segments)
+    const rtpCallId = baseName.split('-').slice(0, 5).join('-');
 
-    let cdr = await CDR.findOne({ sipCallId, status: 'completed' });
-    if (!cdr) cdr = await CDR.findOne({ callId: sipCallId, status: 'completed' });
+    // Primary match: rtpengineCallId field (set by call-handler when call answers)
+    let cdr = await CDR.findOne({ rtpengineCallId: rtpCallId, status: 'completed' });
 
-    // Broader search — find any completed CDR from last hour that matches
-    if (!cdr) {
-      cdr = await CDR.findOne({
-        status: 'completed',
-        sipCallId: { $regex: sipCallId.substring(0, 8) },
-        startTime: { $gte: new Date(Date.now() - 3600000) }
-      });
-    }
+    // Fallback: try sipCallId or callId
+    if (!cdr) cdr = await CDR.findOne({ sipCallId: rtpCallId, status: 'completed' });
+    if (!cdr) cdr = await CDR.findOne({ callId: rtpCallId, status: 'completed' });
 
     if (cdr) {
       cdr.recordingPath = wavPath;
@@ -251,7 +246,7 @@ async function linkToCDR(baseName, wavPath, size) {
       await cdr.save();
       log('info', `CDR linked: ${cdr.callId} -> ${path.basename(wavPath)}`);
     } else {
-      log('debug', `No CDR match for ${baseName} — will retry in sync`);
+      log('debug', `No CDR match for rtpCallId=${rtpCallId} — will retry in sync`);
     }
   } catch (err) {
     log('error', `CDR link failed: ${err.message}`);
@@ -281,7 +276,9 @@ async function syncCDRRecordings() {
 
     for (const cdr of unsyncedCDRs) {
       const match = wavFiles.find(f =>
-        f.includes(cdr.callId) || (cdr.sipCallId && f.includes(cdr.sipCallId))
+        f.includes(cdr.callId) ||
+        (cdr.sipCallId && f.includes(cdr.sipCallId)) ||
+        (cdr.rtpengineCallId && f.includes(cdr.rtpengineCallId))
       );
 
       if (match) {

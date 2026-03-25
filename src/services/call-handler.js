@@ -313,6 +313,8 @@ class CallHandler {
         this.activeCalls.set(callId, { uas, uac, cdr, fromExt: callerID, toExt: target });
         const rtpCallId = callId;
         const rtpFromTag = fromTag;
+        cdr.rtpengineCallId = rtpCallId;
+        cdr.save().catch(e => logger.error(`CDR rtpCallId update: ${e.message}`));
         const onDestroy = async (hangupBy) => {
           await this._endCall(cdr, hangupBy);
           this.activeCalls.delete(callId);
@@ -367,6 +369,10 @@ class CallHandler {
           // Get the RTPEngine call-id and from-tag stored by the ring group
           const rtpCallId = result.uas._rtpCallId || null;
           const rtpFromTag = result.uas._rtpFromTag || null;
+          if (rtpCallId) {
+            cdr.rtpengineCallId = rtpCallId;
+            cdr.save().catch(e => logger.error(`CDR rtpCallId update: ${e.message}`));
+          }
 
           const onDestroy = async (hangupBy) => {
             await this._endCall(cdr, hangupBy);
@@ -503,6 +509,12 @@ class CallHandler {
 
   _trackCall(callId, uas, uac, cdr, fromExt, toExt, fromTag) {
     this.activeCalls.set(callId, { uas, uac, cdr, fromExt, toExt });
+
+    // Save RTPEngine call-id so recorder-worker can link pcap to CDR
+    if (fromTag) {
+      cdr.rtpengineCallId = callId;
+      cdr.save().catch(e => logger.error(`CDR rtpCallId update: ${e.message}`));
+    }
 
     // Attach transfer (REFER) handlers if transfer handler is available
     if (this.transferHandler) {
