@@ -259,6 +259,7 @@ const cdrSchema = new mongoose.Schema({
   pickedUpBy: String,
   pickedUpAt: Date,
   voicemailId: String,
+  rtpengineCallId: String,
 });
 
 cdrSchema.index({ startTime: -1 });
