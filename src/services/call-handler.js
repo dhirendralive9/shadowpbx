@@ -2,7 +2,7 @@
 const { v4: uuidv4 } = require('uuid');
 const { Extension, CDR, ActiveCall } = require('../models');
 const logger = require('../utils/logger');
-const { pcapToWav } = require('../utils/converter');
+const { queueConversion } = require('../utils/converter');
 
 class CallHandler {
   constructor(srf, registrar, rtpengine, ringGroupHandler, trunkManager, callRouter) {
@@ -371,21 +371,11 @@ class CallHandler {
 
           const onDestroy = async (hangupBy) => {
             await this._endCall(cdr, hangupBy);
-            // Clean up RTPEngine session and convert recording
+            // Clean up RTPEngine session and queue recording for conversion
             if (rtpCallId && rtpFromTag) {
               await this._rtpengineDelete(rtpCallId, rtpFromTag);
-              setTimeout(() => {
-                try {
-                  const wavPath = pcapToWav(rtpCallId, cdr.callId);
-                  if (wavPath) {
-                    cdr.recordingPath = wavPath;
-                    cdr.recordingSize = require('fs').statSync(wavPath).size;
-                    cdr.recorded = true;
-                    cdr.save().catch(e => logger.error(`CDR recording update: ${e.message}`));
-                    logger.info(`RECORDING: saved ${wavPath} for [${cdr.callId}]`);
-                  }
-                } catch (err) { logger.error(`Recording conversion: ${err.message}`); }
-              }, 2000);
+              // Delay to let RTPEngine flush pcap, then queue for background conversion
+              setTimeout(() => queueConversion(rtpCallId, cdr.callId, cdr), 5000);
             }
             this.activeCalls.delete(callId);
           };
@@ -530,16 +520,8 @@ class CallHandler {
       await this._endCall(cdr, hangupBy);
       if (fromTag) {
         await this._rtpengineDelete(callId, fromTag);
-        setTimeout(() => {
-          try {
-            const wavPath = pcapToWav(callId, cdr.callId);
-            if (wavPath) {
-              cdr.recordingPath = wavPath;
-              cdr.recordingSize = require('fs').statSync(wavPath).size;
-              cdr.save().catch(e => logger.error(`CDR update: ${e.message}`));
-            }
-          } catch (err) { logger.error(`Recording conversion: ${err.message}`); }
-        }, 2000);
+        // Delay to let RTPEngine flush pcap, then queue for background conversion
+        setTimeout(() => queueConversion(callId, cdr.callId, cdr), 5000);
       }
       this.activeCalls.delete(callId);
       if (this.holdHandler) this.holdHandler.cleanup(callId);

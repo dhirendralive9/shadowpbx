@@ -31,7 +31,7 @@ const TimeConditionService = require('./services/time-condition');
 const PresenceHandler = require('./services/presence-handler');
 const QueueHandler = require('./services/queue-handler');
 const createApiRouter = require('./routes/api');
-const { convertAllPending } = require('./utils/converter');
+const { startBackgroundSync } = require('./utils/converter');
 
 let RtpEngineClient;
 try {
@@ -178,8 +178,8 @@ async function main() {
     logger.warn(`Trunk initialization: ${err.message}`);
   }
 
-  // 6. Convert pending recordings from previous session
-  setTimeout(() => convertAllPending(), 5000);
+  // 6. Background recording sync — converts pending pcaps and links to CDR
+  startBackgroundSync();
 
   // 7. SIP handlers
   srf.register((req, res) => {
