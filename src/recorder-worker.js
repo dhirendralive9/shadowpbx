@@ -2,22 +2,16 @@
 /**
  * ShadowPBX Recording Worker
  *
- * A standalone service that watches for new pcap recordings from RTPEngine,
- * converts them to WAV files, and links them to CDR records in MongoDB.
+ * Watches for new metadata files from RTPEngine (written when a call ends),
+ * converts the corresponding pcap to WAV, and links to CDR in MongoDB.
  *
- * Runs as a separate systemd service (shadowpbx-recorder.service) so it
- * never impacts the main PBX process. If this worker crashes, calls
- * continue unaffected. If the PBX crashes, pending recordings still
- * get processed.
+ * Key design: watches METADATA directory, not pcaps. RTPEngine writes the
+ * metadata file only after the call ends and the pcap is complete. This
+ * avoids triggering on partial pcaps during active calls.
  *
  * Usage:
  *   node src/recorder-worker.js
  *   systemctl start shadowpbx-recorder
- *
- * Config via environment variables (reads .env from /opt/shadowpbx):
- *   RECORDINGS_DIR  - base recordings directory
- *   MONGODB_URI     - MongoDB connection string
- *   LOG_LEVEL       - debug|info|warn|error (default: info)
  */
 
 require('dotenv').config({ path: '/opt/shadowpbx/.env' });
@@ -39,8 +33,8 @@ const TMP_DIR = path.join(RECORDINGS_DIR, 'tmp');
 const MONGODB_URI = process.env.MONGODB_URI;
 const LOG_LEVEL = process.env.RECORDER_LOG_LEVEL || process.env.LOG_LEVEL || 'info';
 const TIMEOUT_CAP = 900000; // 15 minute cap
-const POLL_INTERVAL = 10000; // 10 seconds — fallback if inotify misses
-const CDR_SYNC_INTERVAL = 120000; // 2 minutes — sync wav files back to CDR
+const POLL_INTERVAL = 30000; // 30 seconds — fallback poll
+const CDR_SYNC_INTERVAL = 120000; // 2 minutes
 
 // Log levels
 const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
@@ -59,7 +53,7 @@ function log(level, msg) {
 });
 
 // ============================================================
-// CDR Model (minimal — just what the worker needs)
+// CDR Model
 // ============================================================
 const cdrSchema = new mongoose.Schema({
   callId: { type: String, index: true },
@@ -74,14 +68,28 @@ const cdrSchema = new mongoose.Schema({
 let CDR;
 
 // ============================================================
-// Conversion queue
+// Track what's been processed or is in-flight to prevent duplicates
 // ============================================================
+const processed = new Set();
+const inFlight = new Set();
 const queue = [];
 let processing = false;
 
 function enqueue(pcapFile) {
-  // Skip if already queued
-  if (queue.some(j => j.pcapFile === pcapFile)) return;
+  if (processed.has(pcapFile) || inFlight.has(pcapFile) || queue.some(j => j.pcapFile === pcapFile)) {
+    log('debug', `Skipping (already handled): ${pcapFile}`);
+    return;
+  }
+
+  // Check if WAV already exists
+  const baseName = pcapFile.replace('.pcap', '');
+  const wavPath = path.join(WAV_DIR, `${baseName}.wav`);
+  if (fs.existsSync(wavPath)) {
+    processed.add(pcapFile);
+    log('debug', `Skipping (wav exists): ${pcapFile}`);
+    return;
+  }
+
   queue.push({ pcapFile });
   log('info', `Queued: ${pcapFile} (queue: ${queue.length})`);
   processNext();
@@ -93,11 +101,14 @@ async function processNext() {
 
   while (queue.length > 0) {
     const job = queue.shift();
+    inFlight.add(job.pcapFile);
     try {
-      await convertPcap(job.pcapFile);
+      const result = await convertPcap(job.pcapFile);
+      processed.add(job.pcapFile);
     } catch (err) {
       log('error', `Conversion failed for ${job.pcapFile}: ${err.message}`);
     }
+    inFlight.delete(job.pcapFile);
   }
 
   processing = false;
@@ -117,13 +128,28 @@ function getTimeout(filePath) {
 }
 
 // ============================================================
+// Parse metadata file to find the matching pcap filename
+// ============================================================
+function parseMeta(metaPath) {
+  try {
+    const content = fs.readFileSync(metaPath, 'utf-8');
+    const lines = content.split('\n');
+    // First line is the pcap path
+    const pcapPath = lines[0].trim();
+    const pcapFile = path.basename(pcapPath);
+    return { pcapFile, pcapPath };
+  } catch (e) {
+    return null;
+  }
+}
+
+// ============================================================
 // Convert a single pcap file to wav
 // ============================================================
 function convertPcap(pcapFileName) {
   return new Promise((resolve) => {
     const pcapPath = path.join(PCAP_DIR, pcapFileName);
     const baseName = pcapFileName.replace('.pcap', '');
-    const sipCallId = baseName.split('-').slice(0, 5).join('-'); // UUID part
     const wavPath = path.join(WAV_DIR, `${baseName}.wav`);
 
     // Skip if wav already exists
@@ -134,11 +160,13 @@ function convertPcap(pcapFileName) {
 
     // Skip tiny/empty pcaps
     try {
-      if (fs.statSync(pcapPath).size < 1000) {
-        log('debug', `Skipping tiny pcap: ${pcapFileName} (${fs.statSync(pcapPath).size} bytes)`);
+      const size = fs.statSync(pcapPath).size;
+      if (size < 1000) {
+        log('debug', `Skipping tiny pcap: ${pcapFileName} (${size} bytes)`);
         return resolve(null);
       }
     } catch (e) {
+      log('warn', `Cannot stat pcap: ${pcapFileName}`);
       return resolve(null);
     }
 
@@ -183,9 +211,7 @@ function convertPcap(pcapFileName) {
       if (fs.existsSync(wavPath)) {
         const size = fs.statSync(wavPath).size;
         log('info', `Converted: ${wavPath} (${(size / 1024).toFixed(1)}KB)`);
-
-        // Link to CDR
-        await linkToCDR(sipCallId, baseName, wavPath, size);
+        await linkToCDR(baseName, wavPath, size);
         resolve(wavPath);
       } else {
         log('warn', `No output for ${pcapFileName}`);
@@ -196,28 +222,25 @@ function convertPcap(pcapFileName) {
 }
 
 // ============================================================
-// Link a wav file to its CDR record in MongoDB
+// Link wav to CDR in MongoDB
 // ============================================================
-async function linkToCDR(sipCallId, baseName, wavPath, size) {
+async function linkToCDR(baseName, wavPath, size) {
   if (!CDR) return;
 
   try {
-    // Try matching by sipCallId first
+    // The pcap filename format is: sipCallId-tag.pcap
+    // Try matching by sipCallId (the full filename minus the tag)
+    const sipCallId = baseName.split('-').slice(0, 5).join('-');
+
     let cdr = await CDR.findOne({ sipCallId, status: 'completed' });
+    if (!cdr) cdr = await CDR.findOne({ callId: sipCallId, status: 'completed' });
 
-    // Fallback: try matching by callId (UUID)
+    // Broader search — find any completed CDR from last hour that matches
     if (!cdr) {
-      cdr = await CDR.findOne({ callId: sipCallId, status: 'completed' });
-    }
-
-    // Fallback: try matching the base name parts
-    if (!cdr) {
-      // The pcap filename is: sipCallId-tag.pcap
-      // Try just the first UUID part
-      const uuidPart = baseName.split('-').slice(0, 5).join('-');
       cdr = await CDR.findOne({
-        $or: [{ sipCallId: uuidPart }, { callId: uuidPart }],
-        status: 'completed'
+        status: 'completed',
+        sipCallId: { $regex: sipCallId.substring(0, 8) },
+        startTime: { $gte: new Date(Date.now() - 3600000) }
       });
     }
 
@@ -228,7 +251,7 @@ async function linkToCDR(sipCallId, baseName, wavPath, size) {
       await cdr.save();
       log('info', `CDR linked: ${cdr.callId} -> ${path.basename(wavPath)}`);
     } else {
-      log('debug', `No CDR match for sipCallId=${sipCallId}`);
+      log('debug', `No CDR match for ${baseName} — will retry in sync`);
     }
   } catch (err) {
     log('error', `CDR link failed: ${err.message}`);
@@ -254,16 +277,15 @@ async function syncCDRRecordings() {
     }).limit(100);
 
     let synced = 0;
+    const wavFiles = fs.readdirSync(WAV_DIR).filter(f => f.endsWith('.wav'));
+
     for (const cdr of unsyncedCDRs) {
-      // Check for wav files matching callId or sipCallId
-      const wavFiles = fs.readdirSync(WAV_DIR).filter(f =>
-        f.endsWith('.wav') && (f.includes(cdr.callId) || (cdr.sipCallId && f.includes(cdr.sipCallId)))
+      const match = wavFiles.find(f =>
+        f.includes(cdr.callId) || (cdr.sipCallId && f.includes(cdr.sipCallId))
       );
 
-      if (wavFiles.length > 0) {
-        // Prefer the 'mix' file if available
-        const wavFile = wavFiles.find(f => f.includes('mix')) || wavFiles[0];
-        const wavPath = path.join(WAV_DIR, wavFile);
+      if (match) {
+        const wavPath = path.join(WAV_DIR, match);
         cdr.recordingPath = wavPath;
         cdr.recordingSize = fs.statSync(wavPath).size;
         cdr.recorded = true;
@@ -279,29 +301,58 @@ async function syncCDRRecordings() {
 }
 
 // ============================================================
-// Watch for new pcap files using fs.watch (inotify)
+// Watch METADATA directory for new files
+// RTPEngine writes the metadata file AFTER the call ends and
+// the pcap is fully written — this is the safe trigger point.
 // ============================================================
 function startWatcher() {
-  log('info', `Watching: ${PCAP_DIR}`);
+  log('info', `Watching: ${META_DIR}`);
+
+  // Debounce map to prevent duplicate processing
+  const debounceTimers = {};
 
   try {
-    fs.watch(PCAP_DIR, (eventType, filename) => {
-      if (!filename || !filename.endsWith('.pcap')) return;
-      // Wait a moment for RTPEngine to finish writing
-      setTimeout(() => {
-        const pcapPath = path.join(PCAP_DIR, filename);
-        if (fs.existsSync(pcapPath) && fs.statSync(pcapPath).size > 1000) {
-          enqueue(filename);
+    fs.watch(META_DIR, (eventType, filename) => {
+      if (!filename || !filename.endsWith('.txt')) return;
+
+      // Debounce — wait 2 seconds after last event for this file
+      if (debounceTimers[filename]) clearTimeout(debounceTimers[filename]);
+      debounceTimers[filename] = setTimeout(() => {
+        delete debounceTimers[filename];
+
+        const metaPath = path.join(META_DIR, filename);
+        if (!fs.existsSync(metaPath)) return;
+
+        const meta = parseMeta(metaPath);
+        if (!meta || !meta.pcapFile) {
+          log('warn', `Cannot parse metadata: ${filename}`);
+          return;
         }
-      }, 3000);
+
+        // Check pcap exists and is non-trivial
+        const pcapPath = path.join(PCAP_DIR, meta.pcapFile);
+        if (!fs.existsSync(pcapPath)) {
+          log('warn', `Pcap not found for metadata: ${meta.pcapFile}`);
+          return;
+        }
+
+        try {
+          if (fs.statSync(pcapPath).size < 1000) {
+            log('debug', `Skipping tiny pcap from metadata: ${meta.pcapFile}`);
+            return;
+          }
+        } catch (e) { return; }
+
+        enqueue(meta.pcapFile);
+      }, 2000);
     });
   } catch (err) {
-    log('error', `fs.watch failed: ${err.message} — falling back to polling only`);
+    log('error', `fs.watch failed on ${META_DIR}: ${err.message} — using polling only`);
   }
 }
 
 // ============================================================
-// Poll for any pcap files that inotify might have missed
+// Poll for pending pcaps that don't have matching wavs
 // ============================================================
 function pollForPending() {
   try {
@@ -309,16 +360,21 @@ function pollForPending() {
 
     for (const f of pcapFiles) {
       const baseName = f.replace('.pcap', '');
-      const wavPath = path.join(WAV_DIR, `${baseName}.wav`);
 
-      // Skip if already converted
-      if (fs.existsSync(wavPath)) continue;
+      // Skip if wav exists
+      if (fs.existsSync(path.join(WAV_DIR, `${baseName}.wav`))) continue;
 
       // Skip tiny files
-      const pcapPath = path.join(PCAP_DIR, f);
       try {
-        if (fs.statSync(pcapPath).size < 1000) continue;
+        if (fs.statSync(path.join(PCAP_DIR, f)).size < 1000) continue;
       } catch (e) { continue; }
+
+      // Only enqueue if metadata exists (call has ended)
+      const metaFile = `rtpengine-meta-${baseName}.txt`;
+      if (!fs.existsSync(path.join(META_DIR, metaFile))) {
+        log('debug', `Skipping ${f} — no metadata (call may still be active)`);
+        continue;
+      }
 
       enqueue(f);
     }
@@ -333,10 +389,11 @@ function pollForPending() {
 async function main() {
   log('info', '═══════════════════════════════════════');
   log('info', 'ShadowPBX Recording Worker starting');
-  log('info', `  Spool:  ${PCAP_DIR}`);
-  log('info', `  Output: ${WAV_DIR}`);
-  log('info', `  Temp:   ${TMP_DIR}`);
-  log('info', `  Timeout cap: ${TIMEOUT_CAP / 1000}s`);
+  log('info', `  Spool:    ${SPOOL_DIR}`);
+  log('info', `  Pcaps:    ${PCAP_DIR}`);
+  log('info', `  Metadata: ${META_DIR}`);
+  log('info', `  Output:   ${WAV_DIR}`);
+  log('info', `  Timeout:  ${TIMEOUT_CAP / 1000}s cap`);
   log('info', '═══════════════════════════════════════');
 
   // Connect to MongoDB
@@ -346,7 +403,7 @@ async function main() {
       CDR = mongoose.model('CDR', cdrSchema);
       log('info', 'MongoDB connected');
     } catch (err) {
-      log('error', `MongoDB failed: ${err.message} — recordings will convert but CDR linking disabled`);
+      log('error', `MongoDB failed: ${err.message} — CDR linking disabled`);
     }
   } else {
     log('warn', 'No MONGODB_URI — CDR linking disabled');
@@ -355,17 +412,15 @@ async function main() {
   // Process any existing pending pcaps
   pollForPending();
 
-  // Start inotify watcher
+  // Start inotify watcher on metadata directory
   startWatcher();
 
-  // Periodic poll as fallback (every 10 seconds)
+  // Periodic poll as fallback
   setInterval(pollForPending, POLL_INTERVAL);
 
-  // Periodic CDR sync (every 2 minutes)
+  // Periodic CDR sync
   setInterval(syncCDRRecordings, CDR_SYNC_INTERVAL);
-
-  // Initial CDR sync after 5 seconds
-  setTimeout(syncCDRRecordings, 5000);
+  setTimeout(syncCDRRecordings, 10000);
 
   log('info', 'Recording worker running');
 }
