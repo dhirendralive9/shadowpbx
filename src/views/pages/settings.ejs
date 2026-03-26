@@ -4,6 +4,7 @@
 <div style="display:flex;gap:0;border-bottom:0.5px solid var(--border);margin-bottom:20px">
   <a href="#blocklist" class="settings-tab active" data-tab="blocklist" onclick="switchTab('blocklist')">Blocklist</a>
   <a href="#audio" class="settings-tab" data-tab="audio" onclick="switchTab('audio')">Audio library</a>
+  <a href="#maintenance" class="settings-tab" data-tab="maintenance" onclick="switchTab('maintenance')">Maintenance</a>
   <a href="#system" class="settings-tab" data-tab="system" onclick="switchTab('system')">System</a>
 </div>
 
@@ -17,6 +18,9 @@
 .settings-tab.active { color: var(--text-primary); border-bottom-color: var(--accent); }
 .settings-panel { display: none; }
 .settings-panel.active { display: block; }
+.stat-card { background: var(--bg-surface); border-radius: var(--radius); padding: 16px; border: 0.5px solid var(--border); }
+.stat-val { font-size: 24px; font-weight: 600; margin-bottom: 2px; }
+.stat-label { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.4px; }
 </style>
 
 <!-- ═══════════════════ BLOCKLIST ═══════════════════ -->
@@ -68,6 +72,74 @@
   </table>
 </div>
 
+<!-- ═══════════════════ MAINTENANCE ═══════════════════ -->
+<div id="panel-maintenance" class="settings-panel">
+
+  <!-- Storage Stats -->
+  <div class="sec-head"><span class="sec-title">Storage usage</span></div>
+  <div class="grid-3" style="margin-bottom:24px" id="storage-stats">
+    <div class="stat-card"><div class="stat-val" id="st-recordings">—</div><div class="stat-label">Recordings</div><div class="muted" style="font-size:11px" id="st-recordings-sub"></div></div>
+    <div class="stat-card"><div class="stat-val" id="st-pcaps">—</div><div class="stat-label">Source pcaps</div><div class="muted" style="font-size:11px" id="st-pcaps-sub"></div></div>
+    <div class="stat-card"><div class="stat-val" id="st-backups">—</div><div class="stat-label">Backups</div><div class="muted" style="font-size:11px" id="st-backups-sub"></div></div>
+  </div>
+
+  <!-- Recording Retention -->
+  <div class="sec-head"><span class="sec-title">Recording retention</span></div>
+  <div class="card" style="margin-bottom:24px">
+    <p class="muted" style="font-size:12px;margin-bottom:12px">Automatically delete old call recordings and pcap files after a set period. The cleanup runs daily via the recording worker.</p>
+    <div class="grid-3" style="margin-bottom:0">
+      <div class="form-group">
+        <label class="form-label">Auto-delete recordings</label>
+        <select class="form-select" id="ret-enabled" onchange="toggleRetention()">
+          <option value="false">Disabled — keep forever</option>
+          <option value="true">Enabled — delete after period</option>
+        </select>
+      </div>
+      <div class="form-group" id="ret-days-group" style="display:none">
+        <label class="form-label">Delete recordings older than</label>
+        <select class="form-select" id="ret-days">
+          <option value="15">15 days</option>
+          <option value="30">30 days</option>
+          <option value="60">60 days</option>
+          <option value="90" selected>90 days</option>
+          <option value="180">180 days</option>
+          <option value="365">1 year</option>
+        </select>
+      </div>
+      <div class="form-group" id="ret-options-group" style="display:none">
+        <label class="form-label">What to delete</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;padding:4px 0">
+          <input type="checkbox" id="ret-wav" checked> WAV recordings
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;padding:4px 0">
+          <input type="checkbox" id="ret-pcap" checked> Source pcap files
+        </label>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;margin-top:12px">
+      <button class="btn btn-primary btn-sm" onclick="saveRetention()">Save</button>
+      <button class="btn btn-sm" onclick="runCleanupNow()" id="cleanup-btn">Run cleanup now</button>
+      <span class="muted" style="font-size:11px" id="ret-last-cleanup"></span>
+    </div>
+  </div>
+
+  <!-- Database Backup -->
+  <div class="sec-head"><span class="sec-title">Database backup</span></div>
+  <div class="card" style="margin-bottom:16px">
+    <p class="muted" style="font-size:12px;margin-bottom:12px">Create a full MongoDB backup (extensions, CDR, routes, settings). Backups are compressed and can be downloaded.</p>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px">
+      <button class="btn btn-primary btn-sm" onclick="createBackup()" id="backup-btn">Create backup now</button>
+      <span class="muted" style="font-size:11px" id="backup-last"></span>
+    </div>
+  </div>
+
+  <!-- Backup List -->
+  <table class="tbl">
+    <thead><tr><th>Backup</th><th>Size</th><th>Created</th><th></th></tr></thead>
+    <tbody id="backup-body"><tr><td colspan="4" class="empty">No backups</td></tr></tbody>
+  </table>
+</div>
+
 <!-- ═══════════════════ SYSTEM ═══════════════════ -->
 <div id="panel-system" class="settings-panel">
   <div class="sec-head">
@@ -114,9 +186,9 @@ function switchTab(tab) {
   if (panelEl) panelEl.classList.add('active');
   window.location.hash = tab;
 
-  // Load data for the tab
   if (tab === 'blocklist') loadBlocklist();
   if (tab === 'audio') loadAudioFiles();
+  if (tab === 'maintenance') { loadSettings(); loadStorage(); loadBackups(); }
   if (tab === 'system') loadSystem();
 }
 
@@ -187,15 +259,9 @@ async function loadAudioFiles() {
           '<td class="muted">' + Math.round(f.size / 1024) + ' KB</td>' +
           '<td class="muted" style="font-size:11px">' + fmtTime(f.modified) + '</td>' +
           '<td style="white-space:nowrap">' +
-            '<button class="act-btn" onclick="playAudio(\'' + esc(f.name) + '\',this)" title="Play">' +
-              '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>' +
-            '</button>' +
-            '<button class="act-btn" onclick="renameAudio(\'' + esc(f.name) + '\')" title="Rename">' +
-              '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>' +
-            '</button>' +
-            '<button class="act-btn" onclick="deleteAudio(\'' + esc(f.name) + '\')" title="Delete">' +
-              '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>' +
-            '</button>' +
+            '<button class="act-btn" onclick="playAudio(\'' + esc(f.name) + '\',this)" title="Play"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg></button>' +
+            '<button class="act-btn" onclick="renameAudio(\'' + esc(f.name) + '\')" title="Rename"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>' +
+            '<button class="act-btn" onclick="deleteAudio(\'' + esc(f.name) + '\')" title="Delete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg></button>' +
           '</td>' +
         '</tr>';
       }).join('');
@@ -206,21 +272,20 @@ async function loadAudioFiles() {
   } catch (e) { console.error('audio', e); }
 }
 
-var ICON_PLAY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>';
-var ICON_PAUSE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>';
+var ICON_PLAY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>';
+var ICON_PAUSE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>';
 var currentAudio = null, currentBtn = null;
 
 function playAudio(filename, btn) {
   if (currentAudio && currentBtn === btn) {
-    if (currentAudio.paused) { currentAudio.play(); btn.innerHTML = ICON_PAUSE; btn.title = 'Pause'; }
-    else { currentAudio.pause(); btn.innerHTML = ICON_PLAY; btn.title = 'Resume'; }
+    if (currentAudio.paused) { currentAudio.play(); btn.innerHTML = ICON_PAUSE; } else { currentAudio.pause(); btn.innerHTML = ICON_PLAY; }
     return;
   }
-  if (currentAudio) { currentAudio.pause(); if (currentBtn) { currentBtn.innerHTML = ICON_PLAY; currentBtn.title = 'Play'; } }
+  if (currentAudio) { currentAudio.pause(); if (currentBtn) currentBtn.innerHTML = ICON_PLAY; }
   var a = new Audio(API + '/audio/play/' + encodeURIComponent(filename));
-  a.onended = function() { btn.innerHTML = ICON_PLAY; btn.title = 'Play'; currentAudio = null; currentBtn = null; };
+  a.onended = function() { btn.innerHTML = ICON_PLAY; currentAudio = null; currentBtn = null; };
   a.onerror = function() { btn.innerHTML = ICON_PLAY; showToast('Could not play', true); currentAudio = null; currentBtn = null; };
-  a.play(); btn.innerHTML = ICON_PAUSE; btn.title = 'Pause'; currentAudio = a; currentBtn = btn;
+  a.play(); btn.innerHTML = ICON_PAUSE; currentAudio = a; currentBtn = btn;
 }
 
 async function renameAudio(oldName) {
@@ -229,16 +294,14 @@ async function renameAudio(oldName) {
   if (!newName || newName === baseName) return;
   var r = await fetch(API + '/audio/rename', { method: 'POST', headers: J, body: JSON.stringify({ oldName: oldName, newName: newName }) });
   var d = await r.json();
-  if (d.success) { showToast('Renamed to ' + d.newName); loadAudioFiles(); }
-  else showToast(d.error || 'Rename failed', true);
+  if (d.success) { showToast('Renamed to ' + d.newName); loadAudioFiles(); } else showToast(d.error || 'Rename failed', true);
 }
 
 async function deleteAudio(filename) {
   if (!confirm('Delete "' + filename + '"?\n\nIf used by an IVR or MOH, it will stop working.')) return;
   var r = await fetch(API + '/audio/' + encodeURIComponent(filename), { method: 'DELETE', headers: H });
   var d = await r.json();
-  if (d.success) { showToast(filename + ' deleted'); loadAudioFiles(); }
-  else showToast(d.error || 'Delete failed', true);
+  if (d.success) { showToast(filename + ' deleted'); loadAudioFiles(); } else showToast(d.error || 'Delete failed', true);
 }
 
 async function uploadAudioFile(input) {
@@ -248,10 +311,134 @@ async function uploadAudioFile(input) {
   try {
     var r = await fetch(API + '/audio/upload', { method: 'POST', headers: { 'X-API-Key': KEY }, body: formData });
     var d = await r.json();
-    if (d.success) { showToast('Uploaded: ' + d.originalName + (d.warning ? ' (' + d.warning + ')' : '')); loadAudioFiles(); }
-    else showToast(d.error || 'Upload failed', true);
+    if (d.success) { showToast('Uploaded: ' + d.originalName); loadAudioFiles(); } else showToast(d.error || 'Upload failed', true);
   } catch (e) { showToast('Upload failed', true); }
   input.value = '';
+}
+
+// ═══════════════════ MAINTENANCE ═══════════════════
+
+function toggleRetention() {
+  var enabled = document.getElementById('ret-enabled').value === 'true';
+  document.getElementById('ret-days-group').style.display = enabled ? 'block' : 'none';
+  document.getElementById('ret-options-group').style.display = enabled ? 'block' : 'none';
+}
+
+async function loadSettings() {
+  try {
+    var d = await (await fetch(API + '/settings', { headers: H })).json();
+    if (!d.success || !d.settings) return;
+    var s = d.settings;
+
+    // Recording retention
+    if (s.recordingRetention) {
+      document.getElementById('ret-enabled').value = s.recordingRetention.enabled ? 'true' : 'false';
+      document.getElementById('ret-days').value = s.recordingRetention.days || 90;
+      document.getElementById('ret-wav').checked = s.recordingRetention.deleteRecordings !== false;
+      document.getElementById('ret-pcap').checked = s.recordingRetention.deletePcaps !== false;
+      if (s.recordingRetention.lastCleanup) {
+        document.getElementById('ret-last-cleanup').textContent = 'Last cleanup: ' + fmtTime(s.recordingRetention.lastCleanup);
+      }
+      toggleRetention();
+    }
+
+    // Backup
+    if (s.backup && s.backup.lastBackup) {
+      document.getElementById('backup-last').textContent = 'Last backup: ' + fmtTime(s.backup.lastBackup);
+    }
+  } catch (e) { console.error('settings', e); }
+}
+
+async function saveRetention() {
+  try {
+    var body = {
+      recordingRetention: {
+        enabled: document.getElementById('ret-enabled').value === 'true',
+        days: parseInt(document.getElementById('ret-days').value),
+        deleteRecordings: document.getElementById('ret-wav').checked,
+        deletePcaps: document.getElementById('ret-pcap').checked
+      }
+    };
+    var r = await fetch(API + '/settings', { method: 'PUT', headers: J, body: JSON.stringify(body) });
+    var d = await r.json();
+    if (d.success) showToast('Retention settings saved');
+    else showToast(d.error || 'Failed', true);
+  } catch (e) { showToast('Failed: ' + e.message, true); }
+}
+
+async function runCleanupNow() {
+  var btn = document.getElementById('cleanup-btn');
+  btn.disabled = true; btn.textContent = 'Cleaning up...';
+  try {
+    var r = await fetch(API + '/settings/cleanup', { method: 'POST', headers: H });
+    var d = await r.json();
+    if (d.success) {
+      showToast('Cleanup: ' + d.deletedWav + ' recordings + ' + d.deletedPcap + ' pcaps deleted (' + d.freedMB + 'MB freed)');
+      loadStorage();
+      loadSettings();
+    } else showToast(d.error || 'Cleanup failed', true);
+  } catch (e) { showToast('Cleanup failed', true); }
+  btn.disabled = false; btn.textContent = 'Run cleanup now';
+}
+
+async function loadStorage() {
+  try {
+    var d = await (await fetch(API + '/settings/storage', { headers: H })).json();
+    if (!d.success) return;
+    var s = d.storage;
+    document.getElementById('st-recordings').textContent = s.recordings.sizeMB + ' MB';
+    document.getElementById('st-recordings-sub').textContent = s.recordings.count + ' file(s)';
+    document.getElementById('st-pcaps').textContent = s.pcaps.sizeMB + ' MB';
+    document.getElementById('st-pcaps-sub').textContent = s.pcaps.count + ' file(s)';
+    document.getElementById('st-backups').textContent = s.backups.sizeMB + ' MB';
+    document.getElementById('st-backups-sub').textContent = s.backups.count + ' backup(s)';
+  } catch (e) { console.error('storage', e); }
+}
+
+async function createBackup() {
+  var btn = document.getElementById('backup-btn');
+  btn.disabled = true; btn.textContent = 'Creating backup...';
+  try {
+    var r = await fetch(API + '/settings/backup', { method: 'POST', headers: H });
+    var d = await r.json();
+    if (d.success) {
+      showToast('Backup created: ' + d.backup.name + ' (' + d.backup.sizeMB + 'MB)');
+      loadBackups();
+      loadStorage();
+      loadSettings();
+    } else showToast(d.error || 'Backup failed', true);
+  } catch (e) { showToast('Backup failed', true); }
+  btn.disabled = false; btn.textContent = 'Create backup now';
+}
+
+async function loadBackups() {
+  try {
+    var d = await (await fetch(API + '/settings/backups', { headers: H })).json();
+    var b = document.getElementById('backup-body');
+    if (d.success && d.backups && d.backups.length) {
+      b.innerHTML = d.backups.map(function(bk) {
+        return '<tr>' +
+          '<td class="mono" style="font-size:12px">' + esc(bk.name) + '</td>' +
+          '<td class="muted">' + bk.sizeMB + ' MB</td>' +
+          '<td class="muted" style="font-size:11px">' + fmtTime(bk.createdAt) + '</td>' +
+          '<td style="white-space:nowrap">' +
+            '<a href="' + API + '/settings/backups/' + encodeURIComponent(bk.name) + '/download" class="act-btn" title="Download" style="display:inline-block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a>' +
+            '<button class="act-btn" onclick="deleteBackup(\'' + esc(bk.name) + '\')" title="Delete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg></button>' +
+          '</td>' +
+        '</tr>';
+      }).join('');
+    } else {
+      b.innerHTML = '<tr><td colspan="4" class="empty">No backups yet — create one above</td></tr>';
+    }
+  } catch (e) { console.error('backups', e); }
+}
+
+async function deleteBackup(name) {
+  if (!confirm('Delete backup "' + name + '"?')) return;
+  await fetch(API + '/settings/backups/' + encodeURIComponent(name), { method: 'DELETE', headers: H });
+  showToast('Backup deleted');
+  loadBackups();
+  loadStorage();
 }
 
 // ═══════════════════ SYSTEM ═══════════════════
@@ -269,9 +456,9 @@ async function loadSystem() {
   } catch (e) {}
 }
 
-// ─── Init: read hash and switch tab ───
+// ─── Init ───
 var initTab = window.location.hash.replace('#', '') || 'blocklist';
-if (['blocklist', 'audio', 'system'].indexOf(initTab) === -1) initTab = 'blocklist';
+if (['blocklist', 'audio', 'maintenance', 'system'].indexOf(initTab) === -1) initTab = 'blocklist';
 switchTab(initTab);
 </script>
 <%- include('../partials/foot') %>

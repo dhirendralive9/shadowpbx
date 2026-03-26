@@ -322,6 +322,34 @@ const activeCallSchema = new mongoose.Schema({
   rtpengineToTag: String,
 });
 
+// ============================================================
+// System Settings (singleton — one document)
+// ============================================================
+const systemSettingsSchema = new mongoose.Schema({
+  _id: { type: String, default: 'system' },
+
+  // Recording retention
+  recordingRetention: {
+    enabled: { type: Boolean, default: false },
+    days: { type: Number, default: 90 },          // 15, 30, 60, 90
+    deleteRecordings: { type: Boolean, default: true },  // delete WAV files
+    deletePcaps: { type: Boolean, default: true },       // delete source pcaps
+    lastCleanup: Date
+  },
+
+  // MongoDB backup
+  backup: {
+    autoBackup: { type: Boolean, default: false },
+    schedule: { type: String, default: 'daily' },  // daily, weekly
+    retainDays: { type: Number, default: 7 },       // keep backups for N days
+    lastBackup: Date,
+    lastBackupPath: String,
+    lastBackupSize: Number
+  },
+
+  updatedAt: { type: Date, default: Date.now }
+}, { collection: 'systemsettings' });
+
 const Extension = mongoose.model('Extension', extensionSchema);
 const RingGroup = mongoose.model('RingGroup', ringGroupSchema);
 const Trunk = mongoose.model('Trunk', trunkSchema);
@@ -336,5 +364,6 @@ const BlockedNumber = mongoose.model('BlockedNumber', blockedNumberSchema);
 const CDR = mongoose.model('CDR', cdrSchema);
 const VoicemailMessage = mongoose.model('VoicemailMessage', voicemailMessageSchema);
 const ActiveCall = mongoose.model('ActiveCall', activeCallSchema);
+const SystemSettings = mongoose.model('SystemSettings', systemSettingsSchema);
 
-module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, IVR, TimeCondition, Queue, User, ChatMessage, BlockedNumber, CDR, VoicemailMessage, ActiveCall };
+module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, IVR, TimeCondition, Queue, User, ChatMessage, BlockedNumber, CDR, VoicemailMessage, ActiveCall, SystemSettings };

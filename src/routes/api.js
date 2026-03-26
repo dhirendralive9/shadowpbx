@@ -1105,6 +1105,12 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
 
+  // ============================================================
+  // Settings, Backup & Maintenance routes
+  // ============================================================
+  const registerSettingsRoutes = require('./settings-api');
+  registerSettingsRoutes(router);
+
   return router;
 }
 

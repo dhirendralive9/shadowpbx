@@ -419,7 +419,92 @@ async function main() {
   setInterval(syncCDRRecordings, CDR_SYNC_INTERVAL);
   setTimeout(syncCDRRecordings, 10000);
 
+  // Daily recording cleanup — runs every hour, checks settings, deletes old files
+  setInterval(runScheduledCleanup, 3600000); // every hour
+  setTimeout(runScheduledCleanup, 60000); // first run after 1 minute
+
   log('info', 'Recording worker running');
+}
+
+// ============================================================
+// Scheduled recording cleanup based on SystemSettings
+// ============================================================
+async function runScheduledCleanup() {
+  try {
+    const settingsSchema = new mongoose.Schema({
+      _id: String,
+      recordingRetention: {
+        enabled: Boolean,
+        days: Number,
+        deleteRecordings: Boolean,
+        deletePcaps: Boolean,
+        lastCleanup: Date
+      }
+    }, { collection: 'systemsettings', strict: false });
+
+    let Settings;
+    try { Settings = mongoose.model('SystemSettings'); } catch (e) {
+      Settings = mongoose.model('SystemSettings', settingsSchema);
+    }
+
+    const settings = await Settings.findById('system');
+    if (!settings || !settings.recordingRetention || !settings.recordingRetention.enabled) return;
+
+    const days = settings.recordingRetention.days || 90;
+    const lastCleanup = settings.recordingRetention.lastCleanup;
+
+    // Only run once per day
+    if (lastCleanup && (Date.now() - new Date(lastCleanup).getTime()) < 86400000) return;
+
+    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    let deletedWav = 0, deletedPcap = 0, freedBytes = 0;
+
+    // Delete old WAV files
+    if (settings.recordingRetention.deleteRecordings !== false && fs.existsSync(WAV_DIR)) {
+      const files = fs.readdirSync(WAV_DIR).filter(f => f.endsWith('.wav'));
+      for (const f of files) {
+        try {
+          const filePath = path.join(WAV_DIR, f);
+          const stat = fs.statSync(filePath);
+          if (stat.mtime < cutoff) {
+            freedBytes += stat.size;
+            fs.unlinkSync(filePath);
+            deletedWav++;
+          }
+        } catch (e) {}
+      }
+    }
+
+    // Delete old pcap files
+    if (settings.recordingRetention.deletePcaps !== false && fs.existsSync(PCAP_DIR)) {
+      const files = fs.readdirSync(PCAP_DIR).filter(f => f.endsWith('.pcap'));
+      for (const f of files) {
+        try {
+          const filePath = path.join(PCAP_DIR, f);
+          const stat = fs.statSync(filePath);
+          if (stat.mtime < cutoff) {
+            freedBytes += stat.size;
+            fs.unlinkSync(filePath);
+            deletedPcap++;
+            // Delete matching metadata
+            const metaFile = `rtpengine-meta-${f.replace('.pcap', '')}.txt`;
+            const metaPath = path.join(META_DIR, metaFile);
+            if (fs.existsSync(metaPath)) fs.unlinkSync(metaPath);
+          }
+        } catch (e) {}
+      }
+    }
+
+    // Update last cleanup time
+    await Settings.findByIdAndUpdate('system', { 'recordingRetention.lastCleanup': new Date() });
+
+    if (deletedWav > 0 || deletedPcap > 0) {
+      const freedMB = (freedBytes / (1024 * 1024)).toFixed(1);
+      log('info', `Scheduled cleanup: ${deletedWav} WAV + ${deletedPcap} pcap deleted (${freedMB}MB freed, retention=${days} days)`);
+    }
+  } catch (err) {
+    log('error', `Scheduled cleanup error: ${err.message}`);
+  }
 }
 
 // Graceful shutdown
