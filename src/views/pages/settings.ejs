@@ -5,6 +5,7 @@
   <a href="#blocklist" class="settings-tab active" data-tab="blocklist" onclick="switchTab('blocklist')">Blocklist</a>
   <a href="#audio" class="settings-tab" data-tab="audio" onclick="switchTab('audio')">Audio library</a>
   <a href="#maintenance" class="settings-tab" data-tab="maintenance" onclick="switchTab('maintenance')">Maintenance</a>
+  <a href="#backup" class="settings-tab" data-tab="backup" onclick="switchTab('backup')">Backup</a>
   <a href="#system" class="settings-tab" data-tab="system" onclick="switchTab('system')">System</a>
 </div>
 
@@ -21,6 +22,9 @@
 .stat-card { background: var(--bg-surface); border-radius: var(--radius); padding: 16px; border: 0.5px solid var(--border); }
 .stat-val { font-size: 24px; font-weight: 600; margin-bottom: 2px; }
 .stat-label { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.4px; }
+.stat-sub { font-size: 11px; color: var(--text-tertiary); margin-top: 2px; }
+.db-bar { height: 6px; border-radius: 3px; background: var(--bg-tertiary); margin-top: 6px; overflow: hidden; }
+.db-bar-fill { height: 100%; border-radius: 3px; background: var(--accent); transition: width 0.3s; }
 </style>
 
 <!-- ═══════════════════ BLOCKLIST ═══════════════════ -->
@@ -77,16 +81,28 @@
 
   <!-- Storage Stats -->
   <div class="sec-head"><span class="sec-title">Storage usage</span></div>
-  <div class="grid-3" style="margin-bottom:24px" id="storage-stats">
-    <div class="stat-card"><div class="stat-val" id="st-recordings">—</div><div class="stat-label">Recordings</div><div class="muted" style="font-size:11px" id="st-recordings-sub"></div></div>
-    <div class="stat-card"><div class="stat-val" id="st-pcaps">—</div><div class="stat-label">Source pcaps</div><div class="muted" style="font-size:11px" id="st-pcaps-sub"></div></div>
-    <div class="stat-card"><div class="stat-val" id="st-backups">—</div><div class="stat-label">Backups</div><div class="muted" style="font-size:11px" id="st-backups-sub"></div></div>
+  <div class="grid-3" style="margin-bottom:24px">
+    <div class="stat-card">
+      <div class="stat-val" id="st-recordings">—</div>
+      <div class="stat-label">Recordings (WAV)</div>
+      <div class="stat-sub" id="st-recordings-sub"></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-val" id="st-pcaps">—</div>
+      <div class="stat-label">Source pcaps</div>
+      <div class="stat-sub" id="st-pcaps-sub"></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-val" id="st-total">—</div>
+      <div class="stat-label">Total disk usage</div>
+      <div class="stat-sub" id="st-total-sub"></div>
+    </div>
   </div>
 
   <!-- Recording Retention -->
   <div class="sec-head"><span class="sec-title">Recording retention</span></div>
   <div class="card" style="margin-bottom:24px">
-    <p class="muted" style="font-size:12px;margin-bottom:12px">Automatically delete old call recordings and pcap files after a set period. The cleanup runs daily via the recording worker.</p>
+    <p class="muted" style="font-size:12px;margin-bottom:12px">Automatically delete old call recordings and pcap files after a set period. The cleanup runs daily via the recording worker service.</p>
     <div class="grid-3" style="margin-bottom:0">
       <div class="form-group">
         <label class="form-label">Auto-delete recordings</label>
@@ -122,29 +138,100 @@
       <span class="muted" style="font-size:11px" id="ret-last-cleanup"></span>
     </div>
   </div>
+</div>
 
-  <!-- Database Backup -->
-  <div class="sec-head"><span class="sec-title">Database backup</span></div>
-  <div class="card" style="margin-bottom:16px">
-    <p class="muted" style="font-size:12px;margin-bottom:12px">Create a full MongoDB backup (extensions, CDR, routes, settings). Backups are compressed and can be downloaded.</p>
-    <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px">
-      <button class="btn btn-primary btn-sm" onclick="createBackup()" id="backup-btn">Create backup now</button>
-      <span class="muted" style="font-size:11px" id="backup-last"></span>
+<!-- ═══════════════════ BACKUP ═══════════════════ -->
+<div id="panel-backup" class="settings-panel">
+
+  <!-- Database Overview -->
+  <div class="sec-head"><span class="sec-title">Database overview</span></div>
+  <div class="grid-3" style="margin-bottom:8px" id="db-overview-cards">
+    <div class="stat-card">
+      <div class="stat-val" id="db-total-size">—</div>
+      <div class="stat-label">Total database size</div>
+      <div class="stat-sub" id="db-total-detail"></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-val" id="db-collections">—</div>
+      <div class="stat-label">Collections</div>
+      <div class="stat-sub" id="db-collections-detail"></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-val" id="db-documents">—</div>
+      <div class="stat-label">Total documents</div>
+      <div class="stat-sub" id="db-documents-detail"></div>
     </div>
   </div>
 
-  <!-- Backup List -->
+  <!-- Data vs Index split -->
+  <div class="card" style="margin-bottom:24px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <span style="font-size:12px;font-weight:500">Storage breakdown</span>
+      <span class="muted" style="font-size:11px" id="db-breakdown-label"></span>
+    </div>
+    <div style="display:flex;gap:4px;height:10px;border-radius:5px;overflow:hidden;background:var(--bg-tertiary)">
+      <div id="db-bar-data" style="background:var(--accent);transition:width 0.4s;border-radius:5px 0 0 5px"></div>
+      <div id="db-bar-index" style="background:var(--text-tertiary);transition:width 0.4s;border-radius:0 5px 5px 0"></div>
+    </div>
+    <div style="display:flex;gap:16px;margin-top:6px">
+      <span style="font-size:11px;display:flex;align-items:center;gap:4px"><span style="width:8px;height:8px;border-radius:2px;background:var(--accent);display:inline-block"></span> Data: <span id="db-data-size">—</span></span>
+      <span style="font-size:11px;display:flex;align-items:center;gap:4px"><span style="width:8px;height:8px;border-radius:2px;background:var(--text-tertiary);display:inline-block"></span> Indexes: <span id="db-index-size">—</span></span>
+    </div>
+  </div>
+
+  <!-- Collection Details Table -->
+  <div class="sec-head"><span class="sec-title">Collections</span></div>
+  <table class="tbl" style="margin-bottom:24px">
+    <thead>
+      <tr>
+        <th>Collection</th>
+        <th style="text-align:right">Documents</th>
+        <th style="text-align:right">Data size</th>
+        <th style="text-align:right">Avg doc size</th>
+        <th style="text-align:right">Indexes</th>
+        <th style="text-align:right">Index size</th>
+        <th style="width:100px"></th>
+      </tr>
+    </thead>
+    <tbody id="db-collections-body"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody>
+  </table>
+
+  <!-- Backup Management -->
+  <div class="sec-head">
+    <span class="sec-title">Backup management</span>
+    <div style="display:flex;gap:8px;align-items:center">
+      <span class="muted" style="font-size:11px" id="backup-last"></span>
+      <button class="btn btn-primary btn-sm" onclick="createBackup()" id="backup-btn">Create backup now</button>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="grid-3" style="margin-bottom:0">
+      <div class="form-group">
+        <label class="form-label">Backup retention</label>
+        <select class="form-select" id="bk-retain">
+          <option value="3">Keep 3 days</option>
+          <option value="7" selected>Keep 7 days</option>
+          <option value="14">Keep 14 days</option>
+          <option value="30">Keep 30 days</option>
+          <option value="90">Keep 90 days</option>
+        </select>
+      </div>
+      <div class="form-group" style="display:flex;align-items:flex-end">
+        <button class="btn btn-sm" onclick="saveBackupSettings()">Save</button>
+      </div>
+    </div>
+  </div>
+
   <table class="tbl">
-    <thead><tr><th>Backup</th><th>Size</th><th>Created</th><th></th></tr></thead>
-    <tbody id="backup-body"><tr><td colspan="4" class="empty">No backups</td></tr></tbody>
+    <thead><tr><th>Backup file</th><th style="text-align:right">Size</th><th>Created</th><th></th></tr></thead>
+    <tbody id="backup-body"><tr><td colspan="4" class="empty">No backups yet</td></tr></tbody>
   </table>
 </div>
 
 <!-- ═══════════════════ SYSTEM ═══════════════════ -->
 <div id="panel-system" class="settings-panel">
-  <div class="sec-head">
-    <span class="sec-title">System information</span>
-  </div>
+  <div class="sec-head"><span class="sec-title">System information</span></div>
   <div class="card">
     <div class="grid-3">
       <div><span class="muted" style="font-size:11px">Version</span><div style="font-size:14px;font-weight:500">ShadowPBX v2.0</div></div>
@@ -152,7 +239,6 @@
       <div><span class="muted" style="font-size:11px">Server time</span><div style="font-size:14px;font-weight:500" id="sys-time">—</div></div>
     </div>
   </div>
-
   <div style="margin-top:20px">
     <div class="sec-head"><span class="sec-title">Quick actions</span></div>
     <div style="display:flex;gap:10px;flex-wrap:wrap">
@@ -176,7 +262,7 @@ function showToast(msg, isError) {
   setTimeout(function() { el.remove(); }, 3000);
 }
 
-// ─── Sub-tab switching ───
+// ─── Tab switching ───
 function switchTab(tab) {
   document.querySelectorAll('.settings-tab').forEach(function(t) { t.classList.remove('active'); });
   document.querySelectorAll('.settings-panel').forEach(function(p) { p.classList.remove('active'); });
@@ -188,7 +274,8 @@ function switchTab(tab) {
 
   if (tab === 'blocklist') loadBlocklist();
   if (tab === 'audio') loadAudioFiles();
-  if (tab === 'maintenance') { loadSettings(); loadStorage(); loadBackups(); }
+  if (tab === 'maintenance') { loadSettings(); loadStorage(); }
+  if (tab === 'backup') { loadDbStats(); loadBackups(); loadSettings(); }
   if (tab === 'system') loadSystem();
 }
 
@@ -198,7 +285,6 @@ function showBlockAdd() {
   document.getElementById('bl-reason').value = '';
   document.getElementById('block-add').style.display = 'block';
 }
-
 async function loadBlocklist() {
   try {
     var d = await (await fetch(API + '/blocklist', { headers: H })).json();
@@ -206,13 +292,11 @@ async function loadBlocklist() {
     if (d.success && d.blocked && d.blocked.length) {
       document.getElementById('bl-summary').textContent = d.blocked.length + ' blocked';
       b.innerHTML = d.blocked.map(function(n) {
-        return '<tr>' +
-          '<td class="mono" style="font-weight:500">' + esc(n.number) + '</td>' +
+        return '<tr><td class="mono" style="font-weight:500">' + esc(n.number) + '</td>' +
           '<td class="muted">' + esc(n.reason || '—') + '</td>' +
           '<td class="muted" style="font-size:11px">' + esc(n.blockedBy || '—') + '</td>' +
           '<td class="muted" style="font-size:11px">' + fmtTime(n.createdAt) + '</td>' +
-          '<td><button class="btn btn-sm" onclick="unblock(\'' + esc(n.number) + '\')">Unblock</button></td>' +
-        '</tr>';
+          '<td><button class="btn btn-sm" onclick="unblock(\'' + esc(n.number) + '\')">Unblock</button></td></tr>';
       }).join('');
     } else {
       document.getElementById('bl-summary').textContent = '';
@@ -220,30 +304,19 @@ async function loadBlocklist() {
     }
   } catch (e) { console.error('blocklist', e); }
 }
-
 async function addBlock(e) {
   e.preventDefault();
   var number = document.getElementById('bl-number').value.trim();
   var reason = document.getElementById('bl-reason').value.trim();
-  var r = await fetch(API + '/blocklist', {
-    method: 'POST', headers: J,
-    body: JSON.stringify({ number: number, reason: reason, blockedBy: currentUser })
-  });
+  var r = await fetch(API + '/blocklist', { method: 'POST', headers: J, body: JSON.stringify({ number: number, reason: reason, blockedBy: currentUser }) });
   var d = await r.json();
-  if (d.success) {
-    document.getElementById('block-add').style.display = 'none';
-    showToast(number + ' blocked');
-    loadBlocklist();
-  } else {
-    showToast(d.error || 'Failed', true);
-  }
+  if (d.success) { document.getElementById('block-add').style.display = 'none'; showToast(number + ' blocked'); loadBlocklist(); }
+  else showToast(d.error || 'Failed', true);
 }
-
 async function unblock(number) {
   if (!confirm('Unblock ' + number + '?')) return;
   await fetch(API + '/blocklist/' + number, { method: 'DELETE', headers: H });
-  showToast(number + ' unblocked');
-  loadBlocklist();
+  showToast(number + ' unblocked'); loadBlocklist();
 }
 
 // ═══════════════════ AUDIO FILES ═══════════════════
@@ -254,16 +327,14 @@ async function loadAudioFiles() {
     if (d.success && d.files && d.files.length) {
       document.getElementById('audio-summary').textContent = d.files.length + ' file(s)';
       b.innerHTML = d.files.map(function(f) {
-        return '<tr>' +
-          '<td class="mono" style="font-size:12px">' + esc(f.name) + '</td>' +
+        return '<tr><td class="mono" style="font-size:12px">' + esc(f.name) + '</td>' +
           '<td class="muted">' + Math.round(f.size / 1024) + ' KB</td>' +
           '<td class="muted" style="font-size:11px">' + fmtTime(f.modified) + '</td>' +
           '<td style="white-space:nowrap">' +
             '<button class="act-btn" onclick="playAudio(\'' + esc(f.name) + '\',this)" title="Play"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg></button>' +
             '<button class="act-btn" onclick="renameAudio(\'' + esc(f.name) + '\')" title="Rename"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>' +
             '<button class="act-btn" onclick="deleteAudio(\'' + esc(f.name) + '\')" title="Delete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg></button>' +
-          '</td>' +
-        '</tr>';
+          '</td></tr>';
       }).join('');
     } else {
       document.getElementById('audio-summary').textContent = '';
@@ -271,23 +342,17 @@ async function loadAudioFiles() {
     }
   } catch (e) { console.error('audio', e); }
 }
-
 var ICON_PLAY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>';
 var ICON_PAUSE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>';
 var currentAudio = null, currentBtn = null;
-
 function playAudio(filename, btn) {
-  if (currentAudio && currentBtn === btn) {
-    if (currentAudio.paused) { currentAudio.play(); btn.innerHTML = ICON_PAUSE; } else { currentAudio.pause(); btn.innerHTML = ICON_PLAY; }
-    return;
-  }
+  if (currentAudio && currentBtn === btn) { if (currentAudio.paused) { currentAudio.play(); btn.innerHTML = ICON_PAUSE; } else { currentAudio.pause(); btn.innerHTML = ICON_PLAY; } return; }
   if (currentAudio) { currentAudio.pause(); if (currentBtn) currentBtn.innerHTML = ICON_PLAY; }
   var a = new Audio(API + '/audio/play/' + encodeURIComponent(filename));
   a.onended = function() { btn.innerHTML = ICON_PLAY; currentAudio = null; currentBtn = null; };
   a.onerror = function() { btn.innerHTML = ICON_PLAY; showToast('Could not play', true); currentAudio = null; currentBtn = null; };
   a.play(); btn.innerHTML = ICON_PAUSE; currentAudio = a; currentBtn = btn;
 }
-
 async function renameAudio(oldName) {
   var baseName = oldName.replace(/\.[^.]+$/, '');
   var newName = prompt('Rename "' + oldName + '" to:', baseName);
@@ -296,18 +361,15 @@ async function renameAudio(oldName) {
   var d = await r.json();
   if (d.success) { showToast('Renamed to ' + d.newName); loadAudioFiles(); } else showToast(d.error || 'Rename failed', true);
 }
-
 async function deleteAudio(filename) {
   if (!confirm('Delete "' + filename + '"?\n\nIf used by an IVR or MOH, it will stop working.')) return;
   var r = await fetch(API + '/audio/' + encodeURIComponent(filename), { method: 'DELETE', headers: H });
   var d = await r.json();
   if (d.success) { showToast(filename + ' deleted'); loadAudioFiles(); } else showToast(d.error || 'Delete failed', true);
 }
-
 async function uploadAudioFile(input) {
   if (!input.files || !input.files[0]) return;
-  var formData = new FormData();
-  formData.append('file', input.files[0]);
+  var formData = new FormData(); formData.append('file', input.files[0]);
   try {
     var r = await fetch(API + '/audio/upload', { method: 'POST', headers: { 'X-API-Key': KEY }, body: formData });
     var d = await r.json();
@@ -317,82 +379,118 @@ async function uploadAudioFile(input) {
 }
 
 // ═══════════════════ MAINTENANCE ═══════════════════
-
 function toggleRetention() {
   var enabled = document.getElementById('ret-enabled').value === 'true';
   document.getElementById('ret-days-group').style.display = enabled ? 'block' : 'none';
   document.getElementById('ret-options-group').style.display = enabled ? 'block' : 'none';
 }
-
 async function loadSettings() {
   try {
     var d = await (await fetch(API + '/settings', { headers: H })).json();
     if (!d.success || !d.settings) return;
     var s = d.settings;
-
-    // Recording retention
     if (s.recordingRetention) {
       document.getElementById('ret-enabled').value = s.recordingRetention.enabled ? 'true' : 'false';
       document.getElementById('ret-days').value = s.recordingRetention.days || 90;
       document.getElementById('ret-wav').checked = s.recordingRetention.deleteRecordings !== false;
       document.getElementById('ret-pcap').checked = s.recordingRetention.deletePcaps !== false;
-      if (s.recordingRetention.lastCleanup) {
-        document.getElementById('ret-last-cleanup').textContent = 'Last cleanup: ' + fmtTime(s.recordingRetention.lastCleanup);
-      }
+      if (s.recordingRetention.lastCleanup) document.getElementById('ret-last-cleanup').textContent = 'Last cleanup: ' + fmtTime(s.recordingRetention.lastCleanup);
       toggleRetention();
     }
-
-    // Backup
-    if (s.backup && s.backup.lastBackup) {
-      document.getElementById('backup-last').textContent = 'Last backup: ' + fmtTime(s.backup.lastBackup);
+    if (s.backup) {
+      if (s.backup.lastBackup) document.getElementById('backup-last').textContent = 'Last backup: ' + fmtTime(s.backup.lastBackup);
+      if (s.backup.retainDays) document.getElementById('bk-retain').value = s.backup.retainDays;
     }
   } catch (e) { console.error('settings', e); }
 }
-
 async function saveRetention() {
   try {
-    var body = {
-      recordingRetention: {
-        enabled: document.getElementById('ret-enabled').value === 'true',
-        days: parseInt(document.getElementById('ret-days').value),
-        deleteRecordings: document.getElementById('ret-wav').checked,
-        deletePcaps: document.getElementById('ret-pcap').checked
-      }
-    };
+    var body = { recordingRetention: { enabled: document.getElementById('ret-enabled').value === 'true', days: parseInt(document.getElementById('ret-days').value), deleteRecordings: document.getElementById('ret-wav').checked, deletePcaps: document.getElementById('ret-pcap').checked } };
     var r = await fetch(API + '/settings', { method: 'PUT', headers: J, body: JSON.stringify(body) });
     var d = await r.json();
-    if (d.success) showToast('Retention settings saved');
-    else showToast(d.error || 'Failed', true);
+    if (d.success) showToast('Retention settings saved'); else showToast(d.error || 'Failed', true);
   } catch (e) { showToast('Failed: ' + e.message, true); }
 }
-
+async function saveBackupSettings() {
+  try {
+    var body = { backup: { retainDays: parseInt(document.getElementById('bk-retain').value) } };
+    var r = await fetch(API + '/settings', { method: 'PUT', headers: J, body: JSON.stringify(body) });
+    var d = await r.json();
+    if (d.success) showToast('Backup settings saved'); else showToast(d.error || 'Failed', true);
+  } catch (e) { showToast('Failed: ' + e.message, true); }
+}
 async function runCleanupNow() {
   var btn = document.getElementById('cleanup-btn');
   btn.disabled = true; btn.textContent = 'Cleaning up...';
   try {
     var r = await fetch(API + '/settings/cleanup', { method: 'POST', headers: H });
     var d = await r.json();
-    if (d.success) {
-      showToast('Cleanup: ' + d.deletedWav + ' recordings + ' + d.deletedPcap + ' pcaps deleted (' + d.freedMB + 'MB freed)');
-      loadStorage();
-      loadSettings();
-    } else showToast(d.error || 'Cleanup failed', true);
+    if (d.success) { showToast('Cleanup: ' + d.deletedWav + ' recordings + ' + d.deletedPcap + ' pcaps deleted (' + d.freedMB + 'MB freed)'); loadStorage(); loadSettings(); }
+    else showToast(d.error || 'Cleanup failed', true);
   } catch (e) { showToast('Cleanup failed', true); }
   btn.disabled = false; btn.textContent = 'Run cleanup now';
 }
-
 async function loadStorage() {
   try {
     var d = await (await fetch(API + '/settings/storage', { headers: H })).json();
     if (!d.success) return;
     var s = d.storage;
-    document.getElementById('st-recordings').textContent = s.recordings.sizeMB + ' MB';
+    document.getElementById('st-recordings').textContent = s.recordings.sizeHuman || (s.recordings.sizeMB + ' MB');
     document.getElementById('st-recordings-sub').textContent = s.recordings.count + ' file(s)';
-    document.getElementById('st-pcaps').textContent = s.pcaps.sizeMB + ' MB';
+    document.getElementById('st-pcaps').textContent = s.pcaps.sizeHuman || (s.pcaps.sizeMB + ' MB');
     document.getElementById('st-pcaps-sub').textContent = s.pcaps.count + ' file(s)';
-    document.getElementById('st-backups').textContent = s.backups.sizeMB + ' MB';
-    document.getElementById('st-backups-sub').textContent = s.backups.count + ' backup(s)';
+    document.getElementById('st-total').textContent = s.totalMB + ' MB';
+    document.getElementById('st-total-sub').textContent = 'recordings + pcaps + backups';
   } catch (e) { console.error('storage', e); }
+}
+
+// ═══════════════════ BACKUP ═══════════════════
+async function loadDbStats() {
+  try {
+    var d = await (await fetch(API + '/settings/dbstats', { headers: H })).json();
+    if (!d.success) return;
+    var db = d.database;
+
+    // Overview cards
+    document.getElementById('db-total-size').textContent = db.totalSizeHuman;
+    document.getElementById('db-total-detail').textContent = 'Data: ' + db.dataSizeHuman + ' + Indexes: ' + db.indexSizeHuman;
+    document.getElementById('db-collections').textContent = db.collections;
+    document.getElementById('db-collections-detail').textContent = 'Storage: ' + db.storageSizeHuman;
+    document.getElementById('db-documents').textContent = db.totalDocuments.toLocaleString();
+    document.getElementById('db-documents-detail').textContent = 'Across all collections';
+
+    // Storage breakdown bar
+    var total = db.dataSize + db.indexSize;
+    if (total > 0) {
+      var dataPct = Math.round((db.dataSize / total) * 100);
+      var indexPct = 100 - dataPct;
+      document.getElementById('db-bar-data').style.width = dataPct + '%';
+      document.getElementById('db-bar-index').style.width = indexPct + '%';
+      document.getElementById('db-breakdown-label').textContent = dataPct + '% data / ' + indexPct + '% indexes';
+    }
+    document.getElementById('db-data-size').textContent = db.dataSizeHuman;
+    document.getElementById('db-index-size').textContent = db.indexSizeHuman;
+
+    // Collections table
+    var body = document.getElementById('db-collections-body');
+    if (d.collections && d.collections.length) {
+      var maxSize = Math.max.apply(null, d.collections.map(function(c) { return c.size || 0; })) || 1;
+      body.innerHTML = d.collections.map(function(c) {
+        var pct = Math.max(2, Math.round(((c.size || 0) / maxSize) * 100));
+        return '<tr>' +
+          '<td><span class="mono" style="font-size:12px;font-weight:500">' + esc(c.name) + '</span></td>' +
+          '<td style="text-align:right;font-variant-numeric:tabular-nums">' + (c.documents || 0).toLocaleString() + '</td>' +
+          '<td style="text-align:right;font-size:12px">' + (c.sizeHuman || '0 B') + '</td>' +
+          '<td style="text-align:right;font-size:12px;color:var(--text-tertiary)">' + (c.avgObjSizeHuman || '0 B') + '</td>' +
+          '<td style="text-align:right;font-variant-numeric:tabular-nums">' + (c.indexes || 0) + '</td>' +
+          '<td style="text-align:right;font-size:12px">' + (c.indexSizeHuman || '0 B') + '</td>' +
+          '<td><div class="db-bar"><div class="db-bar-fill" style="width:' + pct + '%"></div></div></td>' +
+        '</tr>';
+      }).join('');
+    } else {
+      body.innerHTML = '<tr><td colspan="7" class="empty">No collections found</td></tr>';
+    }
+  } catch (e) { console.error('dbstats', e); }
 }
 
 async function createBackup() {
@@ -401,16 +499,11 @@ async function createBackup() {
   try {
     var r = await fetch(API + '/settings/backup', { method: 'POST', headers: H });
     var d = await r.json();
-    if (d.success) {
-      showToast('Backup created: ' + d.backup.name + ' (' + d.backup.sizeMB + 'MB)');
-      loadBackups();
-      loadStorage();
-      loadSettings();
-    } else showToast(d.error || 'Backup failed', true);
+    if (d.success) { showToast('Backup created: ' + d.backup.name + ' (' + d.backup.sizeHuman + ')'); loadBackups(); loadSettings(); }
+    else showToast(d.error || 'Backup failed', true);
   } catch (e) { showToast('Backup failed', true); }
   btn.disabled = false; btn.textContent = 'Create backup now';
 }
-
 async function loadBackups() {
   try {
     var d = await (await fetch(API + '/settings/backups', { headers: H })).json();
@@ -419,26 +512,26 @@ async function loadBackups() {
       b.innerHTML = d.backups.map(function(bk) {
         return '<tr>' +
           '<td class="mono" style="font-size:12px">' + esc(bk.name) + '</td>' +
-          '<td class="muted">' + bk.sizeMB + ' MB</td>' +
+          '<td style="text-align:right">' + (bk.sizeHuman || bk.sizeMB + ' MB') + '</td>' +
           '<td class="muted" style="font-size:11px">' + fmtTime(bk.createdAt) + '</td>' +
           '<td style="white-space:nowrap">' +
-            '<a href="' + API + '/settings/backups/' + encodeURIComponent(bk.name) + '/download" class="act-btn" title="Download" style="display:inline-block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a>' +
-            '<button class="act-btn" onclick="deleteBackup(\'' + esc(bk.name) + '\')" title="Delete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg></button>' +
-          '</td>' +
-        '</tr>';
+            '<a href="' + API + '/settings/backups/' + encodeURIComponent(bk.name) + '/download" class="act-btn" title="Download" style="display:inline-block">' +
+              '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>' +
+            '</a>' +
+            '<button class="act-btn" onclick="deleteBackup(\'' + esc(bk.name) + '\')" title="Delete">' +
+              '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>' +
+            '</button>' +
+          '</td></tr>';
       }).join('');
     } else {
       b.innerHTML = '<tr><td colspan="4" class="empty">No backups yet — create one above</td></tr>';
     }
   } catch (e) { console.error('backups', e); }
 }
-
 async function deleteBackup(name) {
   if (!confirm('Delete backup "' + name + '"?')) return;
   await fetch(API + '/settings/backups/' + encodeURIComponent(name), { method: 'DELETE', headers: H });
-  showToast('Backup deleted');
-  loadBackups();
-  loadStorage();
+  showToast('Backup deleted'); loadBackups();
 }
 
 // ═══════════════════ SYSTEM ═══════════════════
@@ -447,9 +540,7 @@ async function loadSystem() {
     var d = await (await fetch(API + '/health', { headers: H })).json();
     if (d.success) {
       var up = d.uptime || 0;
-      var days = Math.floor(up / 86400);
-      var hrs = Math.floor((up % 86400) / 3600);
-      var mins = Math.floor((up % 3600) / 60);
+      var days = Math.floor(up / 86400), hrs = Math.floor((up % 86400) / 3600), mins = Math.floor((up % 3600) / 60);
       document.getElementById('sys-uptime').textContent = (days > 0 ? days + 'd ' : '') + hrs + 'h ' + mins + 'm';
     }
     document.getElementById('sys-time').textContent = new Date().toLocaleString();
@@ -458,7 +549,7 @@ async function loadSystem() {
 
 // ─── Init ───
 var initTab = window.location.hash.replace('#', '') || 'blocklist';
-if (['blocklist', 'audio', 'maintenance', 'system'].indexOf(initTab) === -1) initTab = 'blocklist';
+if (['blocklist', 'audio', 'maintenance', 'backup', 'system'].indexOf(initTab) === -1) initTab = 'blocklist';
 switchTab(initTab);
 </script>
 <%- include('../partials/foot') %>
