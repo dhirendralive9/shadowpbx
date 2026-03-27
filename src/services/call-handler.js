@@ -289,9 +289,11 @@ class CallHandler {
 
         const { uas, uac } = await this.srf.createB2BUA(req, res, targetUri, {
           localSdpB: offerSdp,
-          localSdpA: (sdp) => {
+          localSdpA: (sdp, res) => {
             // Answer: send the extension's SDP back through RTPEngine
-            const toTag = uas.sip ? uas.sip.localTag : '';
+            // Note: uas is not yet available here — extract to-tag from the response
+            const toTag = (res && res.getParsedHeader && res.getParsedHeader('To')) ?
+              (res.getParsedHeader('To').params.tag || '') : '';
             if (toTag && this.rtpengine) {
               return this._rtpengineAnswer(callId, fromTag, toTag, sdp).then(r => r ? r.sdp : sdp);
             }

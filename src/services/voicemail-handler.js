@@ -200,22 +200,15 @@ class VoicemailHandler {
       // Wait a moment for RTPEngine to flush the pcap file
       await this._sleep(2000);
 
-      // Find the pcap recording from RTPEngine's recording dir
-      // RTPEngine writes pcap files to recording-dir/pcaps/ (note: plural)
+      // Find the pcap recording from RTPEngine's spool dir
       let savedPath = null;
       let fileSize = 0;
-      const recDir = process.env.RECORDINGS_DIR || '/var/lib/shadowpbx/recordings';
-
-      // Check both pcaps/ (RTPEngine default) and pcap/ (legacy)
-      let pcapDir = path.join(recDir, 'pcaps');
-      if (!fs.existsSync(pcapDir)) {
-        pcapDir = path.join(recDir, 'pcap');
-      }
+      const spoolDir = process.env.RECORDING_SPOOL_DIR || '/var/spool/rtpengine';
+      const pcapDir = path.join(spoolDir, 'pcaps');
 
       try {
         if (fs.existsSync(pcapDir)) {
           // RTPEngine names files as: {call-id}-{hash}.pcap
-          // We match on the call-id prefix
           const pcapFiles = fs.readdirSync(pcapDir).filter(f =>
             f.startsWith(sipCallId) && f.endsWith('.pcap')
           );
@@ -225,24 +218,36 @@ class VoicemailHandler {
             const pcapSize = fs.statSync(pcapPath).size;
             logger.info(`VM: found pcap recording ${pcapFiles[0]} (${pcapSize} bytes)`);
 
-            // Convert pcap to wav using the existing converter
+            // Convert pcap to wav inline (voicemail messages are short)
             if (pcapSize > 1000) {
               try {
-                const { pcapToWav } = require('../utils/converter');
-                const wavPath = pcapToWav(sipCallId, `vm_${messageId}`);
-                if (wavPath && fs.existsSync(wavPath)) {
-                  // Move wav to voicemail dir
-                  const finalPath = recordingPath;
-                  fs.copyFileSync(wavPath, finalPath);
-                  savedPath = finalPath;
-                  fileSize = fs.statSync(finalPath).size;
-                  logger.info(`VM: converted pcap to wav: ${finalPath} (${fileSize} bytes)`);
+                const { execSync } = require('child_process');
+                const recDir = process.env.RECORDINGS_DIR || '/var/lib/shadowpbx/recordings';
+                const tmpDir = path.join(recDir, 'tmp');
+                if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+
+                const baseName = pcapFiles[0].replace('.pcap', '');
+                const rawPath = path.join(tmpDir, `vm_${baseName}.raw`);
+                const tmpWav = path.join(tmpDir, `vm_${baseName}.wav`);
+
+                execSync(`tshark -n -r "${pcapPath}" -o rtp.heuristic_rtp:TRUE -Y rtp -T fields -e rtp.payload 2>/dev/null | tr -d '\\n' | xxd -r -p > "${rawPath}"`, { timeout: 30000 });
+
+                if (fs.existsSync(rawPath) && fs.statSync(rawPath).size > 0) {
+                  execSync(`sox -t raw -r 8000 -e mu-law -b 8 -c 1 "${rawPath}" "${tmpWav}" 2>/dev/null`, { timeout: 30000 });
+
+                  if (fs.existsSync(tmpWav)) {
+                    fs.copyFileSync(tmpWav, recordingPath);
+                    savedPath = recordingPath;
+                    fileSize = fs.statSync(recordingPath).size;
+                    logger.info(`VM: converted pcap to wav: ${recordingPath} (${fileSize} bytes)`);
+                  }
                 }
+
+                // Cleanup temp files
+                try { fs.unlinkSync(rawPath); } catch(e) {}
+                try { fs.unlinkSync(tmpWav); } catch(e) {}
               } catch (convErr) {
                 logger.warn(`VM: pcap conversion failed: ${convErr.message}`);
-                // Fallback: save the pcap itself
-                savedPath = pcapPath;
-                fileSize = pcapSize;
               }
             }
           } else {
