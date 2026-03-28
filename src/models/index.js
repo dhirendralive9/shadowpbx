@@ -333,7 +333,9 @@ const appointmentMessageSchema = new mongoose.Schema({
   callerID: { type: String, required: true },
   duration: { type: Number, default: 0 },
   recordingPath: { type: String },
+  recordingUrl: { type: String },          // Twilio recording URL (fallback)
   fileSize: { type: Number, default: 0 },
+  callSid: { type: String },               // Twilio CallSid
   status: {
     type: String,
     enum: ['pending', 'delivering', 'delivered', 'failed'],

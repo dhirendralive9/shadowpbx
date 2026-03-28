@@ -1,5 +1,7 @@
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
+const http = require('http');
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
 
@@ -22,30 +24,27 @@ function toContainerPath(hostPath) {
   return hostPath;
 }
 
-function toHostPath(filePath) {
-  if (!filePath) return filePath;
-  for (const m of PATH_MAP) {
-    if (filePath.startsWith(m.container + '/') || filePath === m.container) {
-      return filePath.replace(m.container, m.host);
-    }
-  }
-  return filePath;
-}
-
 // ============================================================
-// Appointment Handler
+// Appointment Handler — Twilio Webhook + Internal Callback
 //
-// Flow:
-//   1. Inbound call routed to appointment
-//   2. Answer call, play greeting audio
-//   3. Record caller's message (pcap via RTPEngine)
-//   4. Caller hangs up → convert pcap to WAV
-//   5. Queue internal callback
-//   6. Monitor target extension/ring group presence
-//   7. When agent comes online → originate internal call
-//      with caller's number as caller ID
-//   8. Agent picks up → 3s pause → play recorded message → hangup
-//   9. If nobody picks up → retry on next presence change
+// INBOUND (Twilio webhook — no SIP trunk needed for this DID):
+//   1. Twilio calls POST /webhook/appointment/:number/voice
+//   2. App returns TwiML: <Play> greeting → <Record> with callback
+//   3. Twilio POSTs recording URL to /webhook/appointment/:number/recording
+//   4. App downloads the WAV from Twilio and queues callback
+//
+// CALLBACK (Internal Drachtio/RTPEngine — zero PSTN cost):
+//   5. Queue processor monitors extension/RG presence every 5s
+//   6. When agent online → originate internal call via Drachtio
+//      using caller's number as CID
+//   7. Agent picks up → 3s pause → play recorded WAV via RTPEngine
+//   8. Playback done → auto hangup
+//   9. If nobody picks up → retry next cycle
+//
+// CARRIER ABSTRACTION:
+//   Currently Twilio. The webhook pattern is the same for
+//   SignalWire (LaML) and Telnyx (TeXML) — future modules
+//   just need different auth validation.
 // ============================================================
 
 class AppointmentHandler {
@@ -61,8 +60,7 @@ class AppointmentHandler {
     };
 
     // Message queue: array of { messageId, appointmentNumber, callerID,
-    //   recordingPath, destination, createdAt, attempts, status }
-    // status: 'pending' | 'delivering' | 'delivered' | 'failed'
+    //   recordingPath, recordingUrl, destination, createdAt, attempts, status }
     this.messageQueue = [];
 
     // Currently active callback call (only one at a time)
@@ -76,287 +74,247 @@ class AppointmentHandler {
     // Start presence monitor — check every 5 seconds
     this._presenceInterval = setInterval(() => this._processQueue(), 5000);
 
-    logger.info(`Appointment: handler initialized, queue dir=${APPT_DIR}`);
+    logger.info(`Appointment: webhook handler initialized, recordings dir=${APPT_DIR}`);
   }
 
   // ============================================================
-  // INBOUND — Handle a call routed to an appointment
+  // WEBHOOK: /webhook/appointment/:number/voice
+  //
+  // Called by Twilio when someone dials the TFN.
+  // Returns TwiML to play greeting and record the message.
   // ============================================================
-  async handleAppointment(req, res, apptConfig, cdr) {
-    const sipCallId = req.get('Call-Id');
-    const from = req.getParsedHeader('From');
-    const fromTag = from.params.tag;
-    const callerID = this.callHandler.callRouter.extractCallerID(req);
+  async handleVoiceWebhook(req, res, appointmentNumber) {
+    const { Appointment } = require('../models');
+    const appt = await Appointment.findOne({ number: appointmentNumber, enabled: true });
 
-    logger.info(`APPOINTMENT: ${callerID} -> APPT:${apptConfig.number} (${apptConfig.name}) [${sipCallId}]`);
-
-    try {
-      // Step 1: Answer with RTPEngine
-      const rtpOffer = await this._rtpengineOffer(sipCallId, fromTag, req.body);
-      if (!rtpOffer) {
-        logger.error(`APPOINTMENT: RTPEngine offer failed`);
-        return res.send(503);
-      }
-
-      const uas = await this.srf.createUAS(req, res, { localSdp: rtpOffer.sdp });
-      logger.info(`APPOINTMENT: call answered [${sipCallId}]`);
-
-      // Complete RTPEngine answer
-      const toTag = uas.sip ? uas.sip.localTag : '';
-      if (toTag) {
-        try {
-          const rtpHelper = require('../utils/rtp-helper');
-          await rtpHelper.answer(this.rtpengine, sipCallId, fromTag, toTag, rtpOffer.sdp);
-        } catch (ansErr) {
-          logger.warn(`APPOINTMENT: RTPEngine answer failed: ${ansErr.message}`);
-        }
-      }
-
-      // Wait for RTP to stabilize
-      await this._sleep(2000);
-
-      // Update CDR
-      cdr.status = 'answered';
-      cdr.answerTime = new Date();
-      cdr.to = `APPT:${apptConfig.number}`;
-      await cdr.save();
-
-      // Step 2: Play greeting + record
-      await this._playAndRecord(uas, apptConfig, callerID, cdr, sipCallId, fromTag);
-
-      return true;
-
-    } catch (err) {
-      logger.error(`APPOINTMENT: failed - ${err.message}`);
-      if (!res.finalResponseSent) res.send(500);
-      return false;
+    if (!appt) {
+      logger.warn(`APPOINTMENT WEBHOOK: appointment ${appointmentNumber} not found`);
+      res.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response><Say>Sorry, this service is not available.</Say><Hangup/></Response>`);
+      return;
     }
+
+    const callerID = req.body.From || req.body.Caller || 'unknown';
+    const callSid = req.body.CallSid || '';
+    logger.info(`APPOINTMENT WEBHOOK: ${callerID} -> APPT:${appointmentNumber} (${appt.name}) CallSid=${callSid}`);
+
+    // Build the public base URL for callbacks
+    const baseUrl = this._getBaseUrl(req);
+    const recordingCallbackUrl = `${baseUrl}/webhook/appointment/${appointmentNumber}/recording`;
+
+    // Build greeting URL — if it's a local audio file, serve it via our own endpoint
+    let greetingXml = '';
+    if (appt.greeting) {
+      const greetingUrl = `${baseUrl}/webhook/appointment/audio/${encodeURIComponent(path.basename(appt.greeting))}`;
+      greetingXml = `<Play>${greetingUrl}</Play>`;
+    } else {
+      greetingXml = `<Say voice="alice">Hello, please leave your name and a brief message after the beep. We will call you back shortly.</Say>`;
+    }
+
+    // Create CDR for tracking
+    const { CDR } = require('../models');
+    try {
+      await CDR.create({
+        callId: uuidv4(),
+        sipCallId: callSid,
+        from: callerID,
+        to: `APPT:${appointmentNumber}`,
+        direction: 'inbound',
+        status: 'answered',
+        startTime: new Date(),
+        answerTime: new Date(),
+        didNumber: req.body.To || req.body.Called || '',
+        trunkUsed: 'twilio-webhook',
+        hangupCause: 'appointment'
+      });
+    } catch (e) {
+      logger.debug(`APPOINTMENT CDR: ${e.message}`);
+    }
+
+    // Return TwiML
+    const maxLength = appt.maxRecordingLength || 120;
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  ${greetingXml}
+  <Record maxLength="${maxLength}" action="${recordingCallbackUrl}" recordingStatusCallback="${recordingCallbackUrl}" recordingStatusCallbackEvent="completed" playBeep="true" trim="trim-silence"/>
+  <Say voice="alice">We did not receive your message. Goodbye.</Say>
+  <Hangup/>
+</Response>`;
+
+    logger.info(`APPOINTMENT WEBHOOK: returning TwiML for ${appointmentNumber}`);
+    res.type('text/xml').send(twiml);
   }
 
   // ============================================================
-  // Play greeting audio, then record caller message
+  // WEBHOOK: /webhook/appointment/:number/recording
+  //
+  // Called by Twilio after recording completes.
+  // Twilio sends RecordingUrl, RecordingDuration, etc.
+  // We download the WAV and queue the callback.
   // ============================================================
-  async _playAndRecord(uas, apptConfig, callerID, cdr, sipCallId, fromTag) {
+  async handleRecordingWebhook(req, res, appointmentNumber) {
+    // Respond immediately so Twilio doesn't retry
+    res.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response><Say voice="alice">Thank you. We will call you back shortly.</Say><Hangup/></Response>`);
+
+    const { Appointment, AppointmentMessage } = require('../models');
+    const appt = await Appointment.findOne({ number: appointmentNumber, enabled: true });
+
+    if (!appt) {
+      logger.warn(`APPOINTMENT RECORDING: appointment ${appointmentNumber} not found`);
+      return;
+    }
+
+    const callerID = (req.body.From || req.body.Caller || 'unknown').replace(/^\+/, '');
+    const recordingUrl = req.body.RecordingUrl || '';
+    const recordingSid = req.body.RecordingSid || '';
+    const duration = parseInt(req.body.RecordingDuration) || 0;
+    const callSid = req.body.CallSid || '';
+
+    if (!recordingUrl) {
+      logger.warn(`APPOINTMENT RECORDING: no RecordingUrl in webhook body`);
+      logger.debug(`APPOINTMENT RECORDING: body keys=${Object.keys(req.body).join(',')}`);
+      return;
+    }
+
+    logger.info(`APPOINTMENT RECORDING: ${callerID} -> APPT:${appointmentNumber} duration=${duration}s url=${recordingUrl} sid=${recordingSid}`);
+
+    // Skip very short messages
+    if (duration < 2) {
+      logger.info(`APPOINTMENT RECORDING: message too short (${duration}s), discarding`);
+      return;
+    }
+
     const messageId = uuidv4();
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const recordingPath = path.join(APPT_DIR, `${timestamp}_${apptConfig.number}_${callerID}.wav`);
+    const localFilename = `${timestamp}_${appointmentNumber}_${callerID}.wav`;
+    const localPath = path.join(APPT_DIR, localFilename);
 
-    let recordingStarted = false;
-    let callerHungUp = false;
-    let maxTimer = null;
-    const maxRecordingLength = apptConfig.maxRecordingLength || 120; // seconds
+    // Download the recording from Twilio (append .wav for WAV format)
+    const wavUrl = recordingUrl.endsWith('.wav') ? recordingUrl : recordingUrl + '.wav';
 
-    // On caller hangup
-    uas.on('destroy', async () => {
-      callerHungUp = true;
-      if (maxTimer) clearTimeout(maxTimer);
+    try {
+      await this._downloadFile(wavUrl, localPath);
+      const fileSize = fs.existsSync(localPath) ? fs.statSync(localPath).size : 0;
+      logger.info(`APPOINTMENT RECORDING: downloaded to ${localPath} (${fileSize} bytes)`);
 
-      // Stop recording
-      if (recordingStarted) {
-        await this._rtpengineStopRecording(sipCallId, fromTag);
-      }
+      // Save to DB
+      await AppointmentMessage.create({
+        messageId,
+        appointmentNumber,
+        callerID,
+        duration,
+        recordingPath: localPath,
+        recordingUrl: wavUrl,
+        fileSize,
+        status: 'pending',
+        callSid
+      });
 
-      // Clean up RTPEngine
-      await this._rtpengineDelete(sipCallId, fromTag);
+      // Add to in-memory queue
+      this.messageQueue.push({
+        messageId,
+        appointmentNumber,
+        callerID,
+        recordingPath: localPath,
+        recordingUrl: wavUrl,
+        destination: appt.destination,
+        createdAt: Date.now(),
+        attempts: 0,
+        status: 'pending'
+      });
 
-      const duration = cdr.answerTime ? Math.round((Date.now() - cdr.answerTime.getTime()) / 1000) : 0;
+      logger.info(`APPOINTMENT QUEUED: ${callerID} -> ${appt.destination.type}:${appt.destination.target} (${this.messageQueue.length} in queue)`);
 
-      // Wait for pcap flush
-      await this._sleep(2000);
+    } catch (dlErr) {
+      logger.error(`APPOINTMENT RECORDING: download failed: ${dlErr.message}`);
 
-      // Convert pcap to WAV
-      let savedPath = null;
-      let fileSize = 0;
-      const spoolDir = process.env.RECORDING_SPOOL_DIR || '/var/spool/rtpengine';
-      const pcapDir = path.join(spoolDir, 'pcaps');
+      // Still queue with URL fallback — can retry download later
+      await AppointmentMessage.create({
+        messageId,
+        appointmentNumber,
+        callerID,
+        duration,
+        recordingUrl: wavUrl,
+        fileSize: 0,
+        status: 'pending',
+        callSid
+      });
 
-      try {
-        if (fs.existsSync(pcapDir)) {
-          const pcapFiles = fs.readdirSync(pcapDir).filter(f =>
-            f.startsWith(sipCallId) && f.endsWith('.pcap')
-          );
+      this.messageQueue.push({
+        messageId,
+        appointmentNumber,
+        callerID,
+        recordingPath: null,
+        recordingUrl: wavUrl,
+        destination: appt.destination,
+        createdAt: Date.now(),
+        attempts: 0,
+        status: 'pending'
+      });
+    }
+  }
 
-          if (pcapFiles.length > 0) {
-            const pcapPath = path.join(pcapDir, pcapFiles[0]);
-            const pcapSize = fs.statSync(pcapPath).size;
-            logger.info(`APPOINTMENT: found pcap ${pcapFiles[0]} (${pcapSize} bytes)`);
+  // ============================================================
+  // WEBHOOK: /webhook/appointment/audio/:filename
+  //
+  // Serves local audio files to Twilio for <Play> in TwiML.
+  // No auth — Twilio needs public access.
+  // ============================================================
+  serveAudioFile(req, res) {
+    const filename = req.params.filename.replace(/\.\./g, '');
+    const audioDir = process.env.MOH_DIR || '/opt/shadowpbx/audio';
+    const filePath = path.join(audioDir, filename);
 
-            if (pcapSize > 1000) {
-              try {
-                const { execSync } = require('child_process');
-                const recDir = process.env.RECORDINGS_DIR || '/var/lib/shadowpbx/recordings';
-                const tmpDir = path.join(recDir, 'tmp');
-                if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
-
-                const baseName = pcapFiles[0].replace('.pcap', '');
-                const rawPath = path.join(tmpDir, `appt_${baseName}.raw`);
-                const tmpWav = path.join(tmpDir, `appt_${baseName}.wav`);
-
-                execSync(`tshark -n -r "${pcapPath}" -o rtp.heuristic_rtp:TRUE -Y rtp -T fields -e rtp.payload 2>/dev/null | tr -d '\\n' | xxd -r -p > "${rawPath}"`, { timeout: 30000 });
-
-                if (fs.existsSync(rawPath) && fs.statSync(rawPath).size > 0) {
-                  execSync(`sox -t raw -r 8000 -e mu-law -b 8 -c 1 "${rawPath}" "${tmpWav}" 2>/dev/null`, { timeout: 30000 });
-
-                  if (fs.existsSync(tmpWav)) {
-                    fs.copyFileSync(tmpWav, recordingPath);
-                    savedPath = recordingPath;
-                    fileSize = fs.statSync(recordingPath).size;
-                    logger.info(`APPOINTMENT: converted pcap to wav: ${recordingPath} (${fileSize} bytes)`);
-                  }
-                }
-
-                try { fs.unlinkSync(rawPath); } catch (e) {}
-                try { fs.unlinkSync(tmpWav); } catch (e) {}
-              } catch (convErr) {
-                logger.warn(`APPOINTMENT: pcap conversion failed: ${convErr.message}`);
-              }
-            }
-          }
-        }
-      } catch (e) {
-        logger.warn(`APPOINTMENT: recording lookup error: ${e.message}`);
-      }
-
-      // Update CDR
-      cdr.status = 'completed';
-      cdr.endTime = new Date();
-      cdr.duration = Math.round((cdr.endTime - cdr.startTime) / 1000);
-      cdr.talkTime = duration;
-      cdr.hangupBy = 'caller';
-      cdr.hangupCause = 'appointment';
-      await cdr.save();
-
-      // Queue callback if we have a valid recording (at least 2 seconds)
-      if (savedPath && duration > 2) {
-        // Save to DB
-        const { AppointmentMessage } = require('../models');
-        try {
-          await AppointmentMessage.create({
-            messageId,
-            appointmentNumber: apptConfig.number,
-            callerID,
-            duration: Math.max(0, duration - 5),
-            recordingPath: savedPath,
-            fileSize,
-            status: 'pending'
-          });
-        } catch (dbErr) {
-          logger.error(`APPOINTMENT: DB save failed: ${dbErr.message}`);
-        }
-
-        this.messageQueue.push({
-          messageId,
-          appointmentNumber: apptConfig.number,
-          callerID,
-          recordingPath: savedPath,
-          destination: apptConfig.destination,
-          createdAt: Date.now(),
-          attempts: 0,
-          status: 'pending'
-        });
-
-        logger.info(`APPOINTMENT QUEUED: ${callerID} -> ${apptConfig.destination.type}:${apptConfig.destination.target} (${this.messageQueue.length} in queue)`);
-      } else {
-        logger.info(`APPOINTMENT: message too short or no recording (${duration}s) — discarded`);
-      }
-    });
-
-    // Play greeting
-    const greetingFile = apptConfig.greeting;
-    if (greetingFile && this.rtpengine) {
-      const hostPath = toHostPath(greetingFile);
-      const fileExists = fs.existsSync(hostPath) || fs.existsSync(greetingFile);
-
-      if (fileExists) {
-        logger.info(`APPOINTMENT: playing greeting ${greetingFile}`);
-        try {
-          await this.rtpengine.playMedia(this.rtpengineConfig, {
-            'call-id': sipCallId,
-            'from-tag': fromTag,
-            file: toContainerPath(greetingFile)
-          });
-          // Wait for greeting to finish
-          await this._sleep(5000);
-        } catch (err) {
-          logger.warn(`APPOINTMENT: greeting playback failed: ${err.message}`);
-        }
-      } else {
-        logger.info(`APPOINTMENT: greeting file not found: ${greetingFile}`);
-        await this._sleep(1000);
-      }
-    } else {
-      await this._sleep(1000);
+    if (!fs.existsSync(filePath)) {
+      logger.warn(`APPOINTMENT AUDIO: file not found: ${filename}`);
+      return res.status(404).send('Not found');
     }
 
-    if (callerHungUp) return;
+    const ext = filename.split('.').pop().toLowerCase();
+    res.setHeader('Content-Type', ext === 'mp3' ? 'audio/mpeg' : 'audio/wav');
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    fs.createReadStream(filePath).pipe(res);
+  }
 
-    // Play beep
-    const beepFile = path.join(AUDIO_HOST_DIR, 'beep.wav');
-    if (fs.existsSync(beepFile) && this.rtpengine) {
-      try {
-        await this.rtpengine.playMedia(this.rtpengineConfig, {
-          'call-id': sipCallId,
-          'from-tag': fromTag,
-          file: toContainerPath(beepFile)
-        });
-        await this._sleep(1000);
-      } catch (err) {
-        logger.debug(`APPOINTMENT: beep playback failed: ${err.message}`);
-      }
+  // ============================================================
+  // LEGACY SIP HANDLER — still works for non-Twilio trunks
+  //
+  // Called from call-handler when inbound route points to
+  // appointment AND the call came in via SIP trunk (not webhook).
+  // Falls back to a simple message.
+  // ============================================================
+  async handleAppointment(req, res, apptConfig, cdr) {
+    logger.info(`APPOINTMENT SIP: ${cdr.from} -> APPT:${apptConfig.number} — use Twilio webhook for best quality`);
+    if (!res.finalResponseSent) {
+      res.send(503);
     }
-
-    if (callerHungUp) return;
-
-    // Start recording
-    if (this.rtpengine) {
-      try {
-        const recResp = await this.rtpengine.startRecording(this.rtpengineConfig, {
-          'call-id': sipCallId,
-          'from-tag': fromTag
-        });
-        if (recResp && recResp.result === 'ok') {
-          recordingStarted = true;
-          logger.info(`APPOINTMENT: recording started (call-id=${sipCallId})`);
-        }
-      } catch (err) {
-        logger.warn(`APPOINTMENT: start recording error: ${err.message}`);
-      }
-    }
-
-    // Max recording timeout
-    maxTimer = setTimeout(() => {
-      if (!callerHungUp) {
-        logger.info(`APPOINTMENT: max recording time (${maxRecordingLength}s), ending`);
-        try { uas.destroy(); } catch (e) {}
-      }
-    }, maxRecordingLength * 1000);
+    return false;
   }
 
   // ============================================================
   // CALLBACK QUEUE PROCESSOR
   //
-  // Runs every 5 seconds. Checks for pending messages.
-  // For each pending message:
+  // Runs every 5 seconds. For each pending message:
   //   - Check if target extension/ring group has anyone online
-  //   - If yes, originate internal call and play recording
-  //   - If no, skip and retry next cycle
+  //   - If yes → originate internal call via Drachtio
+  //   - Play the downloaded WAV via RTPEngine playMedia
   // ============================================================
   async _processQueue() {
-    if (this.activeCallback) return; // one callback at a time
+    if (this.activeCallback) return;
     if (this.messageQueue.length === 0) return;
 
-    // Find first pending message
     const msg = this.messageQueue.find(m => m.status === 'pending');
     if (!msg) return;
 
     const { destination } = msg;
     if (!destination) {
       msg.status = 'failed';
+      this._removeFromQueue(msg.messageId);
       return;
     }
 
     try {
-      // Check if target is online
       let targetOnline = false;
       let targetContacts = [];
 
@@ -380,12 +338,29 @@ class AppointmentHandler {
         }
       }
 
-      if (!targetOnline) {
-        // Nobody online — skip, will retry next cycle
-        return;
+      if (!targetOnline) return;
+
+      // Ensure we have the recording file locally
+      if (!msg.recordingPath || !fs.existsSync(msg.recordingPath)) {
+        if (msg.recordingUrl) {
+          const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+          const localPath = path.join(APPT_DIR, `${timestamp}_${msg.appointmentNumber}_${msg.callerID}.wav`);
+          try {
+            await this._downloadFile(msg.recordingUrl, localPath);
+            msg.recordingPath = localPath;
+            logger.info(`APPOINTMENT CALLBACK: re-downloaded recording to ${localPath}`);
+          } catch (dlErr) {
+            logger.error(`APPOINTMENT CALLBACK: download failed: ${dlErr.message}`);
+            return;
+          }
+        } else {
+          logger.warn(`APPOINTMENT CALLBACK: no recording for ${msg.messageId}`);
+          msg.status = 'failed';
+          this._removeFromQueue(msg.messageId);
+          return;
+        }
       }
 
-      // Somebody is online — originate callback
       msg.status = 'delivering';
       msg.attempts++;
       this.activeCallback = msg.messageId;
@@ -395,23 +370,18 @@ class AppointmentHandler {
       await this._originateCallback(msg, targetContacts);
 
     } catch (err) {
-      logger.error(`APPOINTMENT QUEUE: error processing ${msg.messageId}: ${err.message}`);
-      msg.status = 'pending'; // retry
+      logger.error(`APPOINTMENT QUEUE: error: ${err.message}`);
+      msg.status = 'pending';
       this.activeCallback = null;
     }
   }
 
   // ============================================================
-  // ORIGINATE CALLBACK — ring all target extensions
-  //
-  // Uses Drachtio to create a UAS+UAC call internally.
-  // Shows caller's number as the caller ID.
-  // On answer: 3s pause → play recording → hangup.
+  // ORIGINATE CALLBACK — ring target extension(s)
   // ============================================================
   async _originateCallback(msg, targetContacts) {
     const { callerID, recordingPath, messageId } = msg;
 
-    // Verify recording still exists
     if (!fs.existsSync(recordingPath)) {
       logger.warn(`APPOINTMENT CALLBACK: recording missing ${recordingPath}`);
       msg.status = 'failed';
@@ -420,7 +390,6 @@ class AppointmentHandler {
       return;
     }
 
-    // Build target URIs for all online extensions
     const targets = [];
     for (const tc of targetContacts) {
       const contact = tc.contacts.sort((a, b) => {
@@ -429,10 +398,7 @@ class AppointmentHandler {
         return tb - ta;
       })[0];
       if (contact) {
-        targets.push({
-          ext: tc.ext,
-          uri: `sip:${tc.ext}@${contact.ip}:${contact.port}`
-        });
+        targets.push({ ext: tc.ext, uri: `sip:${tc.ext}@${contact.ip}:${contact.port}` });
       }
     }
 
@@ -442,8 +408,6 @@ class AppointmentHandler {
       return;
     }
 
-    // Originate call — try each target (ring all simultaneously by trying first one)
-    // For simplicity: try first available target. Ring group logic could be expanded.
     const target = targets[0];
     const sipDomain = process.env.SIP_DOMAIN || 'shadowpbx';
     const externalIp = process.env.EXTERNAL_IP || '127.0.0.1';
@@ -451,7 +415,6 @@ class AppointmentHandler {
     try {
       logger.info(`APPOINTMENT CALLBACK: originating ${callerID} -> ${target.ext} at ${target.uri}`);
 
-      // Create outgoing INVITE using Drachtio
       const uac = await this.srf.createUAC(target.uri, {
         headers: {
           'From': `<sip:${callerID}@${sipDomain}>`,
@@ -463,7 +426,6 @@ class AppointmentHandler {
 
       logger.info(`APPOINTMENT CALLBACK: ${target.ext} answered — playing message from ${callerID}`);
 
-      // Agent answered — now play the recording
       const sipCallId = uac.sip ? uac.sip.callId : `appt-cb-${messageId}`;
       let agentHungUp = false;
 
@@ -472,55 +434,43 @@ class AppointmentHandler {
         logger.info(`APPOINTMENT CALLBACK: agent ${target.ext} hung up`);
       });
 
-      // 3 second delay before playing
+      // 3 second delay
       await this._sleep(3000);
-      if (agentHungUp) {
-        this._callbackComplete(msg, false);
-        return;
-      }
+      if (agentHungUp) { this._callbackComplete(msg, false); return; }
 
       // Play the recorded message via RTPEngine
       if (this.rtpengine) {
         const fromTag = uac.sip ? uac.sip.remoteTag : '';
-
         try {
-          // We need to set up RTPEngine for this call leg
-          // Use the call's SDP to create an RTPEngine session
           const rtpHelper = require('../utils/rtp-helper');
           const rtpOffer = await rtpHelper.offer(this.rtpengine, sipCallId, fromTag, uac.remote.sdp);
 
           if (rtpOffer) {
-            // Re-INVITE agent with RTPEngine SDP
-            try {
-              await uac.modify(rtpOffer.sdp);
-            } catch (modErr) {
-              logger.debug(`APPOINTMENT CALLBACK: re-INVITE failed: ${modErr.message}`);
+            try { await uac.modify(rtpOffer.sdp); } catch (modErr) {
+              logger.debug(`APPOINTMENT CALLBACK: re-INVITE: ${modErr.message}`);
             }
 
             await this._sleep(500);
 
-            // Play the recording
             logger.info(`APPOINTMENT CALLBACK: playing ${recordingPath}`);
-            const playResp = await this.rtpengine.playMedia(this.rtpengineConfig, {
+            await this.rtpengine.playMedia(this.rtpengineConfig, {
               'call-id': sipCallId,
               'from-tag': fromTag,
               file: toContainerPath(recordingPath)
             });
 
-            // Estimate recording duration and wait
+            // Wait for playback
             const fileSize = fs.statSync(recordingPath).size;
-            const estimatedDuration = Math.max(3000, Math.round(fileSize / 16)); // rough: 8kHz mono
-            logger.info(`APPOINTMENT CALLBACK: waiting ${estimatedDuration}ms for playback`);
+            const estimatedMs = Math.max(3000, Math.round(fileSize / 16));
+            logger.info(`APPOINTMENT CALLBACK: waiting ${estimatedMs}ms for playback`);
 
-            // Wait for playback, check if agent hung up
             const waitStep = 500;
             let waited = 0;
-            while (waited < estimatedDuration && !agentHungUp) {
-              await this._sleep(Math.min(waitStep, estimatedDuration - waited));
+            while (waited < estimatedMs && !agentHungUp) {
+              await this._sleep(Math.min(waitStep, estimatedMs - waited));
               waited += waitStep;
             }
 
-            // Clean up RTPEngine
             await rtpHelper.del(this.rtpengine, sipCallId, fromTag);
           }
         } catch (playErr) {
@@ -528,9 +478,9 @@ class AppointmentHandler {
         }
       }
 
-      // Playback finished — hang up
+      // Done — hang up
       if (!agentHungUp) {
-        await this._sleep(1000); // brief pause after message
+        await this._sleep(1000);
         try { uac.destroy(); } catch (e) {}
       }
 
@@ -538,13 +488,11 @@ class AppointmentHandler {
 
     } catch (err) {
       logger.error(`APPOINTMENT CALLBACK: failed for ${target.ext}: ${err.message} (status=${err.status})`);
-
-      // If nobody answered, mark as pending for retry
       if (err.status === 480 || err.status === 408 || err.status === 487) {
         msg.status = 'pending';
         if (msg.attempts >= 10) {
           msg.status = 'failed';
-          logger.warn(`APPOINTMENT CALLBACK: giving up after ${msg.attempts} attempts for ${msg.callerID}`);
+          logger.warn(`APPOINTMENT CALLBACK: giving up after ${msg.attempts} attempts`);
           this._removeFromQueue(messageId);
         }
       } else {
@@ -555,27 +503,23 @@ class AppointmentHandler {
   }
 
   // ============================================================
-  // Callback complete — update status and remove from queue
+  // Callback complete
   // ============================================================
   _callbackComplete(msg, success) {
     if (success) {
       msg.status = 'delivered';
-      logger.info(`APPOINTMENT DELIVERED: message from ${msg.callerID} delivered to ${msg.destination.type}:${msg.destination.target}`);
+      logger.info(`APPOINTMENT DELIVERED: message from ${msg.callerID} to ${msg.destination.type}:${msg.destination.target}`);
     } else {
       msg.status = 'pending';
-      logger.info(`APPOINTMENT CALLBACK: not delivered, will retry`);
     }
 
-    // Update DB
     const { AppointmentMessage } = require('../models');
     AppointmentMessage.findOneAndUpdate(
       { messageId: msg.messageId },
       { status: msg.status, attempts: msg.attempts, deliveredAt: success ? new Date() : undefined }
     ).catch(e => logger.debug(`APPOINTMENT DB update: ${e.message}`));
 
-    if (success) {
-      this._removeFromQueue(msg.messageId);
-    }
+    if (success) this._removeFromQueue(msg.messageId);
     this.activeCallback = null;
   }
 
@@ -584,7 +528,7 @@ class AppointmentHandler {
   }
 
   // ============================================================
-  // STARTUP — reload pending messages from DB
+  // Reload pending messages from DB on startup
   // ============================================================
   async reloadPendingMessages() {
     try {
@@ -592,16 +536,19 @@ class AppointmentHandler {
       const pending = await AppointmentMessage.find({ status: 'pending' }).sort({ createdAt: 1 });
 
       for (const msg of pending) {
-        // Look up the appointment config to get destination
         const appt = await Appointment.findOne({ number: msg.appointmentNumber, enabled: true });
         if (!appt) continue;
-        if (!msg.recordingPath || !fs.existsSync(msg.recordingPath)) continue;
+
+        const hasFile = msg.recordingPath && fs.existsSync(msg.recordingPath);
+        const hasUrl = !!msg.recordingUrl;
+        if (!hasFile && !hasUrl) continue;
 
         this.messageQueue.push({
           messageId: msg.messageId,
           appointmentNumber: msg.appointmentNumber,
           callerID: msg.callerID,
-          recordingPath: msg.recordingPath,
+          recordingPath: hasFile ? msg.recordingPath : null,
+          recordingUrl: msg.recordingUrl || null,
           destination: appt.destination,
           createdAt: msg.createdAt.getTime(),
           attempts: msg.attempts || 0,
@@ -610,7 +557,7 @@ class AppointmentHandler {
       }
 
       if (this.messageQueue.length > 0) {
-        logger.info(`APPOINTMENT: reloaded ${this.messageQueue.length} pending message(s) from DB`);
+        logger.info(`APPOINTMENT: reloaded ${this.messageQueue.length} pending message(s)`);
       }
     } catch (err) {
       logger.warn(`APPOINTMENT: reload pending failed: ${err.message}`);
@@ -618,7 +565,35 @@ class AppointmentHandler {
   }
 
   // ============================================================
-  // API helpers
+  // Register Express webhook routes (called from app.js)
+  //
+  // These are PUBLIC — no API key auth.
+  // Twilio/SignalWire/Telnyx must be able to POST to them.
+  // ============================================================
+  registerWebhookRoutes(app) {
+    app.post('/webhook/appointment/:number/voice', (req, res) => {
+      this.handleVoiceWebhook(req, res, req.params.number).catch(err => {
+        logger.error(`APPOINTMENT WEBHOOK voice: ${err.message}`);
+        res.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?><Response><Say>An error occurred.</Say><Hangup/></Response>`);
+      });
+    });
+
+    app.post('/webhook/appointment/:number/recording', (req, res) => {
+      this.handleRecordingWebhook(req, res, req.params.number).catch(err => {
+        logger.error(`APPOINTMENT WEBHOOK recording: ${err.message}`);
+        if (!res.headersSent) res.status(200).send('OK');
+      });
+    });
+
+    app.get('/webhook/appointment/audio/:filename', (req, res) => {
+      this.serveAudioFile(req, res);
+    });
+
+    logger.info('APPOINTMENT: webhook routes registered at /webhook/appointment/');
+  }
+
+  // ============================================================
+  // Helpers
   // ============================================================
   getQueueStatus() {
     return {
@@ -629,27 +604,45 @@ class AppointmentHandler {
     };
   }
 
-  // ============================================================
-  // RTPEngine helpers
-  // ============================================================
-  async _rtpengineOffer(callId, fromTag, sdp) {
-    const rtpHelper = require('../utils/rtp-helper');
-    return rtpHelper.offer(this.rtpengine, callId, fromTag, sdp);
+  _getBaseUrl(req) {
+    if (process.env.WEBHOOK_BASE_URL) return process.env.WEBHOOK_BASE_URL.replace(/\/$/, '');
+    const proto = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+    const host = req.headers['x-forwarded-host'] || req.headers.host;
+    return `${proto}://${host}`;
   }
 
-  async _rtpengineStopRecording(callId, fromTag) {
-    if (!this.rtpengine) return;
-    try {
-      await this.rtpengine.stopRecording(this.rtpengineConfig, {
-        'call-id': callId,
-        'from-tag': fromTag
+  _downloadFile(url, destPath) {
+    return new Promise((resolve, reject) => {
+      const proto = url.startsWith('https') ? https : http;
+      const file = fs.createWriteStream(destPath);
+
+      const request = proto.get(url, (response) => {
+        if (response.statusCode === 301 || response.statusCode === 302) {
+          const redirectUrl = response.headers.location;
+          file.close();
+          try { fs.unlinkSync(destPath); } catch (e) {}
+          return this._downloadFile(redirectUrl, destPath).then(resolve).catch(reject);
+        }
+        if (response.statusCode !== 200) {
+          file.close();
+          try { fs.unlinkSync(destPath); } catch (e) {}
+          return reject(new Error(`Download failed: HTTP ${response.statusCode}`));
+        }
+        response.pipe(file);
+        file.on('finish', () => file.close(resolve));
       });
-    } catch (err) {}
-  }
 
-  async _rtpengineDelete(callId, fromTag) {
-    const rtpHelper = require('../utils/rtp-helper');
-    return rtpHelper.del(this.rtpengine, callId, fromTag);
+      request.on('error', (err) => {
+        file.close();
+        try { fs.unlinkSync(destPath); } catch (e) {}
+        reject(err);
+      });
+
+      request.setTimeout(30000, () => {
+        request.destroy();
+        reject(new Error('Download timeout'));
+      });
+    });
   }
 
   _sleep(ms) {

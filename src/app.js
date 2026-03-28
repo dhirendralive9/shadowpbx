@@ -264,6 +264,9 @@ async function main() {
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
 
+  // Appointment webhook routes (PUBLIC — Twilio/SignalWire must reach these)
+  appointmentHandler.registerWebhookRoutes(app);
+
   // API auth middleware
   app.use('/api', (req, res, next) => {
     const token = req.headers['x-api-key'] || req.query.apikey;

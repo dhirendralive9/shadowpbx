@@ -207,6 +207,15 @@ async function load() {
           'server calls ' + destLabel(a.destination) + ' with caller\'s number → ' +
           'agent picks up → 3s pause → message plays → auto hangup' +
         '</div>' +
+        '<div style="margin-top:6px;padding:10px;background:var(--bg-surface);border-radius:var(--radius);font-size:12px">' +
+          '<strong style="color:var(--text-primary)">Twilio webhook URL:</strong> ' +
+          '<span class="mono" style="user-select:all;color:var(--color-info)">' +
+            esc(location.origin) + '/webhook/appointment/' + esc(a.number) + '/voice' +
+          '</span>' +
+          ' <button class="btn btn-sm" style="font-size:10px;padding:2px 8px" onclick="navigator.clipboard.writeText(\'' +
+            esc(location.origin) + '/webhook/appointment/' + esc(a.number) + '/voice\').then(function(){showToast(\'Copied!\')})">Copy</button>' +
+          '<div class="muted" style="margin-top:4px;font-size:11px">Set this as the Voice webhook URL in your Twilio phone number configuration (HTTP POST)</div>' +
+        '</div>' +
       '</div>';
     }).join('');
   } catch (e) { console.error('appointments load', e); }
