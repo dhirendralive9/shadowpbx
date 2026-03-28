@@ -101,10 +101,11 @@ class AppointmentHandler {
       logger.debug(`APPT blacklist check: ${e.message}`);
     }
 
-    // Build URLs
+    // Build URLs — embed callerID in recording callback since Twilio
+    // doesn't include From/Caller in recordingStatusCallback
     const baseUrl = this._getBaseUrl(req);
     const actionUrl = `${baseUrl}/webhook/appointment/${appointmentNumber}/action`;
-    const recordingCallbackUrl = `${baseUrl}/webhook/appointment/${appointmentNumber}/recording`;
+    const recordingCallbackUrl = `${baseUrl}/webhook/appointment/${appointmentNumber}/recording?caller=${encodeURIComponent(callerID)}`;
 
     // Greeting
     let greetingXml = '';
@@ -169,7 +170,9 @@ class AppointmentHandler {
     const recordingUrl = req.body.RecordingUrl || '';
     const duration = parseInt(req.body.RecordingDuration) || 0;
     const callSid = req.body.CallSid || '';
-    const rawCaller = req.body.From || req.body.Caller || 'unknown';
+    // Caller ID comes from query param (set by voice webhook) since
+    // Twilio's recordingStatusCallback doesn't include From/Caller
+    const rawCaller = req.query.caller || req.body.From || req.body.Caller || 'unknown';
     const callerID = normalizeCallerID(rawCaller);
 
     // ─── Deduplication: skip if we already processed this RecordingSid ───
