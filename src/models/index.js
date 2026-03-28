@@ -84,7 +84,7 @@ const inboundRouteSchema = new mongoose.Schema({
   name: { type: String, required: true },
   trunk: { type: String },
   destination: {
-    type: { type: String, enum: ['extension', 'ringgroup', 'ivr', 'timecondition', 'queue', 'hangup'], required: true },
+    type: { type: String, enum: ['extension', 'ringgroup', 'ivr', 'timecondition', 'queue', 'appointment', 'hangup'], required: true },
     target: { type: String, required: true }
   },
   enabled: { type: Boolean, default: true },
@@ -309,6 +309,45 @@ const blockedNumberSchema = new mongoose.Schema({
 });
 
 // ============================================================
+// Appointment
+// ============================================================
+const appointmentSchema = new mongoose.Schema({
+  number: { type: String, required: true, unique: true, index: true },
+  name: { type: String, required: true },
+  greeting: { type: String, default: '' },         // path to greeting WAV
+  destination: {
+    type: { type: String, enum: ['extension', 'ringgroup'], required: true },
+    target: { type: String, required: true }
+  },
+  maxRecordingLength: { type: Number, default: 120 },  // seconds
+  enabled: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now }
+});
+
+// ============================================================
+// Appointment Message (recorded caller messages pending delivery)
+// ============================================================
+const appointmentMessageSchema = new mongoose.Schema({
+  messageId: { type: String, required: true, unique: true, index: true },
+  appointmentNumber: { type: String, required: true, index: true },
+  callerID: { type: String, required: true },
+  duration: { type: Number, default: 0 },
+  recordingPath: { type: String },
+  fileSize: { type: Number, default: 0 },
+  status: {
+    type: String,
+    enum: ['pending', 'delivering', 'delivered', 'failed'],
+    default: 'pending'
+  },
+  attempts: { type: Number, default: 0 },
+  deliveredAt: Date,
+  createdAt: { type: Date, default: Date.now }
+});
+
+appointmentMessageSchema.index({ status: 1, createdAt: 1 });
+appointmentMessageSchema.index({ appointmentNumber: 1, createdAt: -1 });
+
+// ============================================================
 // Active Call
 // ============================================================
 const activeCallSchema = new mongoose.Schema({
@@ -365,5 +404,7 @@ const CDR = mongoose.model('CDR', cdrSchema);
 const VoicemailMessage = mongoose.model('VoicemailMessage', voicemailMessageSchema);
 const ActiveCall = mongoose.model('ActiveCall', activeCallSchema);
 const SystemSettings = mongoose.model('SystemSettings', systemSettingsSchema);
+const Appointment = mongoose.model('Appointment', appointmentSchema);
+const AppointmentMessage = mongoose.model('AppointmentMessage', appointmentMessageSchema);
 
-module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, IVR, TimeCondition, Queue, User, ChatMessage, BlockedNumber, CDR, VoicemailMessage, ActiveCall, SystemSettings };
+module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, IVR, TimeCondition, Queue, User, ChatMessage, BlockedNumber, CDR, VoicemailMessage, ActiveCall, SystemSettings, Appointment, AppointmentMessage };

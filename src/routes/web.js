@@ -204,6 +204,10 @@ function createWebRouter(apiKey) {
     res.render('pages/ivr', locals(req));
   });
 
+  router.get('/appointments', authMiddleware, adminOnly, (req, res) => {
+    res.render('pages/appointments', locals(req));
+  });
+
   router.get('/time-conditions', authMiddleware, adminOnly, (req, res) => {
     res.render('pages/timeconditions', locals(req));
   });

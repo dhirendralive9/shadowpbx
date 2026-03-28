@@ -30,6 +30,7 @@ const MonitorHandler = require('./services/monitor-handler');
 const TimeConditionService = require('./services/time-condition');
 const PresenceHandler = require('./services/presence-handler');
 const QueueHandler = require('./services/queue-handler');
+const AppointmentHandler = require('./services/appointment-handler');
 const createApiRouter = require('./routes/api');
 const { startBackgroundSync } = require('./utils/converter');
 
@@ -171,6 +172,11 @@ async function main() {
   const queueHandler = new QueueHandler(srf, rtpengine, registrar, callHandler, voicemailHandler);
   callHandler.queueHandler = queueHandler;
 
+  const appointmentHandler = new AppointmentHandler(srf, rtpengine, registrar, callHandler, ringGroupHandler);
+  callHandler.appointmentHandler = appointmentHandler;
+  // Reload pending appointment messages from DB
+  setTimeout(() => appointmentHandler.reloadPendingMessages(), 5000);
+
   // 5. Initialize trunks (register with providers)
   try {
     await trunkManager.initialize();
@@ -267,7 +273,7 @@ async function main() {
     next();
   });
 
-  app.use('/api', createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler, monitorHandler, timeConditionService, presenceHandler, queueHandler));
+  app.use('/api', createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler, monitorHandler, timeConditionService, presenceHandler, queueHandler, appointmentHandler));
   app.get('/health', (req, res) => res.json({ status: 'ok', service: 'ShadowPBX', version: '2.0.0' }));
 
   // Web GUI routes

@@ -1,0 +1,323 @@
+<%- include('../partials/head', { title: 'Appointments', active: 'appointments' }) %>
+
+<div class="sec-head">
+  <span class="sec-title">Appointments</span>
+  <div style="display:flex;align-items:center;gap:10px">
+    <span class="muted" style="font-size:11px" id="appt-summary"></span>
+    <span class="muted" style="font-size:11px" id="queue-status"></span>
+    <button class="btn btn-sm" onclick="showAdd()">+ Add appointment</button>
+  </div>
+</div>
+
+<!-- ═══════════════════ ADD / EDIT FORM ═══════════════════ -->
+<div id="add-form" style="display:none;margin-bottom:16px" class="card">
+  <form onsubmit="save(event)">
+    <input type="hidden" id="appt-edit-mode" value="">
+
+    <div class="grid-3" style="margin-bottom:0">
+      <div class="form-group"><label class="form-label">Number</label><input class="form-input" id="appt-number" placeholder="900" required></div>
+      <div class="form-group"><label class="form-label">Name</label><input class="form-input" id="appt-name" placeholder="Callback Request" required></div>
+      <div class="form-group">
+        <label class="form-label">Greeting audio</label>
+        <div style="display:flex;gap:6px">
+          <select class="form-select" id="appt-greeting" style="flex:1"><option value="">— no greeting —</option></select>
+          <button type="button" class="btn btn-sm" onclick="document.getElementById('audio-upload').click()">Upload</button>
+          <input type="file" id="audio-upload" accept=".wav,.mp3" style="display:none" onchange="uploadAudio(this)">
+        </div>
+      </div>
+    </div>
+
+    <div class="grid-3" style="margin-bottom:0">
+      <div class="form-group"><label class="form-label">Callback destination</label>
+        <select class="form-select" id="appt-dest-type">
+          <option value="extension">Extension</option>
+          <option value="ringgroup">Ring group</option>
+        </select>
+      </div>
+      <div class="form-group"><label class="form-label">Target</label><input class="form-input" id="appt-dest-target" placeholder="2001 or 601" required></div>
+      <div class="form-group"><label class="form-label">Max recording (seconds)</label><input class="form-input" id="appt-maxlen" type="number" value="120" min="10" max="300"></div>
+    </div>
+
+    <div class="grid-3" style="margin-bottom:0">
+      <div class="form-group" style="display:flex;align-items:flex-end;gap:8px;padding-bottom:14px">
+        <label style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="appt-enabled" checked> Enabled</label>
+      </div>
+      <div class="form-group" style="display:flex;align-items:flex-end">
+        <div style="display:flex;gap:8px">
+          <button type="submit" class="btn btn-primary btn-sm" id="appt-submit-btn">Create</button>
+          <button type="button" class="btn btn-sm" onclick="hideAdd()">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </form>
+</div>
+
+<!-- ═══════════════════ APPOINTMENT LIST ═══════════════════ -->
+<div id="appt-list"></div>
+
+<!-- ═══════════════════ MESSAGES PANEL (shown when viewing an appointment) ═══════════════════ -->
+<div id="msg-panel" style="display:none;margin-top:16px">
+  <div class="sec-head">
+    <span class="sec-title" id="msg-panel-title">Messages</span>
+    <button class="btn btn-sm" onclick="hideMessages()">Close</button>
+  </div>
+  <div id="msg-list"></div>
+</div>
+
+<script>
+var API = '/api', KEY = '<%= apiKey %>', H = { 'X-API-Key': KEY };
+var J = { 'X-API-Key': KEY, 'Content-Type': 'application/json' };
+var audioFiles = [];
+
+function esc(s) { if (!s) return ''; var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function showToast(msg, isError) {
+  var el = document.createElement('div');
+  el.className = 'toast ' + (isError ? 'toast-error' : 'toast-success');
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(function() { el.remove(); }, 3000);
+}
+
+function destLabel(d) {
+  if (!d || !d.type) return '<span class="muted">—</span>';
+  var cls = d.type === 'extension' ? 'p-ok' : 'p-info';
+  var label = d.type === 'ringgroup' ? 'RG' : 'Ext';
+  return '<span class="pill ' + cls + '">' + label + '</span> <span class="mono">' + esc(d.target || '') + '</span>';
+}
+
+function statusPill(s) {
+  if (s === 'pending') return '<span class="pill p-warn">pending</span>';
+  if (s === 'delivering') return '<span class="pill p-info">delivering</span>';
+  if (s === 'delivered') return '<span class="pill p-ok">delivered</span>';
+  if (s === 'failed') return '<span class="pill p-err">failed</span>';
+  return '<span class="pill p-gray">' + esc(s) + '</span>';
+}
+
+function fmtDate(d) {
+  if (!d) return '—';
+  var dt = new Date(d);
+  return dt.toLocaleDateString() + ' ' + dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+// ─── Audio file management ───
+async function loadAudioFiles() {
+  try {
+    var d = await (await fetch(API + '/audio/list', { headers: H })).json();
+    audioFiles = (d.success && d.files) || [];
+    populateGreetingSelect('');
+  } catch (e) { console.error('audio list', e); }
+}
+
+function populateGreetingSelect(selected) {
+  var sel = document.getElementById('appt-greeting');
+  sel.innerHTML = '<option value="">— no greeting —</option>';
+  audioFiles.forEach(function(f) {
+    var s = f.path === selected ? ' selected' : '';
+    sel.innerHTML += '<option value="' + esc(f.path) + '"' + s + '>' + esc(f.name) + ' (' + Math.round(f.size / 1024) + 'KB)</option>';
+  });
+}
+
+async function uploadAudio(input) {
+  if (!input.files || !input.files[0]) return;
+  var formData = new FormData();
+  formData.append('file', input.files[0]);
+  try {
+    var r = await fetch(API + '/audio/upload', { method: 'POST', headers: { 'X-API-Key': KEY }, body: formData });
+    var d = await r.json();
+    if (d.success) {
+      showToast('Audio uploaded: ' + d.originalName);
+      await loadAudioFiles();
+      document.getElementById('appt-greeting').value = d.path;
+    } else {
+      showToast(d.error || 'Upload failed', true);
+    }
+  } catch (e) { showToast('Upload failed', true); }
+  input.value = '';
+}
+
+// ─── Form ───
+function showAdd() {
+  document.getElementById('appt-edit-mode').value = '';
+  document.getElementById('appt-number').value = '';
+  document.getElementById('appt-number').disabled = false;
+  document.getElementById('appt-name').value = '';
+  document.getElementById('appt-greeting').value = '';
+  document.getElementById('appt-dest-type').value = 'extension';
+  document.getElementById('appt-dest-target').value = '';
+  document.getElementById('appt-maxlen').value = '120';
+  document.getElementById('appt-enabled').checked = true;
+  document.getElementById('appt-submit-btn').textContent = 'Create';
+  document.getElementById('add-form').style.display = 'block';
+}
+
+function showEdit(appt) {
+  document.getElementById('appt-edit-mode').value = appt.number;
+  document.getElementById('appt-number').value = appt.number;
+  document.getElementById('appt-number').disabled = true;
+  document.getElementById('appt-name').value = appt.name;
+  populateGreetingSelect(appt.greeting || '');
+  document.getElementById('appt-dest-type').value = (appt.destination && appt.destination.type) || 'extension';
+  document.getElementById('appt-dest-target').value = (appt.destination && appt.destination.target) || '';
+  document.getElementById('appt-maxlen').value = appt.maxRecordingLength || 120;
+  document.getElementById('appt-enabled').checked = appt.enabled !== false;
+  document.getElementById('appt-submit-btn').textContent = 'Update';
+  document.getElementById('add-form').style.display = 'block';
+}
+
+function hideAdd() { document.getElementById('add-form').style.display = 'none'; }
+
+// ─── CRUD ───
+async function load() {
+  try {
+    var d = await (await fetch(API + '/appointments', { headers: H })).json();
+    var container = document.getElementById('appt-list');
+
+    if (!d.success || !d.appointments || !d.appointments.length) {
+      container.innerHTML = '<div class="card"><div class="empty">No appointments configured</div></div>';
+      document.getElementById('appt-summary').textContent = '';
+      return;
+    }
+
+    document.getElementById('appt-summary').textContent = d.appointments.length + ' appointment(s)';
+
+    container.innerHTML = d.appointments.map(function(a) {
+      var greetingName = a.greeting ? a.greeting.split('/').pop() : 'none';
+
+      return '<div class="card" style="margin-bottom:12px">' +
+        '<div class="card-head">' +
+          '<div style="display:flex;align-items:center;gap:10px">' +
+            '<span class="card-title">' + esc(a.name) + '</span>' +
+            '<span class="mono muted" style="font-size:11px">#' + esc(a.number) + '</span>' +
+            '<span class="pill ' + (a.enabled !== false ? 'p-ok' : 'p-gray') + '">' + (a.enabled !== false ? 'active' : 'disabled') + '</span>' +
+          '</div>' +
+          '<div style="display:flex;gap:6px">' +
+            '<button class="btn btn-sm" onclick="showMessages(\'' + esc(a.number) + '\',\'' + esc(a.name) + '\')">Messages</button>' +
+            '<button class="btn btn-sm" onclick=\'showEdit(' + JSON.stringify(a).replace(/'/g, "&#39;") + ')\'>Edit</button>' +
+            '<button class="btn btn-sm btn-danger" onclick="del(\'' + esc(a.number) + '\',\'' + esc(a.name) + '\')">Delete</button>' +
+          '</div>' +
+        '</div>' +
+        '<div style="display:flex;gap:20px;font-size:12px;color:var(--text-secondary)">' +
+          '<span>Greeting: <span class="mono">' + esc(greetingName) + '</span></span>' +
+          '<span>Max recording: <span class="mono">' + (a.maxRecordingLength || 120) + 's</span></span>' +
+          '<span>Callback: ' + destLabel(a.destination) + '</span>' +
+        '</div>' +
+        '<div style="margin-top:8px;padding:10px;background:var(--bg-surface);border-radius:var(--radius);font-size:12px;color:var(--text-secondary)">' +
+          '<strong style="color:var(--text-primary)">How it works:</strong> ' +
+          'Caller hears greeting → records message → hangs up → ' +
+          'server calls ' + destLabel(a.destination) + ' with caller\'s number → ' +
+          'agent picks up → 3s pause → message plays → auto hangup' +
+        '</div>' +
+      '</div>';
+    }).join('');
+  } catch (e) { console.error('appointments load', e); }
+}
+
+async function save(e) {
+  e.preventDefault();
+  var editMode = document.getElementById('appt-edit-mode').value;
+
+  var body = {
+    number: document.getElementById('appt-number').value,
+    name: document.getElementById('appt-name').value,
+    greeting: document.getElementById('appt-greeting').value,
+    destination: {
+      type: document.getElementById('appt-dest-type').value,
+      target: document.getElementById('appt-dest-target').value
+    },
+    maxRecordingLength: parseInt(document.getElementById('appt-maxlen').value) || 120,
+    enabled: document.getElementById('appt-enabled').checked
+  };
+
+  if (!body.destination.target) { showToast('Destination target required', true); return; }
+
+  var url = editMode ? API + '/appointments/' + editMode : API + '/appointments';
+  var method = editMode ? 'PUT' : 'POST';
+  var r = await fetch(url, { method: method, headers: J, body: JSON.stringify(body) });
+  var d = await r.json();
+  if (d.success) {
+    hideAdd();
+    showToast(editMode ? 'Appointment updated' : 'Appointment created');
+    load();
+  } else {
+    showToast(d.error || 'Failed', true);
+  }
+}
+
+async function del(number, name) {
+  if (!confirm('Delete appointment "' + name + '" (#' + number + ')?')) return;
+  await fetch(API + '/appointments/' + number, { method: 'DELETE', headers: H });
+  showToast('Appointment deleted');
+  load();
+}
+
+// ─── Messages panel ───
+async function showMessages(number, name) {
+  document.getElementById('msg-panel-title').textContent = 'Messages — ' + name + ' (#' + number + ')';
+  document.getElementById('msg-panel').style.display = 'block';
+  document.getElementById('msg-list').innerHTML = '<div class="empty">Loading...</div>';
+
+  try {
+    var d = await (await fetch(API + '/appointments/' + number + '/messages', { headers: H })).json();
+    if (!d.success || !d.messages || !d.messages.length) {
+      document.getElementById('msg-list').innerHTML = '<div class="card"><div class="empty">No messages yet</div></div>';
+      return;
+    }
+
+    document.getElementById('msg-list').innerHTML = '<table class="tbl"><thead><tr>' +
+      '<th>Status</th><th>Caller</th><th>Duration</th><th>Date</th><th>Attempts</th><th>Delivered</th><th></th>' +
+    '</tr></thead><tbody>' +
+    d.messages.map(function(m) {
+      return '<tr>' +
+        '<td>' + statusPill(m.status) + '</td>' +
+        '<td><span class="mono">' + esc(m.callerID) + '</span></td>' +
+        '<td>' + (m.duration || 0) + 's</td>' +
+        '<td style="font-size:11px">' + fmtDate(m.createdAt) + '</td>' +
+        '<td>' + (m.attempts || 0) + '</td>' +
+        '<td style="font-size:11px">' + (m.deliveredAt ? fmtDate(m.deliveredAt) : '—') + '</td>' +
+        '<td>' +
+          (m.recordingPath ? '<button class="btn btn-sm" onclick="playMsg(\'' + esc(m.messageId) + '\')">Play</button>' : '') +
+        '</td>' +
+      '</tr>';
+    }).join('') +
+    '</tbody></table>';
+  } catch (e) {
+    document.getElementById('msg-list').innerHTML = '<div class="card"><div class="empty">Error loading messages</div></div>';
+  }
+}
+
+function hideMessages() {
+  document.getElementById('msg-panel').style.display = 'none';
+}
+
+var audioPlayer = null;
+function playMsg(messageId) {
+  if (audioPlayer) { audioPlayer.pause(); audioPlayer = null; }
+  audioPlayer = new Audio(API + '/appointments/messages/' + messageId + '/audio?apikey=' + KEY);
+  audioPlayer.play().catch(function(e) { showToast('Playback failed', true); });
+}
+
+// ─── Queue status (refresh every 5s) ───
+async function loadQueueStatus() {
+  try {
+    var d = await (await fetch(API + '/appointments/queue/status', { headers: H })).json();
+    if (d.success && d.queue) {
+      var q = d.queue;
+      var parts = [];
+      if (q.pending > 0) parts.push(q.pending + ' pending');
+      if (q.delivering > 0) parts.push(q.delivering + ' delivering');
+      document.getElementById('queue-status').textContent = parts.length ? 'Queue: ' + parts.join(', ') : '';
+      if (parts.length) {
+        document.getElementById('queue-status').style.color = 'var(--color-warning)';
+      } else {
+        document.getElementById('queue-status').style.color = '';
+      }
+    }
+  } catch (e) {}
+}
+
+// ─── Init ───
+loadAudioFiles().then(load);
+loadQueueStatus();
+setInterval(loadQueueStatus, 5000);
+</script>
+<%- include('../partials/foot') %>

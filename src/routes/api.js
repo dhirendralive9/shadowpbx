@@ -2,7 +2,7 @@ const express = require('express');
 const { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, CDR } = require('../models');
 const logger = require('../utils/logger');
 
-function createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler, monitorHandler, timeConditionService, presenceHandler, queueHandler) {
+function createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler, monitorHandler, timeConditionService, presenceHandler, queueHandler, appointmentHandler) {
   const router = express.Router();
 
   // ============================================================
@@ -1046,6 +1046,90 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
         contacts = [...adminUsers, ...supervisors];
       }
       res.json({ success: true, contacts });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // ============================================================
+  // Appointments
+  // ============================================================
+  const { Appointment, AppointmentMessage } = require('../models');
+
+  router.get('/appointments', async (req, res) => {
+    try {
+      const appointments = await Appointment.find({}).sort('number');
+      res.json({ success: true, appointments });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.post('/appointments', async (req, res) => {
+    try {
+      const { number, name, greeting, destination, maxRecordingLength, enabled } = req.body;
+      if (!number || !name || !destination || !destination.type || !destination.target) {
+        return res.status(400).json({ success: false, error: 'number, name, destination (type+target) required' });
+      }
+      if (await Appointment.findOne({ number })) {
+        return res.status(409).json({ success: false, error: 'Appointment number already exists' });
+      }
+      const appt = await Appointment.create({
+        number, name, greeting: greeting || '',
+        destination, maxRecordingLength: maxRecordingLength || 120,
+        enabled: enabled !== false
+      });
+      logger.info(`Appointment ${number} (${name}) created -> ${destination.type}:${destination.target}`);
+      res.status(201).json({ success: true, appointment: appt });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.put('/appointments/:number', async (req, res) => {
+    try {
+      const updates = {};
+      ['name', 'greeting', 'destination', 'maxRecordingLength', 'enabled'].forEach(k => {
+        if (req.body[k] !== undefined) updates[k] = req.body[k];
+      });
+      const appt = await Appointment.findOneAndUpdate(
+        { number: req.params.number }, updates, { new: true }
+      );
+      if (!appt) return res.status(404).json({ success: false, error: 'Not found' });
+      logger.info(`Appointment ${req.params.number} updated`);
+      res.json({ success: true, appointment: appt });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.delete('/appointments/:number', async (req, res) => {
+    try {
+      const appt = await Appointment.findOneAndDelete({ number: req.params.number });
+      if (!appt) return res.status(404).json({ success: false, error: 'Not found' });
+      logger.info(`Appointment ${req.params.number} deleted`);
+      res.json({ success: true, message: `Appointment ${req.params.number} deleted` });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // Appointment messages (for viewing recorded messages + queue status)
+  router.get('/appointments/:number/messages', async (req, res) => {
+    try {
+      const msgs = await AppointmentMessage.find({ appointmentNumber: req.params.number })
+        .sort({ createdAt: -1 }).limit(50);
+      res.json({ success: true, messages: msgs });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.get('/appointments/queue/status', async (req, res) => {
+    try {
+      const status = appointmentHandler ? appointmentHandler.getQueueStatus() : { total: 0 };
+      res.json({ success: true, queue: status });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // Play appointment message audio
+  router.get('/appointments/messages/:messageId/audio', async (req, res) => {
+    try {
+      const msg = await AppointmentMessage.findOne({ messageId: req.params.messageId });
+      if (!msg || !msg.recordingPath) return res.status(404).json({ success: false, error: 'Message not found' });
+      const fs = require('fs');
+      if (!fs.existsSync(msg.recordingPath)) return res.status(404).json({ success: false, error: 'Audio file missing' });
+      res.setHeader('Content-Type', 'audio/wav');
+      res.setHeader('Content-Disposition', `inline; filename="${require('path').basename(msg.recordingPath)}"`);
+      fs.createReadStream(msg.recordingPath).pipe(res);
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
 

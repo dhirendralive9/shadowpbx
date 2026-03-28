@@ -451,6 +451,22 @@ class CallHandler {
       await cdr.save();
       return res.send(480);
 
+    } else if (type === 'appointment') {
+      if (this.appointmentHandler) {
+        const { Appointment } = require('../models');
+        const apptConfig = await Appointment.findOne({ number: target, enabled: true });
+        if (apptConfig) {
+          logger.info(`INBOUND: routing to appointment ${target} (${apptConfig.name})`);
+          const handled = await this.appointmentHandler.handleAppointment(req, res, apptConfig, cdr);
+          if (handled) return;
+        }
+        logger.warn(`INBOUND: appointment ${target} not found`);
+      } else {
+        logger.warn(`INBOUND: appointment handler not available`);
+      }
+      if (!res.finalResponseSent) res.send(404);
+      return;
+
     } else {
       logger.info(`INBOUND: destination is hangup for DID ${did}`);
       cdr.status = 'completed';
