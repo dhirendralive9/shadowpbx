@@ -204,7 +204,7 @@ function createWebRouter(apiKey) {
     res.render('pages/ivr', locals(req));
   });
 
-  router.get('/appointments', authMiddleware, adminOnly, (req, res) => {
+  router.get('/appointments', authMiddleware, supervisorUp, (req, res) => {
     res.render('pages/appointments', locals(req));
   });
 

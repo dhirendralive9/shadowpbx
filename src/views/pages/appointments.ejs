@@ -5,11 +5,12 @@
   <div style="display:flex;align-items:center;gap:10px">
     <span class="muted" style="font-size:11px" id="appt-summary"></span>
     <span class="muted" style="font-size:11px;font-weight:600" id="queue-status"></span>
-    <button class="btn btn-sm" onclick="showAdd()">+ Add appointment</button>
+    <% if (role === 'admin') { %><button class="btn btn-sm" onclick="showAdd()">+ Add appointment</button><% } %>
   </div>
 </div>
 
-<!-- ═══════════════════ ADD / EDIT FORM ═══════════════════ -->
+<!-- ═══════════════════ ADD / EDIT FORM (admin only) ═══════════════════ -->
+<% if (role === 'admin') { %>
 <div id="add-form" style="display:none;margin-bottom:16px" class="card">
   <form onsubmit="save(event)">
     <input type="hidden" id="appt-edit-mode" value="">
@@ -48,6 +49,7 @@
     </div>
   </form>
 </div>
+<% } %>
 
 <!-- ═══════════════════ APPOINTMENT LIST ═══════════════════ -->
 <div id="appt-list"></div>
@@ -64,7 +66,8 @@
   <div id="msg-list"></div>
 </div>
 
-<!-- ═══════════════════ BLACKLIST ═══════════════════ -->
+<!-- ═══════════════════ BLACKLIST (admin only) ═══════════════════ -->
+<% if (role === 'admin') { %>
 <div style="margin-top:24px">
   <div class="sec-head">
     <span class="sec-title">Appointment blacklist</span>
@@ -80,6 +83,7 @@
   </div>
   <div id="bl-list"></div>
 </div>
+<% } %>
 
 <!-- ═══════════════════ AUDIO PLAYER (hidden) ═══════════════════ -->
 <audio id="audio-player" style="display:none"></audio>
@@ -89,6 +93,7 @@ var API = '/api', KEY = '<%= apiKey %>', H = { 'X-API-Key': KEY };
 var J = { 'X-API-Key': KEY, 'Content-Type': 'application/json' };
 var audioFiles = [];
 var currentApptNum = '', currentApptName = '';
+var USER_ROLE = '<%= role %>';
 
 function esc(s) { if (!s) return ''; var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 function showToast(msg, isError) {
@@ -195,8 +200,8 @@ async function load() {
           '</div>' +
           '<div style="display:flex;gap:6px">' +
             '<button class="btn btn-sm" onclick="loadMessages(\'' + esc(a.number) + '\',\'' + esc(a.name) + '\')">Messages</button>' +
-            '<button class="btn btn-sm" onclick=\'showEdit(' + JSON.stringify(a).replace(/'/g, "&#39;") + ')\'>Edit</button>' +
-            '<button class="btn btn-sm btn-danger" onclick="del(\'' + esc(a.number) + '\',\'' + esc(a.name) + '\')">Delete</button>' +
+            (USER_ROLE === 'admin' ? '<button class="btn btn-sm" onclick=\'showEdit(' + JSON.stringify(a).replace(/'/g, "&#39;") + ')\'>Edit</button>' +
+            '<button class="btn btn-sm btn-danger" onclick="del(\'' + esc(a.number) + '\',\'' + esc(a.name) + '\')">Delete</button>' : '') +
           '</div>' +
         '</div>' +
         '<div style="display:flex;gap:20px;font-size:12px;color:var(--text-secondary)">' +
@@ -268,7 +273,7 @@ async function loadMessages(num, name) {
         '<td style="text-align:right">' +
           (m.recordingPath ? '<button class="btn btn-sm" onclick="playMsg(\'' + esc(m.messageId) + '\')">▶ Play</button> ' : '') +
           (m.recordingPath ? '<a class="btn btn-sm" href="' + audioUrl + '" download style="text-decoration:none">↓ Download</a> ' : '') +
-          '<button class="btn btn-sm" onclick="blockCaller(\'' + esc(m.callerID) + '\')" title="Block this caller">🚫</button>' +
+          (USER_ROLE === 'admin' ? '<button class="btn btn-sm" onclick="blockCaller(\'' + esc(m.callerID) + '\')" title="Block this caller">🚫</button>' : '') +
         '</td>' +
       '</tr>';
     }).join('') + '</tbody></table>';
@@ -347,7 +352,7 @@ async function loadQueueStatus() {
 
 // ─── Init ───
 loadAudioFiles().then(load);
-loadBlacklist();
+if (USER_ROLE === 'admin') loadBlacklist();
 loadQueueStatus();
 setInterval(loadQueueStatus, 5000);
 </script>
