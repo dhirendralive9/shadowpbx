@@ -4,7 +4,7 @@
   <span class="sec-title">Appointments</span>
   <div style="display:flex;align-items:center;gap:10px">
     <span class="muted" style="font-size:11px" id="appt-summary"></span>
-    <span class="muted" style="font-size:11px" id="queue-status"></span>
+    <span class="muted" style="font-size:11px;font-weight:600" id="queue-status"></span>
     <button class="btn btn-sm" onclick="showAdd()">+ Add appointment</button>
   </div>
 </div>
@@ -13,20 +13,18 @@
 <div id="add-form" style="display:none;margin-bottom:16px" class="card">
   <form onsubmit="save(event)">
     <input type="hidden" id="appt-edit-mode" value="">
-
     <div class="grid-3" style="margin-bottom:0">
       <div class="form-group"><label class="form-label">Number</label><input class="form-input" id="appt-number" placeholder="900" required></div>
       <div class="form-group"><label class="form-label">Name</label><input class="form-input" id="appt-name" placeholder="Callback Request" required></div>
       <div class="form-group">
         <label class="form-label">Greeting audio</label>
         <div style="display:flex;gap:6px">
-          <select class="form-select" id="appt-greeting" style="flex:1"><option value="">— no greeting —</option></select>
+          <select class="form-select" id="appt-greeting" style="flex:1"><option value="">— default TTS greeting —</option></select>
           <button type="button" class="btn btn-sm" onclick="document.getElementById('audio-upload').click()">Upload</button>
           <input type="file" id="audio-upload" accept=".wav,.mp3" style="display:none" onchange="uploadAudio(this)">
         </div>
       </div>
     </div>
-
     <div class="grid-3" style="margin-bottom:0">
       <div class="form-group"><label class="form-label">Callback destination</label>
         <select class="form-select" id="appt-dest-type">
@@ -37,7 +35,6 @@
       <div class="form-group"><label class="form-label">Target</label><input class="form-input" id="appt-dest-target" placeholder="2001 or 601" required></div>
       <div class="form-group"><label class="form-label">Max recording (seconds)</label><input class="form-input" id="appt-maxlen" type="number" value="120" min="10" max="300"></div>
     </div>
-
     <div class="grid-3" style="margin-bottom:0">
       <div class="form-group" style="display:flex;align-items:flex-end;gap:8px;padding-bottom:14px">
         <label style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="appt-enabled" checked> Enabled</label>
@@ -55,19 +52,43 @@
 <!-- ═══════════════════ APPOINTMENT LIST ═══════════════════ -->
 <div id="appt-list"></div>
 
-<!-- ═══════════════════ MESSAGES PANEL (shown when viewing an appointment) ═══════════════════ -->
-<div id="msg-panel" style="display:none;margin-top:16px">
+<!-- ═══════════════════ MESSAGE LOGS ═══════════════════ -->
+<div id="msg-panel" style="display:none;margin-top:20px">
   <div class="sec-head">
-    <span class="sec-title" id="msg-panel-title">Messages</span>
-    <button class="btn btn-sm" onclick="hideMessages()">Close</button>
+    <span class="sec-title" id="msg-panel-title">Message log</span>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-sm" onclick="loadMessages(currentApptNum, currentApptName)">Refresh</button>
+      <button class="btn btn-sm" onclick="hideMessages()">Close</button>
+    </div>
   </div>
   <div id="msg-list"></div>
 </div>
+
+<!-- ═══════════════════ BLACKLIST ═══════════════════ -->
+<div style="margin-top:24px">
+  <div class="sec-head">
+    <span class="sec-title">Appointment blacklist</span>
+    <button class="btn btn-sm" onclick="document.getElementById('bl-form').style.display='block'">+ Block number</button>
+  </div>
+  <div id="bl-form" style="display:none;margin-bottom:12px" class="card">
+    <form onsubmit="addBlock(event)" style="display:flex;gap:8px;align-items:flex-end">
+      <div class="form-group" style="flex:1"><label class="form-label">Phone number</label><input class="form-input" id="bl-number" placeholder="+16893034177" required></div>
+      <div class="form-group" style="flex:1"><label class="form-label">Reason (optional)</label><input class="form-input" id="bl-reason" placeholder="spam caller"></div>
+      <div class="form-group"><button type="submit" class="btn btn-primary btn-sm">Block</button></div>
+      <div class="form-group"><button type="button" class="btn btn-sm" onclick="document.getElementById('bl-form').style.display='none'">Cancel</button></div>
+    </form>
+  </div>
+  <div id="bl-list"></div>
+</div>
+
+<!-- ═══════════════════ AUDIO PLAYER (hidden) ═══════════════════ -->
+<audio id="audio-player" style="display:none"></audio>
 
 <script>
 var API = '/api', KEY = '<%= apiKey %>', H = { 'X-API-Key': KEY };
 var J = { 'X-API-Key': KEY, 'Content-Type': 'application/json' };
 var audioFiles = [];
+var currentApptNum = '', currentApptName = '';
 
 function esc(s) { if (!s) return ''; var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 function showToast(msg, isError) {
@@ -86,51 +107,45 @@ function destLabel(d) {
 }
 
 function statusPill(s) {
-  if (s === 'pending') return '<span class="pill p-warn">pending</span>';
-  if (s === 'delivering') return '<span class="pill p-info">delivering</span>';
-  if (s === 'delivered') return '<span class="pill p-ok">delivered</span>';
-  if (s === 'failed') return '<span class="pill p-err">failed</span>';
-  return '<span class="pill p-gray">' + esc(s) + '</span>';
+  var map = { pending: 'p-warn', delivering: 'p-info', delivered: 'p-ok', failed: 'p-err' };
+  return '<span class="pill ' + (map[s] || 'p-gray') + '">' + esc(s || '?') + '</span>';
 }
 
 function fmtDate(d) {
   if (!d) return '—';
   var dt = new Date(d);
-  return dt.toLocaleDateString() + ' ' + dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return dt.toLocaleDateString() + ' ' + dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
-// ─── Audio file management ───
+function fmtDuration(s) {
+  if (!s) return '0s';
+  var m = Math.floor(s / 60), sec = s % 60;
+  return m > 0 ? m + 'm ' + sec + 's' : sec + 's';
+}
+
+// ─── Audio ───
 async function loadAudioFiles() {
   try {
     var d = await (await fetch(API + '/audio/list', { headers: H })).json();
     audioFiles = (d.success && d.files) || [];
     populateGreetingSelect('');
-  } catch (e) { console.error('audio list', e); }
+  } catch (e) {}
 }
-
 function populateGreetingSelect(selected) {
   var sel = document.getElementById('appt-greeting');
-  sel.innerHTML = '<option value="">— no greeting —</option>';
+  sel.innerHTML = '<option value="">— default TTS greeting —</option>';
   audioFiles.forEach(function(f) {
     var s = f.path === selected ? ' selected' : '';
     sel.innerHTML += '<option value="' + esc(f.path) + '"' + s + '>' + esc(f.name) + ' (' + Math.round(f.size / 1024) + 'KB)</option>';
   });
 }
-
 async function uploadAudio(input) {
   if (!input.files || !input.files[0]) return;
-  var formData = new FormData();
-  formData.append('file', input.files[0]);
+  var fd = new FormData(); fd.append('file', input.files[0]);
   try {
-    var r = await fetch(API + '/audio/upload', { method: 'POST', headers: { 'X-API-Key': KEY }, body: formData });
-    var d = await r.json();
-    if (d.success) {
-      showToast('Audio uploaded: ' + d.originalName);
-      await loadAudioFiles();
-      document.getElementById('appt-greeting').value = d.path;
-    } else {
-      showToast(d.error || 'Upload failed', true);
-    }
+    var d = await (await fetch(API + '/audio/upload', { method: 'POST', headers: { 'X-API-Key': KEY }, body: fd })).json();
+    if (d.success) { showToast('Uploaded: ' + d.originalName); await loadAudioFiles(); document.getElementById('appt-greeting').value = d.path; }
+    else showToast(d.error || 'Failed', true);
   } catch (e) { showToast('Upload failed', true); }
   input.value = '';
 }
@@ -138,51 +153,39 @@ async function uploadAudio(input) {
 // ─── Form ───
 function showAdd() {
   document.getElementById('appt-edit-mode').value = '';
-  document.getElementById('appt-number').value = '';
-  document.getElementById('appt-number').disabled = false;
-  document.getElementById('appt-name').value = '';
-  document.getElementById('appt-greeting').value = '';
-  document.getElementById('appt-dest-type').value = 'extension';
-  document.getElementById('appt-dest-target').value = '';
-  document.getElementById('appt-maxlen').value = '120';
-  document.getElementById('appt-enabled').checked = true;
+  document.getElementById('appt-number').value = ''; document.getElementById('appt-number').disabled = false;
+  document.getElementById('appt-name').value = ''; document.getElementById('appt-greeting').value = '';
+  document.getElementById('appt-dest-type').value = 'extension'; document.getElementById('appt-dest-target').value = '';
+  document.getElementById('appt-maxlen').value = '120'; document.getElementById('appt-enabled').checked = true;
   document.getElementById('appt-submit-btn').textContent = 'Create';
   document.getElementById('add-form').style.display = 'block';
 }
-
-function showEdit(appt) {
-  document.getElementById('appt-edit-mode').value = appt.number;
-  document.getElementById('appt-number').value = appt.number;
-  document.getElementById('appt-number').disabled = true;
-  document.getElementById('appt-name').value = appt.name;
-  populateGreetingSelect(appt.greeting || '');
-  document.getElementById('appt-dest-type').value = (appt.destination && appt.destination.type) || 'extension';
-  document.getElementById('appt-dest-target').value = (appt.destination && appt.destination.target) || '';
-  document.getElementById('appt-maxlen').value = appt.maxRecordingLength || 120;
-  document.getElementById('appt-enabled').checked = appt.enabled !== false;
+function showEdit(a) {
+  document.getElementById('appt-edit-mode').value = a.number;
+  document.getElementById('appt-number').value = a.number; document.getElementById('appt-number').disabled = true;
+  document.getElementById('appt-name').value = a.name;
+  populateGreetingSelect(a.greeting || '');
+  document.getElementById('appt-dest-type').value = (a.destination && a.destination.type) || 'extension';
+  document.getElementById('appt-dest-target').value = (a.destination && a.destination.target) || '';
+  document.getElementById('appt-maxlen').value = a.maxRecordingLength || 120;
+  document.getElementById('appt-enabled').checked = a.enabled !== false;
   document.getElementById('appt-submit-btn').textContent = 'Update';
   document.getElementById('add-form').style.display = 'block';
 }
-
 function hideAdd() { document.getElementById('add-form').style.display = 'none'; }
 
 // ─── CRUD ───
 async function load() {
   try {
     var d = await (await fetch(API + '/appointments', { headers: H })).json();
-    var container = document.getElementById('appt-list');
-
+    var c = document.getElementById('appt-list');
     if (!d.success || !d.appointments || !d.appointments.length) {
-      container.innerHTML = '<div class="card"><div class="empty">No appointments configured</div></div>';
-      document.getElementById('appt-summary').textContent = '';
-      return;
+      c.innerHTML = '<div class="card"><div class="empty">No appointments configured</div></div>';
+      document.getElementById('appt-summary').textContent = ''; return;
     }
-
     document.getElementById('appt-summary').textContent = d.appointments.length + ' appointment(s)';
-
-    container.innerHTML = d.appointments.map(function(a) {
-      var greetingName = a.greeting ? a.greeting.split('/').pop() : 'none';
-
+    c.innerHTML = d.appointments.map(function(a) {
+      var gn = a.greeting ? a.greeting.split('/').pop() : 'TTS default';
       return '<div class="card" style="margin-bottom:12px">' +
         '<div class="card-head">' +
           '<div style="display:flex;align-items:center;gap:10px">' +
@@ -191,141 +194,160 @@ async function load() {
             '<span class="pill ' + (a.enabled !== false ? 'p-ok' : 'p-gray') + '">' + (a.enabled !== false ? 'active' : 'disabled') + '</span>' +
           '</div>' +
           '<div style="display:flex;gap:6px">' +
-            '<button class="btn btn-sm" onclick="showMessages(\'' + esc(a.number) + '\',\'' + esc(a.name) + '\')">Messages</button>' +
+            '<button class="btn btn-sm" onclick="loadMessages(\'' + esc(a.number) + '\',\'' + esc(a.name) + '\')">Messages</button>' +
             '<button class="btn btn-sm" onclick=\'showEdit(' + JSON.stringify(a).replace(/'/g, "&#39;") + ')\'>Edit</button>' +
             '<button class="btn btn-sm btn-danger" onclick="del(\'' + esc(a.number) + '\',\'' + esc(a.name) + '\')">Delete</button>' +
           '</div>' +
         '</div>' +
         '<div style="display:flex;gap:20px;font-size:12px;color:var(--text-secondary)">' +
-          '<span>Greeting: <span class="mono">' + esc(greetingName) + '</span></span>' +
-          '<span>Max recording: <span class="mono">' + (a.maxRecordingLength || 120) + 's</span></span>' +
+          '<span>Greeting: <span class="mono">' + esc(gn) + '</span></span>' +
+          '<span>Max: <span class="mono">' + (a.maxRecordingLength || 120) + 's</span></span>' +
           '<span>Callback: ' + destLabel(a.destination) + '</span>' +
         '</div>' +
-        '<div style="margin-top:8px;padding:10px;background:var(--bg-surface);border-radius:var(--radius);font-size:12px;color:var(--text-secondary)">' +
-          '<strong style="color:var(--text-primary)">How it works:</strong> ' +
-          'Caller hears greeting → records message → hangs up → ' +
-          'server calls ' + destLabel(a.destination) + ' with caller\'s number → ' +
-          'agent picks up → 3s pause → message plays → auto hangup' +
-        '</div>' +
-        '<div style="margin-top:6px;padding:10px;background:var(--bg-surface);border-radius:var(--radius);font-size:12px">' +
-          '<strong style="color:var(--text-primary)">Twilio webhook URL:</strong> ' +
+        '<div style="margin-top:6px;padding:8px 10px;background:var(--bg-surface);border-radius:var(--radius);font-size:11px">' +
+          '<strong>Twilio webhook:</strong> ' +
           '<span class="mono" style="user-select:all;color:var(--color-info)">' +
-            esc(location.origin) + '/webhook/appointment/' + esc(a.number) + '/voice' +
-          '</span>' +
-          ' <button class="btn btn-sm" style="font-size:10px;padding:2px 8px" onclick="navigator.clipboard.writeText(\'' +
+            esc(location.origin) + '/webhook/appointment/' + esc(a.number) + '/voice</span> ' +
+          '<button class="btn btn-sm" style="font-size:10px;padding:1px 6px" onclick="navigator.clipboard.writeText(\'' +
             esc(location.origin) + '/webhook/appointment/' + esc(a.number) + '/voice\').then(function(){showToast(\'Copied!\')})">Copy</button>' +
-          '<div class="muted" style="margin-top:4px;font-size:11px">Set this as the Voice webhook URL in your Twilio phone number configuration (HTTP POST)</div>' +
         '</div>' +
       '</div>';
     }).join('');
-  } catch (e) { console.error('appointments load', e); }
+  } catch (e) { console.error('load', e); }
 }
 
 async function save(e) {
   e.preventDefault();
-  var editMode = document.getElementById('appt-edit-mode').value;
-
+  var em = document.getElementById('appt-edit-mode').value;
   var body = {
     number: document.getElementById('appt-number').value,
     name: document.getElementById('appt-name').value,
     greeting: document.getElementById('appt-greeting').value,
-    destination: {
-      type: document.getElementById('appt-dest-type').value,
-      target: document.getElementById('appt-dest-target').value
-    },
+    destination: { type: document.getElementById('appt-dest-type').value, target: document.getElementById('appt-dest-target').value },
     maxRecordingLength: parseInt(document.getElementById('appt-maxlen').value) || 120,
     enabled: document.getElementById('appt-enabled').checked
   };
-
-  if (!body.destination.target) { showToast('Destination target required', true); return; }
-
-  var url = editMode ? API + '/appointments/' + editMode : API + '/appointments';
-  var method = editMode ? 'PUT' : 'POST';
-  var r = await fetch(url, { method: method, headers: J, body: JSON.stringify(body) });
-  var d = await r.json();
-  if (d.success) {
-    hideAdd();
-    showToast(editMode ? 'Appointment updated' : 'Appointment created');
-    load();
-  } else {
-    showToast(d.error || 'Failed', true);
-  }
+  if (!body.destination.target) { showToast('Target required', true); return; }
+  var url = em ? API + '/appointments/' + em : API + '/appointments';
+  var d = await (await fetch(url, { method: em ? 'PUT' : 'POST', headers: J, body: JSON.stringify(body) })).json();
+  if (d.success) { hideAdd(); showToast(em ? 'Updated' : 'Created'); load(); }
+  else showToast(d.error || 'Failed', true);
 }
 
-async function del(number, name) {
-  if (!confirm('Delete appointment "' + name + '" (#' + number + ')?')) return;
-  await fetch(API + '/appointments/' + number, { method: 'DELETE', headers: H });
-  showToast('Appointment deleted');
-  load();
+async function del(num, name) {
+  if (!confirm('Delete "' + name + '" (#' + num + ')?')) return;
+  await fetch(API + '/appointments/' + num, { method: 'DELETE', headers: H });
+  showToast('Deleted'); load();
 }
 
-// ─── Messages panel ───
-async function showMessages(number, name) {
-  document.getElementById('msg-panel-title').textContent = 'Messages — ' + name + ' (#' + number + ')';
+// ─── MESSAGE LOGS ───
+async function loadMessages(num, name) {
+  currentApptNum = num; currentApptName = name;
+  document.getElementById('msg-panel-title').textContent = 'Messages — ' + name + ' (#' + num + ')';
   document.getElementById('msg-panel').style.display = 'block';
   document.getElementById('msg-list').innerHTML = '<div class="empty">Loading...</div>';
 
   try {
-    var d = await (await fetch(API + '/appointments/' + number + '/messages', { headers: H })).json();
+    var d = await (await fetch(API + '/appointments/' + num + '/messages', { headers: H })).json();
     if (!d.success || !d.messages || !d.messages.length) {
       document.getElementById('msg-list').innerHTML = '<div class="card"><div class="empty">No messages yet</div></div>';
       return;
     }
-
     document.getElementById('msg-list').innerHTML = '<table class="tbl"><thead><tr>' +
-      '<th>Status</th><th>Caller</th><th>Duration</th><th>Date</th><th>Attempts</th><th>Delivered</th><th></th>' +
+      '<th>Status</th><th>Caller ID</th><th>Duration</th><th>Received</th><th>Delivered</th><th>Tries</th><th style="text-align:right">Actions</th>' +
     '</tr></thead><tbody>' +
     d.messages.map(function(m) {
+      var audioUrl = API + '/appointments/messages/' + m.messageId + '/audio?apikey=' + KEY;
       return '<tr>' +
         '<td>' + statusPill(m.status) + '</td>' +
-        '<td><span class="mono">' + esc(m.callerID) + '</span></td>' +
-        '<td>' + (m.duration || 0) + 's</td>' +
+        '<td><span class="mono" style="font-size:13px;font-weight:600">' + esc(m.callerID) + '</span></td>' +
+        '<td>' + fmtDuration(m.duration) + '</td>' +
         '<td style="font-size:11px">' + fmtDate(m.createdAt) + '</td>' +
+        '<td style="font-size:11px">' + (m.deliveredAt ? fmtDate(m.deliveredAt) : '<span class="muted">—</span>') + '</td>' +
         '<td>' + (m.attempts || 0) + '</td>' +
-        '<td style="font-size:11px">' + (m.deliveredAt ? fmtDate(m.deliveredAt) : '—') + '</td>' +
-        '<td>' +
-          (m.recordingPath ? '<button class="btn btn-sm" onclick="playMsg(\'' + esc(m.messageId) + '\')">Play</button>' : '') +
+        '<td style="text-align:right">' +
+          (m.recordingPath ? '<button class="btn btn-sm" onclick="playMsg(\'' + esc(m.messageId) + '\')">▶ Play</button> ' : '') +
+          (m.recordingPath ? '<a class="btn btn-sm" href="' + audioUrl + '" download style="text-decoration:none">↓ Download</a> ' : '') +
+          '<button class="btn btn-sm" onclick="blockCaller(\'' + esc(m.callerID) + '\')" title="Block this caller">🚫</button>' +
         '</td>' +
       '</tr>';
-    }).join('') +
-    '</tbody></table>';
+    }).join('') + '</tbody></table>';
   } catch (e) {
     document.getElementById('msg-list').innerHTML = '<div class="card"><div class="empty">Error loading messages</div></div>';
   }
 }
+function hideMessages() { document.getElementById('msg-panel').style.display = 'none'; }
 
-function hideMessages() {
-  document.getElementById('msg-panel').style.display = 'none';
+function playMsg(id) {
+  var player = document.getElementById('audio-player');
+  player.src = API + '/appointments/messages/' + id + '/audio?apikey=' + KEY;
+  player.play().catch(function() { showToast('Playback failed', true); });
 }
 
-var audioPlayer = null;
-function playMsg(messageId) {
-  if (audioPlayer) { audioPlayer.pause(); audioPlayer = null; }
-  audioPlayer = new Audio(API + '/appointments/messages/' + messageId + '/audio?apikey=' + KEY);
-  audioPlayer.play().catch(function(e) { showToast('Playback failed', true); });
+function blockCaller(num) {
+  if (!confirm('Block ' + num + ' from all appointments?')) return;
+  document.getElementById('bl-number').value = num;
+  addBlockDirect(num, 'Blocked from appointment messages');
 }
 
-// ─── Queue status (refresh every 5s) ───
+// ─── BLACKLIST ───
+async function loadBlacklist() {
+  try {
+    var d = await (await fetch(API + '/blocklist', { headers: H })).json();
+    var c = document.getElementById('bl-list');
+    if (!d.success || !d.blocked || !d.blocked.length) {
+      c.innerHTML = '<div class="card"><div class="empty">No blocked numbers</div></div>'; return;
+    }
+    c.innerHTML = '<table class="tbl"><thead><tr><th>Number</th><th>Reason</th><th>Blocked</th><th></th></tr></thead><tbody>' +
+    d.blocked.map(function(b) {
+      return '<tr><td><span class="mono">' + esc(b.number) + '</span></td>' +
+        '<td style="font-size:12px">' + esc(b.reason || '—') + '</td>' +
+        '<td style="font-size:11px">' + fmtDate(b.createdAt) + '</td>' +
+        '<td><button class="btn btn-sm" onclick="unblock(\'' + esc(b.number) + '\')">Unblock</button></td></tr>';
+    }).join('') + '</tbody></table>';
+  } catch (e) {}
+}
+
+async function addBlock(e) {
+  e.preventDefault();
+  var num = document.getElementById('bl-number').value.trim();
+  var reason = document.getElementById('bl-reason').value.trim();
+  await addBlockDirect(num, reason);
+}
+
+async function addBlockDirect(num, reason) {
+  if (!num) return;
+  var d = await (await fetch(API + '/blocklist', { method: 'POST', headers: J, body: JSON.stringify({ number: num, reason: reason || '', blockedBy: 'appointment-admin' }) })).json();
+  if (d.success) { showToast('Blocked: ' + num); document.getElementById('bl-form').style.display = 'none'; loadBlacklist(); }
+  else showToast(d.error || 'Failed', true);
+  document.getElementById('bl-number').value = '';
+  document.getElementById('bl-reason').value = '';
+}
+
+async function unblock(num) {
+  if (!confirm('Unblock ' + num + '?')) return;
+  await fetch(API + '/blocklist/' + num, { method: 'DELETE', headers: H });
+  showToast('Unblocked'); loadBlacklist();
+}
+
+// ─── Queue status ───
 async function loadQueueStatus() {
   try {
     var d = await (await fetch(API + '/appointments/queue/status', { headers: H })).json();
     if (d.success && d.queue) {
-      var q = d.queue;
-      var parts = [];
+      var q = d.queue, parts = [];
       if (q.pending > 0) parts.push(q.pending + ' pending');
       if (q.delivering > 0) parts.push(q.delivering + ' delivering');
-      document.getElementById('queue-status').textContent = parts.length ? 'Queue: ' + parts.join(', ') : '';
-      if (parts.length) {
-        document.getElementById('queue-status').style.color = 'var(--color-warning)';
-      } else {
-        document.getElementById('queue-status').style.color = '';
-      }
+      var el = document.getElementById('queue-status');
+      el.textContent = parts.length ? '⏳ Queue: ' + parts.join(', ') : '';
+      el.style.color = parts.length ? 'var(--color-warning)' : '';
     }
   } catch (e) {}
 }
 
 // ─── Init ───
 loadAudioFiles().then(load);
+loadBlacklist();
 loadQueueStatus();
 setInterval(loadQueueStatus, 5000);
 </script>
