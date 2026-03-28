@@ -613,10 +613,35 @@ class AppointmentHandler {
 
   _downloadFile(url, destPath) {
     return new Promise((resolve, reject) => {
-      const proto = url.startsWith('https') ? https : http;
+      const parsedUrl = new URL(url);
+
+      // Add Twilio Basic Auth if downloading from Twilio
+      if (parsedUrl.hostname.includes('twilio.com') || parsedUrl.hostname.includes('twilio')) {
+        const accountSid = process.env.TWILIO_ACCOUNT_SID || '';
+        const authToken = process.env.TWILIO_AUTH_TOKEN || '';
+        if (accountSid && authToken) {
+          parsedUrl.username = accountSid;
+          parsedUrl.password = authToken;
+        }
+      }
+
+      const proto = parsedUrl.protocol === 'https:' ? https : http;
       const file = fs.createWriteStream(destPath);
 
-      const request = proto.get(url, (response) => {
+      const options = {
+        hostname: parsedUrl.hostname,
+        port: parsedUrl.port,
+        path: parsedUrl.pathname + parsedUrl.search,
+        headers: {}
+      };
+
+      // Set Basic Auth header
+      if (parsedUrl.username && parsedUrl.password) {
+        const auth = Buffer.from(`${parsedUrl.username}:${parsedUrl.password}`).toString('base64');
+        options.headers['Authorization'] = `Basic ${auth}`;
+      }
+
+      const request = proto.get(options, (response) => {
         if (response.statusCode === 301 || response.statusCode === 302) {
           const redirectUrl = response.headers.location;
           file.close();
