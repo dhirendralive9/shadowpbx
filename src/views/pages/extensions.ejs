@@ -118,6 +118,12 @@ async function loadExtensions() {
         '<td class="muted" style="font-size:11px">' + esc(c0.userAgent || '-') + '</td>' +
         '<td class="mono" style="font-size:11px">' + (reg ? esc(c0.ip + ':' + c0.port) : '-') + '</td>' +
         '<td class="muted">' + (c0.expires ? formatExpires(c0.expires) : '-') + '</td>' +
+        '<td>' + (myRole === 'admin'
+          ? '<label style="font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer" title="Allow external SIP callers (e.g. sip2sip.info)">' +
+              '<input type="checkbox" ' + (e.allowExternalCalls ? 'checked' : '') +
+              ' onchange="toggleExtSIP(\'' + esc(e.extension) + '\',this.checked)"> SIP</label>'
+          : (e.allowExternalCalls ? '<span class="pill p-ok" style="font-size:10px">SIP</span>' : '<span class="muted" style="font-size:10px">—</span>')) +
+        '</td>' +
         '<td style="white-space:nowrap">' +
           (myRole === 'admin'
             ? '<button class="act-btn" title="Regenerate password" onclick="regenOne(\'' + esc(e.extension) + '\',\'' + esc(e.name) + '\')">' +

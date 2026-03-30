@@ -73,7 +73,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   router.put('/extensions/:ext', async (req, res) => {
     try {
       const updates = {};
-      ['name', 'password', 'email', 'enabled'].forEach(k => { if (req.body[k] !== undefined) updates[k] = req.body[k]; });
+      ['name', 'password', 'email', 'enabled', 'allowExternalCalls'].forEach(k => { if (req.body[k] !== undefined) updates[k] = req.body[k]; });
       updates.updatedAt = new Date();
       const ext = await Extension.findOneAndUpdate({ extension: req.params.ext }, updates, { new: true, select: '-password' });
       if (!ext) return res.status(404).json({ success: false, error: 'Not found' });
@@ -1046,6 +1046,49 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
         contacts = [...adminUsers, ...supervisors];
       }
       res.json({ success: true, contacts });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // ============================================================
+  // Allowed SIP Domains (external caller whitelist)
+  // ============================================================
+  const { SIPDomain } = require('../models');
+
+  router.get('/sip-domains', async (req, res) => {
+    try {
+      const domains = await SIPDomain.find({}).sort('domain');
+      res.json({ success: true, domains });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.post('/sip-domains', async (req, res) => {
+    try {
+      const { domain, name, description } = req.body;
+      if (!domain) return res.status(400).json({ success: false, error: 'domain required' });
+      const clean = domain.toLowerCase().trim();
+      if (await SIPDomain.findOne({ domain: clean })) return res.status(409).json({ success: false, error: 'Domain already exists' });
+      const d = await SIPDomain.create({ domain: clean, name: name || clean, description: description || '', enabled: true });
+      logger.info(`SIP Domain added: ${clean}`);
+      res.status(201).json({ success: true, domain: d });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.put('/sip-domains/:domain', async (req, res) => {
+    try {
+      const updates = {};
+      ['name', 'description', 'enabled'].forEach(k => { if (req.body[k] !== undefined) updates[k] = req.body[k]; });
+      const d = await SIPDomain.findOneAndUpdate({ domain: req.params.domain }, updates, { new: true });
+      if (!d) return res.status(404).json({ success: false, error: 'Not found' });
+      res.json({ success: true, domain: d });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.delete('/sip-domains/:domain', async (req, res) => {
+    try {
+      const d = await SIPDomain.findOneAndDelete({ domain: req.params.domain });
+      if (!d) return res.status(404).json({ success: false, error: 'Not found' });
+      logger.info(`SIP Domain removed: ${req.params.domain}`);
+      res.json({ success: true, message: `Domain ${req.params.domain} removed` });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
 

@@ -4,6 +4,7 @@
 <div style="display:flex;gap:0;border-bottom:0.5px solid var(--border);margin-bottom:20px">
   <a href="#blocklist" class="settings-tab active" data-tab="blocklist" onclick="switchTab('blocklist')">Blocklist</a>
   <a href="#audio" class="settings-tab" data-tab="audio" onclick="switchTab('audio')">Audio library</a>
+  <a href="#sipdomains" class="settings-tab" data-tab="sipdomains" onclick="switchTab('sipdomains')">SIP Domains</a>
   <a href="#maintenance" class="settings-tab" data-tab="maintenance" onclick="switchTab('maintenance')">Maintenance</a>
   <a href="#backup" class="settings-tab" data-tab="backup" onclick="switchTab('backup')">Backup</a>
   <a href="#system" class="settings-tab" data-tab="system" onclick="switchTab('system')">System</a>
@@ -74,6 +75,34 @@
     <thead><tr><th>Filename</th><th>Size</th><th>Modified</th><th></th></tr></thead>
     <tbody id="audio-body"><tr><td colspan="4" class="empty">Loading...</td></tr></tbody>
   </table>
+</div>
+
+<!-- ═══════════════════ SIP DOMAINS ═══════════════════ -->
+<div id="panel-sipdomains" class="settings-panel">
+  <div class="sec-head">
+    <span class="sec-title">Allowed SIP domains</span>
+    <div style="display:flex;align-items:center;gap:10px">
+      <span class="muted" style="font-size:11px" id="sd-summary"></span>
+      <button class="btn btn-sm" onclick="showSipDomainAdd()">+ Add domain</button>
+    </div>
+  </div>
+
+  <div style="margin-bottom:12px;padding:10px;background:var(--bg-surface);border-radius:var(--radius);font-size:12px;color:var(--text-secondary)">
+    External SIP callers (e.g. <span class="mono">user@sip2sip.info</span>) can only reach extensions that have <strong>"Allow external SIP"</strong> enabled.
+    Add trusted SIP domains here. Calls from unlisted domains are rejected.
+  </div>
+
+  <div id="sd-add" style="display:none;margin-bottom:16px" class="card">
+    <form onsubmit="saveSipDomain(event)" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+      <div class="form-group" style="flex:1;min-width:180px"><label class="form-label">Domain</label><input class="form-input" id="sd-domain" placeholder="sip2sip.info" required></div>
+      <div class="form-group" style="flex:1;min-width:180px"><label class="form-label">Friendly name</label><input class="form-input" id="sd-name" placeholder="SIP2SIP Free SIP"></div>
+      <div class="form-group" style="flex:1;min-width:180px"><label class="form-label">Description (optional)</label><input class="form-input" id="sd-desc" placeholder="Free SIP service"></div>
+      <div class="form-group"><button type="submit" class="btn btn-primary btn-sm">Add</button></div>
+      <div class="form-group"><button type="button" class="btn btn-sm" onclick="document.getElementById('sd-add').style.display='none'">Cancel</button></div>
+    </form>
+  </div>
+
+  <div id="sd-list"></div>
 </div>
 
 <!-- ═══════════════════ MAINTENANCE ═══════════════════ -->
@@ -274,6 +303,7 @@ function switchTab(tab) {
 
   if (tab === 'blocklist') loadBlocklist();
   if (tab === 'audio') loadAudioFiles();
+  if (tab === 'sipdomains') loadSipDomains();
   if (tab === 'maintenance') { loadSettings(); loadStorage(); }
   if (tab === 'backup') { loadDbStats(); loadBackups(); loadSettings(); }
   if (tab === 'system') loadSystem();
@@ -547,9 +577,73 @@ async function loadSystem() {
   } catch (e) {}
 }
 
+// ═══════════════════ SIP DOMAINS ═══════════════════
+function showSipDomainAdd() {
+  document.getElementById('sd-domain').value = '';
+  document.getElementById('sd-name').value = '';
+  document.getElementById('sd-desc').value = '';
+  document.getElementById('sd-add').style.display = 'block';
+}
+
+async function loadSipDomains() {
+  try {
+    var d = await (await fetch(API + '/sip-domains', { headers: H })).json();
+    var c = document.getElementById('sd-list');
+    if (!d.success || !d.domains || !d.domains.length) {
+      c.innerHTML = '<div class="card"><div class="empty">No SIP domains configured — external SIP calls will be rejected</div></div>';
+      document.getElementById('sd-summary').textContent = '';
+      return;
+    }
+    document.getElementById('sd-summary').textContent = d.domains.length + ' domain(s)';
+    c.innerHTML = '<table class="tbl"><thead><tr><th>Status</th><th>Domain</th><th>Name</th><th>Description</th><th></th></tr></thead><tbody>' +
+    d.domains.map(function(dom) {
+      return '<tr>' +
+        '<td><span class="pill ' + (dom.enabled ? 'p-ok' : 'p-gray') + '">' + (dom.enabled ? 'active' : 'disabled') + '</span></td>' +
+        '<td><span class="mono" style="font-weight:600">' + esc(dom.domain) + '</span></td>' +
+        '<td>' + esc(dom.name || '—') + '</td>' +
+        '<td style="font-size:12px;color:var(--text-secondary)">' + esc(dom.description || '—') + '</td>' +
+        '<td style="text-align:right">' +
+          '<button class="btn btn-sm" onclick="toggleSipDomain(\'' + esc(dom.domain) + '\',' + !dom.enabled + ')">' + (dom.enabled ? 'Disable' : 'Enable') + '</button> ' +
+          '<button class="btn btn-sm btn-danger" onclick="deleteSipDomain(\'' + esc(dom.domain) + '\')">Delete</button>' +
+        '</td></tr>';
+    }).join('') + '</tbody></table>';
+  } catch (e) { console.error('sip domains', e); }
+}
+
+async function saveSipDomain(e) {
+  e.preventDefault();
+  var body = {
+    domain: document.getElementById('sd-domain').value.trim().toLowerCase(),
+    name: document.getElementById('sd-name').value.trim(),
+    description: document.getElementById('sd-desc').value.trim()
+  };
+  if (!body.domain) { showToast('Domain required', true); return; }
+  var d = await (await fetch(API + '/sip-domains', { method: 'POST', headers: J, body: JSON.stringify(body) })).json();
+  if (d.success) {
+    showToast('Domain added: ' + body.domain);
+    document.getElementById('sd-add').style.display = 'none';
+    loadSipDomains();
+  } else { showToast(d.error || 'Failed', true); }
+}
+
+async function toggleSipDomain(domain, enabled) {
+  await fetch(API + '/sip-domains/' + encodeURIComponent(domain), {
+    method: 'PUT', headers: J, body: JSON.stringify({ enabled: enabled })
+  });
+  showToast(domain + ' ' + (enabled ? 'enabled' : 'disabled'));
+  loadSipDomains();
+}
+
+async function deleteSipDomain(domain) {
+  if (!confirm('Delete SIP domain "' + domain + '"?')) return;
+  await fetch(API + '/sip-domains/' + encodeURIComponent(domain), { method: 'DELETE', headers: H });
+  showToast('Domain deleted');
+  loadSipDomains();
+}
+
 // ─── Init ───
 var initTab = window.location.hash.replace('#', '') || 'blocklist';
-if (['blocklist', 'audio', 'maintenance', 'backup', 'system'].indexOf(initTab) === -1) initTab = 'blocklist';
+if (['blocklist', 'audio', 'sipdomains', 'maintenance', 'backup', 'system'].indexOf(initTab) === -1) initTab = 'blocklist';
 switchTab(initTab);
 </script>
 <%- include('../partials/foot') %>

@@ -62,12 +62,24 @@ class CallHandler {
     const toExt = this._extractExtFromUri(to.uri);
 
     if (!fromExt) {
+      // Not a local extension — could be an external SIP caller
+      // e.g. user@sip2sip.info calling 2002@our-server
+      if (toExt) {
+        const handled = await this._handleExternalSIP(req, res, fromUri, toExt, callId);
+        if (handled) return;
+      }
       logger.warn(`INVITE rejected: cannot parse extension from From-URI: ${fromUri}`);
       return res.send(404);
     }
 
     const callerRegistered = await this.registrar.isRegistered(fromExt);
     if (!callerRegistered) {
+      // Could be an external SIP call where the user part happens to be numeric
+      // e.g. 15551234567@sip2sip.info calling 2002@our-server
+      if (toExt && fromExt !== toExt) {
+        const handled = await this._handleExternalSIP(req, res, fromUri, toExt, callId);
+        if (handled) return;
+      }
       logger.warn(`INVITE rejected: caller ${fromExt} not registered`);
       return res.send(403);
     }
@@ -474,6 +486,153 @@ class CallHandler {
       await cdr.save();
       res.send(503);
     }
+  }
+
+  // ============================================================
+  // EXTERNAL SIP CALL
+  //
+  // Handles calls from external SIP URIs (e.g. user@sip2sip.info)
+  // to local extensions. Two checks:
+  //   1. Caller's domain must be in the SIPDomain whitelist
+  //   2. Target extension must have allowExternalCalls: true
+  //
+  // If both pass, route to the extension as an inbound call.
+  // ============================================================
+  async _handleExternalSIP(req, res, fromUri, toExt, callId) {
+    // Extract the domain from the From URI
+    const domainMatch = fromUri.match(/@([^>;:\s]+)/);
+    if (!domainMatch) return false;
+    const callerDomain = domainMatch[1].toLowerCase();
+
+    // Skip our own domain/IP — these should be handled as internal
+    const ownDomain = (process.env.SIP_DOMAIN || '').toLowerCase();
+    const ownIp = (process.env.EXTERNAL_IP || '').toLowerCase();
+    if (callerDomain === ownDomain || callerDomain === ownIp) return false;
+
+    // Check 1: Is the domain whitelisted?
+    const { SIPDomain } = require('../models');
+    const allowedDomain = await SIPDomain.findOne({ domain: callerDomain, enabled: true });
+    if (!allowedDomain) {
+      logger.info(`EXTERNAL SIP: domain ${callerDomain} not in whitelist, rejecting`);
+      return false;
+    }
+
+    // Check 2: Does the target extension allow external calls?
+    const targetExt = await Extension.findOne({ extension: toExt, enabled: true });
+    if (!targetExt) {
+      logger.info(`EXTERNAL SIP: extension ${toExt} not found`);
+      return false;
+    }
+    if (!targetExt.allowExternalCalls) {
+      logger.info(`EXTERNAL SIP: extension ${toExt} has external calls disabled`);
+      res.send(403);
+      return true; // handled — we sent the response
+    }
+
+    // Check 3: Is the extension registered?
+    const contacts = await this.registrar.getContacts(toExt);
+    if (contacts.length === 0) {
+      logger.info(`EXTERNAL SIP: extension ${toExt} not registered`);
+      // Try voicemail
+      if (this.voicemailHandler) {
+        const callerID = this._extractCallerFromUri(fromUri);
+        const cdr = await this._createCDR(callerID, toExt, 'inbound', callId, req.source_address);
+        cdr.trunkUsed = `sip:${callerDomain}`;
+        await cdr.save();
+        const handled = await this.voicemailHandler.handleVoicemail(req, res, callerID, toExt, cdr);
+        if (handled) return true;
+      }
+      res.send(480);
+      return true;
+    }
+
+    // Extract a readable caller ID
+    const callerID = this._extractCallerFromUri(fromUri);
+    logger.info(`EXTERNAL SIP: ${callerID}@${callerDomain} -> ${toExt} [${callId}] (domain: ${allowedDomain.name || callerDomain})`);
+
+    // Check blocklist
+    try {
+      const { BlockedNumber } = require('../models');
+      const blocked = await BlockedNumber.findOne({ number: callerID });
+      if (blocked) {
+        logger.info(`EXTERNAL SIP BLOCKED: ${callerID} is on blocklist`);
+        res.send(603);
+        return true;
+      }
+    } catch (e) {}
+
+    // Create CDR
+    const cdr = await this._createCDR(callerID, toExt, 'inbound', callId, req.source_address);
+    cdr.trunkUsed = `sip:${callerDomain}`;
+    await cdr.save();
+
+    // BLF
+    this._emitPresence(toExt, 'ringing', { callId, remoteParty: callerID, direction: 'recipient' });
+
+    const contact = this._getLatestContact(contacts);
+    const targetUri = `sip:${toExt}@${contact.ip}:${contact.port}`;
+
+    try {
+      const fromTag = req.getParsedHeader('From').params.tag;
+      const rtpOffer = await this._rtpengineOffer(callId, fromTag, req.body);
+      const offerSdp = rtpOffer ? rtpOffer.sdp : req.body;
+
+      const { uas, uac } = await this.srf.createB2BUA(req, res, targetUri, {
+        localSdpB: offerSdp,
+        localSdpA: (sdp, res) => {
+          const toTag = (res && res.getParsedHeader && res.getParsedHeader('To')) ?
+            (res.getParsedHeader('To').params.tag || '') : '';
+          if (toTag && this.rtpengine) {
+            return this._rtpengineAnswer(callId, fromTag, toTag, sdp).then(r => r ? r.sdp : sdp);
+          }
+          return sdp;
+        },
+        passFailure: false
+      });
+
+      cdr.status = 'answered';
+      cdr.answerTime = new Date();
+      await cdr.save();
+      logger.info(`EXTERNAL SIP ANSWERED: ${callerID}@${callerDomain} -> ${toExt} [${callId}]`);
+
+      this._emitPresence(toExt, 'confirmed', { callId, remoteParty: callerID, direction: 'recipient' });
+
+      this.activeCalls.set(callId, { uas, uac, cdr, fromExt: callerID, toExt });
+      cdr.rtpengineCallId = callId;
+      cdr.save().catch(() => {});
+
+      const onDestroy = async (hangupBy) => {
+        await this._endCall(cdr, hangupBy);
+        this.activeCalls.delete(callId);
+        await this._rtpengineDelete(callId, fromTag);
+      };
+      uas.on('destroy', () => { try { uac.destroy(); } catch (e) {} onDestroy('caller'); });
+      uac.on('destroy', () => { try { uas.destroy(); } catch (e) {} onDestroy('callee'); });
+
+    } catch (err) {
+      logger.error(`EXTERNAL SIP FAILED: ${callerID}@${callerDomain} -> ${toExt}: ${err.message}`);
+      this._emitPresence(toExt, 'idle');
+      // Try voicemail on no-answer
+      if (this.voicemailHandler && !res.finalResponseSent) {
+        const handled = await this.voicemailHandler.handleVoicemail(req, res, callerID, toExt, cdr);
+        if (handled) return true;
+      }
+      await this._failCall(cdr, err, callerID, toExt);
+    }
+
+    return true;
+  }
+
+  // Extract a caller identifier from a SIP URI
+  // sip:john@sip2sip.info → john
+  // sip:+15551234567@provider.com → 15551234567
+  _extractCallerFromUri(uri) {
+    if (!uri) return 'unknown';
+    const match = uri.match(/sip:([^@]+)@/);
+    if (match) {
+      return match[1].replace(/^\+/, '');
+    }
+    return 'unknown';
   }
 
   async _handleOutbound(req, res, fromExt, dialedNumber, callId) {

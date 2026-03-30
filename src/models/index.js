@@ -9,6 +9,7 @@ const extensionSchema = new mongoose.Schema({
   password: { type: String, required: true },
   email: { type: String },
   enabled: { type: Boolean, default: true },
+  allowExternalCalls: { type: Boolean, default: false },  // allow inbound calls from external SIP URIs
   maxContacts: { type: Number, default: 5 },
   registrations: [{
     contact: String,
@@ -350,6 +351,17 @@ appointmentMessageSchema.index({ status: 1, createdAt: 1 });
 appointmentMessageSchema.index({ appointmentNumber: 1, createdAt: -1 });
 
 // ============================================================
+// Allowed SIP Domain (whitelist for external SIP callers)
+// ============================================================
+const sipDomainSchema = new mongoose.Schema({
+  domain: { type: String, required: true, unique: true, index: true },  // e.g. 'sip2sip.info'
+  name: { type: String, default: '' },           // friendly name
+  description: { type: String, default: '' },
+  enabled: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now }
+});
+
+// ============================================================
 // Active Call
 // ============================================================
 const activeCallSchema = new mongoose.Schema({
@@ -408,5 +420,6 @@ const ActiveCall = mongoose.model('ActiveCall', activeCallSchema);
 const SystemSettings = mongoose.model('SystemSettings', systemSettingsSchema);
 const Appointment = mongoose.model('Appointment', appointmentSchema);
 const AppointmentMessage = mongoose.model('AppointmentMessage', appointmentMessageSchema);
+const SIPDomain = mongoose.model('SIPDomain', sipDomainSchema);
 
-module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, IVR, TimeCondition, Queue, User, ChatMessage, BlockedNumber, CDR, VoicemailMessage, ActiveCall, SystemSettings, Appointment, AppointmentMessage };
+module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, IVR, TimeCondition, Queue, User, ChatMessage, BlockedNumber, CDR, VoicemailMessage, ActiveCall, SystemSettings, Appointment, AppointmentMessage, SIPDomain };
