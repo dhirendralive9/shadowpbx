@@ -499,23 +499,34 @@ class CallHandler {
   // If both pass, route to the extension as an inbound call.
   // ============================================================
   async _handleExternalSIP(req, res, fromUri, toExt, callId) {
-    // Extract the domain from the From URI
+    // Extract the domain/IP from the From URI
     const domainMatch = fromUri.match(/@([^>;:\s]+)/);
     if (!domainMatch) return false;
     const callerDomain = domainMatch[1].toLowerCase();
+    const sourceIp = req.source_address || '';
 
     // Skip our own domain/IP — these should be handled as internal
     const ownDomain = (process.env.SIP_DOMAIN || '').toLowerCase();
     const ownIp = (process.env.EXTERNAL_IP || '').toLowerCase();
     if (callerDomain === ownDomain || callerDomain === ownIp) return false;
+    if (sourceIp === ownIp) return false;
 
-    // Check 1: Is the domain whitelisted?
+    // Check 1: Is the domain OR source IP whitelisted?
     const { SIPDomain } = require('../models');
-    const allowedDomain = await SIPDomain.findOne({ domain: callerDomain, enabled: true });
-    if (!allowedDomain) {
-      logger.info(`EXTERNAL SIP: domain ${callerDomain} not in whitelist, rejecting`);
+    // Match against: the From-URI domain, OR the actual source IP of the packet
+    const allowedEntry = await SIPDomain.findOne({
+      enabled: true,
+      $or: [
+        { domain: callerDomain },
+        { domain: sourceIp }
+      ]
+    });
+    if (!allowedEntry) {
+      logger.info(`EXTERNAL SIP: ${callerDomain} (src=${sourceIp}) not in whitelist, rejecting`);
       return false;
     }
+
+    logger.info(`EXTERNAL SIP: matched whitelist entry "${allowedEntry.name || allowedEntry.domain}" (type=${allowedEntry.entryType || 'domain'}, pattern=${allowedEntry.domain})`);
 
     // Check 2: Does the target extension allow external calls?
     const targetExt = await Extension.findOne({ extension: toExt, enabled: true });

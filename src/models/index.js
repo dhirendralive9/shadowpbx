@@ -354,7 +354,8 @@ appointmentMessageSchema.index({ appointmentNumber: 1, createdAt: -1 });
 // Allowed SIP Domain (whitelist for external SIP callers)
 // ============================================================
 const sipDomainSchema = new mongoose.Schema({
-  domain: { type: String, required: true, unique: true, index: true },  // e.g. 'sip2sip.info'
+  domain: { type: String, required: true, unique: true, index: true },  // e.g. 'sip2sip.info' or '51.77.118.142'
+  entryType: { type: String, enum: ['domain', 'ip'], default: 'domain' },  // 'domain' or 'ip'
   name: { type: String, default: '' },           // friendly name
   description: { type: String, default: '' },
   enabled: { type: Boolean, default: true },

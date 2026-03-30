@@ -1065,11 +1065,14 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   router.post('/sip-domains', async (req, res) => {
     try {
       const { domain, name, description } = req.body;
-      if (!domain) return res.status(400).json({ success: false, error: 'domain required' });
+      if (!domain) return res.status(400).json({ success: false, error: 'domain or IP required' });
       const clean = domain.toLowerCase().trim();
-      if (await SIPDomain.findOne({ domain: clean })) return res.status(409).json({ success: false, error: 'Domain already exists' });
-      const d = await SIPDomain.create({ domain: clean, name: name || clean, description: description || '', enabled: true });
-      logger.info(`SIP Domain added: ${clean}`);
+      if (await SIPDomain.findOne({ domain: clean })) return res.status(409).json({ success: false, error: 'Entry already exists' });
+      // Auto-detect type: if it looks like an IP address, mark as 'ip'
+      const isIp = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(clean);
+      const entryType = isIp ? 'ip' : 'domain';
+      const d = await SIPDomain.create({ domain: clean, entryType, name: name || clean, description: description || '', enabled: true });
+      logger.info(`SIP whitelist added: ${clean} (type=${entryType})`);
       res.status(201).json({ success: true, domain: d });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
