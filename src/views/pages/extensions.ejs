@@ -118,11 +118,9 @@ async function loadExtensions() {
         '<td class="muted" style="font-size:11px">' + esc(c0.userAgent || '-') + '</td>' +
         '<td class="mono" style="font-size:11px">' + (reg ? esc(c0.ip + ':' + c0.port) : '-') + '</td>' +
         '<td class="muted">' + (c0.expires ? formatExpires(c0.expires) : '-') + '</td>' +
-        '<td>' + (myRole === 'admin'
-          ? '<label style="font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer" title="Allow external SIP callers (e.g. sip2sip.info)">' +
-              '<input type="checkbox" ' + (e.allowExternalCalls ? 'checked' : '') +
-              ' onchange="toggleExtSIP(\'' + esc(e.extension) + '\',this.checked)"> SIP</label>'
-          : (e.allowExternalCalls ? '<span class="pill p-ok" style="font-size:10px">SIP</span>' : '<span class="muted" style="font-size:10px">—</span>')) +
+        '<td data-sip-ext="' + esc(e.extension) + '">' + (myRole === 'admin'
+          ? sipToggleHtml(e.extension, e.allowExternalCalls)
+          : (getSipState(e.extension, e.allowExternalCalls) ? '<span class="pill p-ok" style="font-size:10px">SIP</span>' : '<span class="muted" style="font-size:10px">—</span>')) +
         '</td>' +
         '<td style="white-space:nowrap">' +
           (myRole === 'admin'
@@ -279,10 +277,32 @@ function copyPasswords() {
   });
 }
 
-// ─── Toggle External SIP — instant save via API ───
-var sipTogglePaused = false;
+// ─── External SIP toggle state ───
+// Local overrides that survive table refreshes until confirmed by API
+var sipOverrides = {}; // ext -> true/false (pending saves)
+
+function getSipState(ext, serverValue) {
+  // If we have a local override, use it; otherwise use server value
+  return sipOverrides.hasOwnProperty(ext) ? sipOverrides[ext] : !!serverValue;
+}
+
+function sipToggleHtml(ext, serverValue) {
+  var on = getSipState(ext, serverValue);
+  var pending = sipOverrides.hasOwnProperty(ext);
+  return '<button class="btn btn-sm" style="font-size:10px;min-width:44px;padding:2px 8px;' +
+    (on ? 'background:var(--color-ok);color:#fff;border-color:var(--color-ok)' : '') +
+    (pending ? ';opacity:0.7' : '') +
+    '" onclick="toggleExtSIP(\'' + esc(ext) + '\',' + !on + ')">' +
+    (on ? '● ON' : '○ OFF') + '</button>';
+}
+
 async function toggleExtSIP(ext, enabled) {
-  sipTogglePaused = true; // pause auto-refresh
+  // Optimistic update — set local override immediately
+  sipOverrides[ext] = enabled;
+  // Re-render just this button without full table refresh
+  var cells = document.querySelectorAll('[data-sip-ext="' + ext + '"]');
+  cells.forEach(function(td) { td.innerHTML = sipToggleHtml(ext, enabled); });
+
   try {
     var r = await fetch(API + '/extensions/' + ext, {
       method: 'PUT', headers: J,
@@ -291,15 +311,17 @@ async function toggleExtSIP(ext, enabled) {
     var d = await r.json();
     if (d.success) {
       showToast('External SIP ' + (enabled ? 'enabled' : 'disabled') + ' for ' + ext);
+      // Clear override — server now has the correct value
+      delete sipOverrides[ext];
     } else {
       showToast(d.error || 'Failed', true);
+      // Revert override
+      delete sipOverrides[ext];
     }
   } catch (e) {
     showToast('Failed to update', true);
+    delete sipOverrides[ext];
   }
-  // Wait a moment then reload with fresh data and resume
-  await loadExtensions();
-  sipTogglePaused = false;
 }
 
 // ─── Toast ───
@@ -312,7 +334,7 @@ function showToast(msg, isError) {
 }
 
 loadExtensions();
-setInterval(function() { if (!sipTogglePaused) loadExtensions(); }, 3000);
+setInterval(loadExtensions, 3000);
 </script>
 
 <%- include('../partials/foot') %>
