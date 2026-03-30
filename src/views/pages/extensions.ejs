@@ -47,9 +47,9 @@
 </div>
 
 <table class="tbl">
-  <thead><tr><th>Status</th><th>Extension</th><th>Name</th><th>Presence</th><th>User agent</th><th>IP address</th><th>Expires</th><th></th></tr></thead>
+  <thead><tr><th>Status</th><th>Extension</th><th>Name</th><th>Presence</th><th>User agent</th><th>IP address</th><th>Expires</th><th>Ext. SIP</th><th></th></tr></thead>
   <tbody id="ext-body">
-    <tr><td colspan="8" class="empty">Loading...</td></tr>
+    <tr><td colspan="9" class="empty">Loading...</td></tr>
   </tbody>
 </table>
 
@@ -93,7 +93,7 @@ async function loadExtensions() {
     var tbody = document.getElementById('ext-body');
 
     if (!d.extensions.length) {
-      tbody.innerHTML = '<tr><td colspan="8" class="empty">No extensions configured</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="9" class="empty">No extensions configured</td></tr>';
       document.getElementById('ext-summary').textContent = '';
       return;
     }
@@ -277,6 +277,26 @@ function copyPasswords() {
     document.body.removeChild(ta);
     showToast('Copied to clipboard');
   });
+}
+
+// ─── Toggle External SIP — instant save via API ───
+async function toggleExtSIP(ext, enabled) {
+  try {
+    var r = await fetch(API + '/extensions/' + ext, {
+      method: 'PUT', headers: J,
+      body: JSON.stringify({ allowExternalCalls: enabled })
+    });
+    var d = await r.json();
+    if (d.success) {
+      showToast('External SIP ' + (enabled ? 'enabled' : 'disabled') + ' for ' + ext);
+    } else {
+      showToast(d.error || 'Failed', true);
+      loadExtensions(); // reload to reset checkbox
+    }
+  } catch (e) {
+    showToast('Failed to update', true);
+    loadExtensions();
+  }
 }
 
 // ─── Toast ───
