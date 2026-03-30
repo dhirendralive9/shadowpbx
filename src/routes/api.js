@@ -40,6 +40,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
         return {
           extension: ext.extension, name: ext.name, email: ext.email,
           enabled: ext.enabled, registered: ext.isRegistered(),
+          allowExternalCalls: ext.allowExternalCalls || false,
           contacts: ext.getActiveContacts().map(c => ({ ip: c.ip, port: c.port, userAgent: c.userAgent, expires: c.expires })),
           presence: pState,
           presenceRemote: pRemote,
