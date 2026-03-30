@@ -280,7 +280,9 @@ function copyPasswords() {
 }
 
 // ─── Toggle External SIP — instant save via API ───
+var sipTogglePaused = false;
 async function toggleExtSIP(ext, enabled) {
+  sipTogglePaused = true; // pause auto-refresh
   try {
     var r = await fetch(API + '/extensions/' + ext, {
       method: 'PUT', headers: J,
@@ -291,12 +293,13 @@ async function toggleExtSIP(ext, enabled) {
       showToast('External SIP ' + (enabled ? 'enabled' : 'disabled') + ' for ' + ext);
     } else {
       showToast(d.error || 'Failed', true);
-      loadExtensions(); // reload to reset checkbox
     }
   } catch (e) {
     showToast('Failed to update', true);
-    loadExtensions();
   }
+  // Wait a moment then reload with fresh data and resume
+  await loadExtensions();
+  sipTogglePaused = false;
 }
 
 // ─── Toast ───
@@ -309,7 +312,7 @@ function showToast(msg, isError) {
 }
 
 loadExtensions();
-setInterval(loadExtensions, 3000);
+setInterval(function() { if (!sipTogglePaused) loadExtensions(); }, 3000);
 </script>
 
 <%- include('../partials/foot') %>
