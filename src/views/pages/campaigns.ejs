@@ -325,7 +325,12 @@ async function loadCampaigns() {
             '<span>Busy: ' + (s.busy || 0) + '</span>' +
             '<span>Machine: ' + (s.machine || 0) + '</span>' +
             '<span>Answer rate: ' + fmtPct(Math.round((s.answerRate || 0) * 100)) + '</span>' +
-            (cp.strategy === 'predictive' ? '<span>Abandon: ' + fmtPct(Math.round((s.abandonRate || 0) * 100)) + '</span>' : '') +
+            '<span>Calls/hr: ' + (s.callsPerHour || 0) + '</span>' +
+            (cp.strategy === 'predictive' ?
+              '<span>Abandon: ' + fmtPct(Math.round((s.abandonRate || 0) * 100)) + '</span>' +
+              '<span>Dial ratio: <b>' + (s.currentDialRatio || '1.0') + '</b></span>' +
+              '<span style="font-size:10px;color:var(--text-tertiary)">Rolling: ans=' + (s.rollingAnswerRate || 0) + '% abn=' + (s.rollingAbandonRate || 0) + '%</span>'
+            : '') +
           '</div>'
         : '') +
       '</div>';

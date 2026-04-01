@@ -328,15 +328,12 @@ class DialerEngine {
     let toDial = 0;
 
     if (config.strategy === 'auto') {
+      // Auto: 1 call per idle agent, minus active ringing calls
       toDial = Math.max(0, idleAgents.length - activeCount);
     } else {
-      // Predictive: use dial ratio
-      const stats = this.statsCache.get(campaignId) || {};
-      const answerRate = stats.answerRate || 0.5;
-      const dialRatio = config.dialRatio || 1.2;
-      const expectedAnswers = activeCount * answerRate;
-      const effectiveSlots = idleAgents.length - expectedAnswers;
-      toDial = Math.max(0, Math.ceil(effectiveSlots * dialRatio));
+      // ─── PREDICTIVE ALGORITHM ───
+      // Adaptive dial ratio based on rolling stats and abandon rate feedback
+      toDial = this._predictivePacing(campaignId, config, idleAgents.length, activeCount);
     }
 
     // Cap by maxConcurrent
@@ -1200,20 +1197,102 @@ class DialerEngine {
   _isInSchedule(schedule) {
     try {
       const now = new Date();
-      // Simple check — use system timezone for now (Phase 4 adds proper TZ)
-      const day = now.getDay(); // 0=Sun
+      const day = now.getDay();
       if (!schedule.days.includes(day)) return false;
-
-      const timeStr = now.toTimeString().substring(0, 5); // "HH:MM"
+      const timeStr = now.toTimeString().substring(0, 5);
       if (timeStr < schedule.startTime || timeStr >= schedule.endTime) return false;
       return true;
     } catch (e) {
-      return true; // on error, allow dialing
+      return true;
     }
   }
 
   // ============================================================
-  // STATS MANAGEMENT
+  // PREDICTIVE PACING ALGORITHM
+  //
+  // Calculates how many calls to place this cycle based on:
+  //   - Available agents (idle + about to finish wrap-up)
+  //   - Rolling answer rate (last N calls, not lifetime)
+  //   - Currently ringing calls and their expected answers
+  //   - Abandon rate feedback loop (backs off if too high)
+  //   - Campaign max concurrent limit
+  //
+  // The dial ratio auto-adjusts between 1.0 (conservative)
+  // and 5.0 (aggressive), driven by the abandon rate target.
+  // ============================================================
+  _predictivePacing(campaignId, config, idleCount, activeRinging) {
+    const stats = this.statsCache.get(campaignId);
+    if (!stats) return Math.max(0, idleCount - activeRinging);
+
+    // Rolling answer rate (from recent calls, not lifetime)
+    const answerRate = stats._rollingAnswerRate || stats.answerRate || 0.5;
+    const abandonRate = stats._rollingAbandonRate || stats.abandonRate || 0;
+    const maxAbandon = (config.maxAbandoned || 3) / 100; // convert % to decimal
+    const avgWrapUp = stats._avgWrapUpTime || (config.wrapUpTime || 10);
+
+    // Agents about to become free — in wrap-up with <3 seconds remaining
+    let agentsAboutToFree = 0;
+    const stateMap = this.agentStates.get(campaignId);
+    if (stateMap) {
+      for (const [, state] of stateMap) {
+        if (state.state === 'wrap-up') {
+          const elapsed = (Date.now() - state.since) / 1000;
+          if (elapsed > avgWrapUp - 3) agentsAboutToFree++;
+        }
+      }
+    }
+
+    const effectiveAvailable = idleCount + agentsAboutToFree;
+    if (effectiveAvailable <= 0) return 0;
+
+    // Expected answers from currently ringing calls
+    const expectedAnswers = activeRinging * answerRate;
+
+    // Effective agent slots (available minus expected incoming answers)
+    const effectiveSlots = effectiveAvailable - expectedAnswers;
+    if (effectiveSlots <= 0) return 0;
+
+    // ─── Adaptive Dial Ratio ───
+    // Base ratio: inverse of answer rate
+    // If 33% of calls are answered, base ratio = 3.0
+    let dialRatio = answerRate > 0.05 ? (1 / answerRate) : config.dialRatio || 1.5;
+
+    // Abandon rate feedback loop
+    if (abandonRate > maxAbandon) {
+      // Too many abandons — back off aggressively
+      const overshoot = abandonRate / maxAbandon;
+      dialRatio *= Math.max(0.5, 1 - (overshoot - 1) * 0.3);
+      logger.debug(`DIALER PREDICTIVE: abandon rate ${(abandonRate * 100).toFixed(1)}% > target ${(maxAbandon * 100).toFixed(1)}% — reducing ratio to ${dialRatio.toFixed(2)}`);
+    } else if (abandonRate < maxAbandon * 0.5) {
+      // Well under target — speed up slightly
+      dialRatio *= 1.05;
+    }
+
+    // Clamp dial ratio between 1.0 and 5.0
+    dialRatio = Math.max(1.0, Math.min(5.0, dialRatio));
+
+    // Calculate calls to place
+    let toDial = Math.ceil(effectiveSlots * dialRatio);
+
+    // Cap by maxConcurrent (already done in dial loop, but double-check)
+    toDial = Math.min(toDial, (config.maxConcurrent || 50) - activeRinging);
+    toDial = Math.max(0, toDial);
+
+    // Update cached dial ratio for dashboard display
+    if (stats) stats.currentDialRatio = Math.round(dialRatio * 100) / 100;
+
+    if (toDial > 0) {
+      logger.debug(`DIALER PREDICTIVE: idle=${idleCount} aboutToFree=${agentsAboutToFree} ringing=${activeRinging} expectedAns=${expectedAnswers.toFixed(1)} slots=${effectiveSlots.toFixed(1)} ratio=${dialRatio.toFixed(2)} toDial=${toDial} ansRate=${(answerRate * 100).toFixed(0)}% abandRate=${(abandonRate * 100).toFixed(1)}%`);
+    }
+
+    return toDial;
+  }
+
+  // ============================================================
+  // STATS MANAGEMENT — Rolling Window + Lifetime
+  //
+  // Rolling stats use the last 100 call outcomes for accurate
+  // real-time answer/abandon rates. Lifetime stats track totals.
   // ============================================================
 
   _incrementStat(campaignId, field, amount) {
@@ -1221,12 +1300,74 @@ class DialerEngine {
     if (!stats) return;
     stats[field] = (stats[field] || 0) + (amount || 1);
 
-    // Recalculate derived stats
+    // Recalculate lifetime derived stats
     const total = stats.dialed || 1;
     stats.answerRate = stats.answered / total;
     stats.abandonRate = stats.abandoned / total;
     if (stats.answered > 0) {
       stats.avgTalkTime = stats.totalTalkTime / stats.answered;
+    }
+
+    // Push to rolling window
+    if (field === 'answered' || field === 'noAnswer' || field === 'busy' ||
+        field === 'failed' || field === 'machine' || field === 'abandoned') {
+      if (!stats._rollingWindow) stats._rollingWindow = [];
+      stats._rollingWindow.push({
+        outcome: field,
+        time: Date.now()
+      });
+
+      // Keep last 100 entries
+      if (stats._rollingWindow.length > 100) {
+        stats._rollingWindow = stats._rollingWindow.slice(-100);
+      }
+
+      // Recalculate rolling rates
+      this._recalcRolling(stats);
+    }
+
+    // Track wrap-up durations for predictive pacing
+    if (field === 'totalTalkTime' && amount > 0) {
+      if (!stats._wrapUpSamples) stats._wrapUpSamples = [];
+      stats._wrapUpSamples.push(amount);
+      if (stats._wrapUpSamples.length > 50) stats._wrapUpSamples = stats._wrapUpSamples.slice(-50);
+      stats._avgWrapUpTime = stats._wrapUpSamples.reduce((a, b) => a + b, 0) / stats._wrapUpSamples.length;
+    }
+
+    // Calculate calls per hour
+    const running = this.runningCampaigns.get(campaignId);
+    if (running && running.startedAt) {
+      const runMinutes = Math.max(1, (Date.now() - running.startedAt) / 60000);
+      stats.callsPerHour = Math.round((stats.dialed || 0) / runMinutes * 60);
+    }
+  }
+
+  _recalcRolling(stats) {
+    const window = stats._rollingWindow || [];
+    if (window.length < 5) return; // need minimum samples
+
+    let answered = 0, abandoned = 0, total = window.length;
+    for (const entry of window) {
+      if (entry.outcome === 'answered') answered++;
+      if (entry.outcome === 'abandoned') abandoned++;
+    }
+
+    stats._rollingAnswerRate = answered / total;
+    stats._rollingAbandonRate = abandoned / total;
+
+    // Time-weighted: recent calls matter more
+    // Only use calls from last 5 minutes for very recent rate
+    const fiveMinAgo = Date.now() - 300000;
+    const recent = window.filter(e => e.time > fiveMinAgo);
+    if (recent.length >= 3) {
+      let recentAnswered = 0, recentAbandoned = 0;
+      for (const e of recent) {
+        if (e.outcome === 'answered') recentAnswered++;
+        if (e.outcome === 'abandoned') recentAbandoned++;
+      }
+      // Blend: 70% recent, 30% rolling
+      stats._rollingAnswerRate = recentAnswered / recent.length * 0.7 + stats._rollingAnswerRate * 0.3;
+      stats._rollingAbandonRate = recentAbandoned / recent.length * 0.7 + stats._rollingAbandonRate * 0.3;
     }
   }
 
@@ -1236,7 +1377,6 @@ class DialerEngine {
 
     const { Campaign } = require('../models');
     try {
-      const total = stats.dialed || 1;
       await Campaign.findByIdAndUpdate(campaignId, {
         'stats.dialed': stats.dialed || 0,
         'stats.answered': stats.answered || 0,
@@ -1249,6 +1389,8 @@ class DialerEngine {
         'stats.avgTalkTime': stats.answered > 0 ? Math.round(stats.totalTalkTime / stats.answered) : 0,
         'stats.answerRate': Math.round((stats.answerRate || 0) * 100) / 100,
         'stats.abandonRate': Math.round((stats.abandonRate || 0) * 100) / 100,
+        'stats.currentDialRatio': stats.currentDialRatio || 1,
+        'stats.callsPerHour': stats.callsPerHour || 0,
         'stats.completed': (stats.answered || 0) + (stats.noAnswer || 0) + (stats.busy || 0) + (stats.failed || 0) + (stats.machine || 0),
       });
       stats._lastFlush = Date.now();
@@ -1450,8 +1592,14 @@ class DialerEngine {
     const stats = this.statsCache.get(campaignId) || {};
 
     let activeCallCount = 0;
+    let ringingCount = 0;
+    let connectedCount = 0;
     for (const [, call] of this.activeCalls) {
-      if (call.campaignId === campaignId) activeCallCount++;
+      if (call.campaignId === campaignId) {
+        activeCallCount++;
+        if (call.status === 'ringing') ringingCount++;
+        if (call.status === 'connected') connectedCount++;
+      }
     }
 
     return {
@@ -1459,6 +1607,8 @@ class DialerEngine {
       agents,
       agentCounts: counts,
       activeCalls: activeCallCount,
+      ringingCalls: ringingCount,
+      connectedCalls: connectedCount,
       stats: {
         dialed: stats.dialed || 0,
         answered: stats.answered || 0,
@@ -1470,6 +1620,11 @@ class DialerEngine {
         answerRate: Math.round((stats.answerRate || 0) * 100),
         abandonRate: Math.round((stats.abandonRate || 0) * 100),
         avgTalkTime: Math.round(stats.avgTalkTime || 0),
+        callsPerHour: stats.callsPerHour || 0,
+        // Predictive-specific
+        currentDialRatio: stats.currentDialRatio || 1,
+        rollingAnswerRate: Math.round((stats._rollingAnswerRate || stats.answerRate || 0) * 100),
+        rollingAbandonRate: Math.round((stats._rollingAbandonRate || stats.abandonRate || 0) * 1000) / 10,
       }
     };
   }
