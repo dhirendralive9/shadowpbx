@@ -1261,7 +1261,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
 
   router.post('/campaigns', async (req, res) => {
     try {
-      const { name, strategy, trunk, callerId, agents, maxConcurrent, ringTimeout,
+      const { name, strategy, trunk, callerId, carrier, agents, maxConcurrent, ringTimeout,
               wrapUpTime, retryAttempts, retryDelay, amd, amdAction, schedule,
               dialRatio, maxAbandoned, dncEnabled } = req.body;
       if (!name || !trunk || !callerId) {
@@ -1269,6 +1269,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
       }
       const c = await Campaign.create({
         name, strategy: strategy || 'auto', trunk, callerId,
+        carrier: carrier || '',
         agents: agents || [], maxConcurrent: maxConcurrent || 10,
         ringTimeout: ringTimeout || 30, wrapUpTime: wrapUpTime || 10,
         retryAttempts: retryAttempts || 3, retryDelay: retryDelay || 30,
@@ -1284,7 +1285,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   router.put('/campaigns/:id', async (req, res) => {
     try {
       const updates = {};
-      ['name', 'strategy', 'trunk', 'callerId', 'agents', 'maxConcurrent', 'ringTimeout',
+      ['name', 'strategy', 'trunk', 'callerId', 'carrier', 'agents', 'maxConcurrent', 'ringTimeout',
        'wrapUpTime', 'retryAttempts', 'retryDelay', 'amd', 'amdAction', 'schedule',
        'dialRatio', 'maxAbandoned', 'dncEnabled', 'enabled'].forEach(k => {
         if (req.body[k] !== undefined) updates[k] = req.body[k];

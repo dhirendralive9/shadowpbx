@@ -408,18 +408,14 @@ class DialerEngine {
   }
 
   // ============================================================
-  // CALL ORIGINATION — Place outbound call via trunk
+  // CALL ORIGINATION
   //
-  // Flow:
-  //   1. Get trunk config
-  //   2. Create outbound UAC to lead's phone via PSTN trunk
-  //   3. Wait for answer (ringTimeout)
-  //   4. On answer → bridge to agent extension via B2BUA
-  //   5. Both legs through RTPEngine for recording
-  //   6. On hangup → cleanup, update lead + CDR, wrap-up timer
+  // Two paths based on AMD setting:
+  //   AMD OFF → Direct SIP via srf.createUAC() (fast, no REST API)
+  //   AMD ON  → Carrier REST API with AMD detection, webhook-driven
   // ============================================================
   async _originateCall(callId, campaignId, lead, agentExt, config) {
-    const { CDR, Lead: LeadModel } = require('../models');
+    const { CDR } = require('../models');
 
     // Track this call
     this.activeCalls.set(callId, {
@@ -429,23 +425,9 @@ class DialerEngine {
       lead: lead.toObject(),
       uac: null,
       uas: null,
-      status: 'ringing'
+      status: 'ringing',
+      carrierCallSid: null
     });
-
-    // Get trunk
-    const trunk = this.trunkManager.getTrunk(config.trunk);
-    if (!trunk) {
-      logger.error(`DIALER: trunk "${config.trunk}" not found`);
-      await this._callFailed(callId, campaignId, lead, agentExt, 'trunk_not_found', config);
-      return;
-    }
-
-    const host = trunk.host || '';
-    const port = trunk.port || 5060;
-    const username = trunk.username || '';
-    const password = trunk.password || '';
-    const targetUri = `sip:${lead.phone}@${host}:${port}`;
-    const sipDomain = process.env.SIP_DOMAIN || 'shadowpbx';
 
     // Create CDR
     const cdr = new CDR({
@@ -463,10 +445,36 @@ class DialerEngine {
     });
     await cdr.save();
 
-    logger.info(`DIALER CALL: ${config.callerId} -> ${lead.phone} via ${config.trunk} [${callId}] agent=${agentExt}`);
+    // Choose origination path
+    if (config.amd && config.carrier) {
+      // AMD enabled → use carrier REST API
+      await this._originateViaCarrierAPI(callId, campaignId, lead, agentExt, config, cdr);
+    } else {
+      // No AMD → direct SIP origination
+      await this._originateViaSIP(callId, campaignId, lead, agentExt, config, cdr);
+    }
+  }
+
+  // ============================================================
+  // SIP ORIGINATION (non-AMD) — existing Phase 2 logic
+  // ============================================================
+  async _originateViaSIP(callId, campaignId, lead, agentExt, config, cdr) {
+    const trunk = this.trunkManager.getTrunk(config.trunk);
+    if (!trunk) {
+      logger.error(`DIALER: trunk "${config.trunk}" not found`);
+      await this._callFailed(callId, campaignId, lead, agentExt, 'trunk_not_found', config, cdr);
+      return;
+    }
+
+    const host = trunk.host || '';
+    const port = trunk.port || 5060;
+    const username = trunk.username || '';
+    const password = trunk.password || '';
+    const targetUri = `sip:${lead.phone}@${host}:${port}`;
+
+    logger.info(`DIALER CALL [SIP]: ${config.callerId} -> ${lead.phone} via ${config.trunk} [${callId}] agent=${agentExt}`);
 
     try {
-      // Step 1: Originate outbound call to the lead
       const uac = await this.srf.createUAC(targetUri, {
         headers: {
           'From': `<sip:${username}@${host}>`,
@@ -477,44 +485,459 @@ class DialerEngine {
         timeout: (config.ringTimeout || 30) * 1000
       });
 
-      logger.info(`DIALER ANSWERED: ${lead.phone} picked up [${callId}]`);
+      logger.info(`DIALER ANSWERED [SIP]: ${lead.phone} picked up [${callId}]`);
 
-      // Update tracking
       const activeCall = this.activeCalls.get(callId);
-      if (activeCall) {
-        activeCall.uac = uac;
-        activeCall.status = 'answered';
-      }
+      if (activeCall) { activeCall.uac = uac; activeCall.status = 'answered'; }
 
-      // Update CDR
       cdr.status = 'answered';
       cdr.answerTime = new Date();
       await cdr.save();
 
       this._incrementStat(campaignId, 'answered');
-
-      // Step 2: Bridge to agent
       await this._bridgeToAgent(callId, campaignId, uac, lead, agentExt, config, cdr);
 
     } catch (err) {
-      // Outbound call failed (no answer, busy, error)
       const sipStatus = err.status || 0;
       let outcome = 'failed';
-
-      if (sipStatus === 486 || sipStatus === 600) {
-        outcome = 'busy';
-        this._incrementStat(campaignId, 'busy');
-      } else if (sipStatus === 480 || sipStatus === 408 || sipStatus === 487) {
-        outcome = 'no-answer';
-        this._incrementStat(campaignId, 'noAnswer');
-      } else {
-        this._incrementStat(campaignId, 'failed');
-      }
-
-      logger.info(`DIALER ${outcome.toUpperCase()}: ${lead.phone} [${callId}] sip=${sipStatus}`);
-
+      if (sipStatus === 486 || sipStatus === 600) { outcome = 'busy'; this._incrementStat(campaignId, 'busy'); }
+      else if (sipStatus === 480 || sipStatus === 408 || sipStatus === 487) { outcome = 'no-answer'; this._incrementStat(campaignId, 'noAnswer'); }
+      else { this._incrementStat(campaignId, 'failed'); }
+      logger.info(`DIALER ${outcome.toUpperCase()} [SIP]: ${lead.phone} [${callId}] sip=${sipStatus}`);
       await this._callFailed(callId, campaignId, lead, agentExt, outcome, config, cdr);
     }
+  }
+
+  // ============================================================
+  // CARRIER REST API ORIGINATION (AMD enabled)
+  //
+  // Places the call via carrier REST API with AMD parameters.
+  // The carrier sends webhooks:
+  //   /webhook/dialer/:campaignId/voice — call answered (TwiML/TeXML)
+  //   /webhook/dialer/:campaignId/amd   — AMD result
+  //   /webhook/dialer/:campaignId/status — call ended
+  //
+  // Flow:
+  //   1. Call carrier API → carrier dials lead
+  //   2. Lead answers → carrier runs AMD (2-4 seconds)
+  //   3. AMD webhook fires → human/machine result
+  //   4. If human → bridge to agent via internal SIP
+  //   5. If machine → hangup or leave message
+  // ============================================================
+  async _originateViaCarrierAPI(callId, campaignId, lead, agentExt, config, cdr) {
+    const { getAdapter } = require('./carrier-adapters');
+    const adapter = getAdapter(config.carrier);
+
+    if (!adapter) {
+      logger.error(`DIALER: carrier "${config.carrier}" not configured — falling back to SIP`);
+      return this._originateViaSIP(callId, campaignId, lead, agentExt, config, cdr);
+    }
+
+    const baseUrl = process.env.WEBHOOK_BASE_URL || `http://127.0.0.1:${process.env.API_PORT || 3000}`;
+    const webhookUrl = `${baseUrl}/webhook/dialer/${campaignId}/voice?callId=${encodeURIComponent(callId)}&agent=${encodeURIComponent(agentExt)}`;
+
+    logger.info(`DIALER CALL [${config.carrier.toUpperCase()} API]: ${config.callerId} -> ${lead.phone} [${callId}] agent=${agentExt} amd=ON`);
+
+    try {
+      const carrierSid = await adapter.createCall(lead.phone, config.callerId, webhookUrl, {
+        amd: true,
+        amdAction: config.amdAction || 'hangup',
+        ringTimeout: config.ringTimeout || 30,
+        callId
+      });
+
+      // Store carrier SID for hangup/tracking
+      const activeCall = this.activeCalls.get(callId);
+      if (activeCall) activeCall.carrierCallSid = carrierSid;
+
+      // Store mapping: carrierSid -> callId (for webhook lookups)
+      if (!this._carrierSidMap) this._carrierSidMap = new Map();
+      this._carrierSidMap.set(carrierSid, callId);
+
+      cdr.sipCallId = carrierSid;
+      await cdr.save();
+
+      logger.info(`DIALER: carrier call placed, waiting for AMD webhook [${callId}] carrierSid=${carrierSid}`);
+      // Now we wait — the webhook handlers will take over
+
+    } catch (err) {
+      logger.error(`DIALER: carrier API call failed: ${err.message}`);
+      this._incrementStat(campaignId, 'failed');
+      await this._callFailed(callId, campaignId, lead, agentExt, 'failed', config, cdr);
+    }
+  }
+
+  // ============================================================
+  // WEBHOOK HANDLERS — called by carrier after AMD detection
+  // ============================================================
+
+  // Voice webhook — carrier sends this when call is answered
+  // Return TwiML/TeXML to keep the call alive while AMD runs
+  handleVoiceWebhook(req, res) {
+    const callId = req.query.callId || '';
+    const agentExt = req.query.agent || '';
+    logger.debug(`DIALER WEBHOOK voice: callId=${callId} agent=${agentExt}`);
+
+    // Return TwiML that pauses while AMD detection runs
+    // The AMD result will come on a separate webhook
+    res.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Pause length="30"/>
+</Response>`);
+  }
+
+  // AMD result webhook — carrier determined human vs machine
+  async handleAmdWebhook(req, res) {
+    res.status(200).send('OK');
+
+    const { normalizeAmdResult } = require('./carrier-adapters');
+
+    // Determine carrier from request
+    let carrier = '';
+    let callSid = '';
+    let rawResult = '';
+    let callId = req.query.callId || '';
+
+    if (req.body.data && req.body.data.event_type) {
+      // Telnyx format
+      carrier = 'telnyx';
+      const payload = req.body.data.payload || {};
+      callSid = payload.call_control_id || '';
+      rawResult = payload.result || '';
+      // Decode client_state for callId
+      if (payload.client_state) {
+        try {
+          const cs = JSON.parse(Buffer.from(payload.client_state, 'base64').toString());
+          callId = cs.callId || callId;
+        } catch (e) {}
+      }
+    } else if (req.body.AnsweredBy) {
+      // SignalWire / Twilio format
+      carrier = req.body.AccountSid ? 'twilio' : 'signalwire';
+      callSid = req.body.CallSid || '';
+      rawResult = req.body.AnsweredBy || '';
+    }
+
+    // Resolve callId from carrier SID if needed
+    if (!callId && callSid && this._carrierSidMap) {
+      callId = this._carrierSidMap.get(callSid) || '';
+    }
+
+    const amdResult = normalizeAmdResult(carrier, rawResult);
+    logger.info(`DIALER AMD [${carrier.toUpperCase()}]: ${amdResult} (raw=${rawResult}) callId=${callId} sid=${callSid}`);
+
+    const activeCall = this.activeCalls.get(callId);
+    if (!activeCall) {
+      logger.warn(`DIALER AMD: no active call for callId=${callId}`);
+      return;
+    }
+
+    const { Campaign, CDR: CDRModel } = require('../models');
+    const campaign = await Campaign.findById(activeCall.campaignId);
+    if (!campaign) return;
+
+    // Update CDR with AMD result
+    await CDRModel.findOneAndUpdate({ callId }, { amdResult });
+
+    if (amdResult === 'human') {
+      // HUMAN — bridge to agent
+      logger.info(`DIALER AMD: human detected — bridging ${activeCall.lead.phone} to agent ${activeCall.agentExt} [${callId}]`);
+
+      activeCall.status = 'answered';
+      this._incrementStat(activeCall.campaignId, 'answered');
+
+      const cdr = await CDRModel.findOne({ callId });
+      if (cdr) {
+        cdr.status = 'answered';
+        cdr.answerTime = new Date();
+        cdr.amdResult = 'human';
+        await cdr.save();
+      }
+
+      // Bridge to agent via internal SIP
+      // We need to get the carrier to redirect audio to our server,
+      // but since the carrier controls the call, we use a different approach:
+      // Hangup the carrier call and immediately call the agent, playing
+      // a connect tone, then conference the lead and agent.
+      //
+      // Simpler approach: redirect the carrier call to bridge TwiML
+      await this._bridgeCarrierToAgent(callId, activeCall, campaign, callSid, carrier, cdr);
+
+    } else if (amdResult === 'machine') {
+      // MACHINE — hangup or leave message
+      logger.info(`DIALER AMD: machine detected — action=${campaign.amdAction} [${callId}]`);
+
+      this._incrementStat(activeCall.campaignId, 'machine');
+
+      if (campaign.amdAction === 'leave-message') {
+        // Leave message — carrier will play after beep detection
+        // For now, just log and hangup (Phase 5 adds pre-recorded message playback)
+        logger.info(`DIALER AMD: leave-message not yet implemented, hanging up [${callId}]`);
+      }
+
+      // Hangup the carrier call
+      const { getAdapter } = require('./carrier-adapters');
+      const adapter = getAdapter(carrier);
+      if (adapter && callSid) await adapter.hangupCall(callSid);
+
+      // Update lead
+      const config = campaign.toObject();
+      await this._callFailed(callId, activeCall.campaignId, activeCall.lead, activeCall.agentExt, 'machine', config);
+
+    } else {
+      // UNKNOWN — treat as human (conservative approach)
+      logger.info(`DIALER AMD: unknown result — treating as human [${callId}]`);
+      activeCall.status = 'answered';
+      this._incrementStat(activeCall.campaignId, 'answered');
+
+      const cdr = await CDRModel.findOne({ callId });
+      if (cdr) { cdr.status = 'answered'; cdr.answerTime = new Date(); cdr.amdResult = 'unknown'; await cdr.save(); }
+      await this._bridgeCarrierToAgent(callId, activeCall, campaign, callSid, carrier, cdr);
+    }
+  }
+
+  // Status webhook — call ended
+  async handleStatusWebhook(req, res) {
+    res.status(200).send('OK');
+    const callId = req.query.callId || '';
+    const status = req.body.CallStatus || req.body.status || '';
+    logger.debug(`DIALER WEBHOOK status: callId=${callId} status=${status}`);
+
+    // If the carrier call ended and we haven't bridged yet, clean up
+    if (['completed', 'busy', 'no-answer', 'failed', 'canceled'].includes(status)) {
+      const activeCall = this.activeCalls.get(callId);
+      if (activeCall && activeCall.status === 'ringing') {
+        let outcome = 'failed';
+        if (status === 'busy') { outcome = 'busy'; this._incrementStat(activeCall.campaignId, 'busy'); }
+        else if (status === 'no-answer') { outcome = 'no-answer'; this._incrementStat(activeCall.campaignId, 'noAnswer'); }
+        else { this._incrementStat(activeCall.campaignId, 'failed'); }
+
+        const { Campaign } = require('../models');
+        const campaign = await Campaign.findById(activeCall.campaignId);
+        const config = campaign ? campaign.toObject() : {};
+        await this._callFailed(callId, activeCall.campaignId, activeCall.lead, activeCall.agentExt, outcome, config);
+      }
+    }
+  }
+
+  // ============================================================
+  // BRIDGE CARRIER CALL TO AGENT
+  //
+  // After AMD confirms human, we bridge the carrier-managed call
+  // to the agent. Two approaches:
+  //
+  // 1. Redirect carrier call → TwiML <Dial> to our SIP server
+  //    (carrier calls back into our Drachtio, we bridge internally)
+  //
+  // 2. Originate internal call to agent, then use carrier
+  //    redirect to connect both legs
+  //
+  // We use approach 2 — more reliable, keeps recording on our side.
+  // ============================================================
+  async _bridgeCarrierToAgent(callId, activeCall, campaign, carrierSid, carrier, cdr) {
+    const agentExt = activeCall.agentExt;
+    const lead = activeCall.lead;
+    const config = campaign.toObject();
+
+    // Get agent contact
+    const agentContacts = await this.registrar.getContacts(agentExt);
+    if (agentContacts.length === 0) {
+      logger.warn(`DIALER BRIDGE [AMD]: agent ${agentExt} offline, hanging up carrier call`);
+      const { getAdapter } = require('./carrier-adapters');
+      const adapter = getAdapter(carrier);
+      if (adapter && carrierSid) await adapter.hangupCall(carrierSid);
+      await this._callFailed(callId, activeCall.campaignId, lead, agentExt, 'abandoned', config, cdr);
+      return;
+    }
+
+    const contact = agentContacts.sort((a, b) =>
+      (b.registeredAt ? new Date(b.registeredAt).getTime() : 0) -
+      (a.registeredAt ? new Date(a.registeredAt).getTime() : 0)
+    )[0];
+
+    const agentUri = `sip:${agentExt}@${contact.ip}:${contact.port}`;
+    const sipDomain = process.env.SIP_DOMAIN || 'shadowpbx';
+    const externalIp = process.env.EXTERNAL_IP || '127.0.0.1';
+
+    logger.info(`DIALER BRIDGE [AMD]: connecting agent ${agentExt} at ${agentUri} [${callId}]`);
+
+    try {
+      // Call the agent internally
+      const agentUac = await this.srf.createUAC(agentUri, {
+        headers: {
+          'From': `<sip:${lead.phone}@${sipDomain}>`,
+          'To': `<sip:${agentExt}@${sipDomain}>`,
+          'Contact': `<sip:${lead.phone}@${externalIp}>`,
+          'X-Campaign': campaign.name || '',
+          'X-Lead-Name': lead.name || '',
+          'X-Lead-Phone': lead.phone || '',
+          'X-AMD-Result': 'human'
+        },
+        callingNumber: lead.phone
+      });
+
+      logger.info(`DIALER BRIDGED [AMD]: ${lead.phone} <-> agent ${agentExt} [${callId}]`);
+
+      // Update tracking
+      activeCall.uas = agentUac;
+      activeCall.status = 'connected';
+
+      // Update agent state
+      this.setAgentState(activeCall.campaignId, agentExt, 'on-call');
+      const stateMap = this.agentStates.get(activeCall.campaignId);
+      if (stateMap) {
+        const as = stateMap.get(agentExt);
+        if (as) as.currentCallId = callId;
+      }
+
+      // BLF
+      if (this.callHandler.presenceHandler) {
+        this.callHandler._emitPresence(agentExt, 'confirmed', { callId, remoteParty: lead.phone, direction: 'recipient' });
+      }
+
+      // Now redirect the carrier call to stream audio to/from the agent
+      // We tell the carrier to dial back into our SIP server at the agent's extension
+      // using <Dial><Sip> in the TwiML response
+      // But since the call is already answered, we need to use the carrier's
+      // update/redirect API to change the call's instructions
+      const { getAdapter } = require('./carrier-adapters');
+      const adapter = getAdapter(carrier);
+      const baseUrl = process.env.WEBHOOK_BASE_URL || `http://127.0.0.1:${process.env.API_PORT || 3000}`;
+
+      if (carrier === 'telnyx') {
+        // Telnyx: use transfer command to bridge to our SIP endpoint
+        try {
+          await adapter._request('POST', `/v2/calls/${carrierSid}/actions/transfer`, {
+            to: `sip:${agentExt}@${externalIp}:${process.env.SIP_PORT || 5060}`,
+            from: lead.phone,
+            webhook_url: `${baseUrl}/webhook/dialer/${activeCall.campaignId}/status?callId=${callId}`
+          });
+          logger.info(`DIALER: Telnyx transfer to SIP ${agentExt}@${externalIp}`);
+        } catch (e) {
+          logger.warn(`DIALER: Telnyx transfer failed: ${e.message}`);
+        }
+      } else {
+        // SignalWire / Twilio: redirect to TwiML that dials our SIP
+        const redirectUrl = `${baseUrl}/webhook/dialer/${activeCall.campaignId}/bridge?callId=${callId}&agent=${agentExt}`;
+        try {
+          const params = new URLSearchParams();
+          params.append('Url', redirectUrl);
+          params.append('Method', 'POST');
+          await adapter._request(
+            'POST',
+            carrier === 'twilio'
+              ? `/2010-04-01/Accounts/${adapter.credentials.accountSid}/Calls/${carrierSid}.json`
+              : `/api/laml/2010-04-01/Accounts/${adapter.credentials.projectId}/Calls/${carrierSid}.json`,
+            params.toString()
+          );
+          logger.info(`DIALER: ${carrier} redirect to bridge TwiML`);
+        } catch (e) {
+          logger.warn(`DIALER: ${carrier} redirect failed: ${e.message}`);
+        }
+      }
+
+      // Handle agent hangup
+      agentUac.on('destroy', async () => {
+        logger.info(`DIALER: agent ${agentExt} hung up [${callId}]`);
+        // Hangup carrier call too
+        if (adapter && carrierSid) await adapter.hangupCall(carrierSid);
+
+        const { Lead: LeadModel, CDR: CDRModel } = require('../models');
+        const endTime = new Date();
+        const talkTime = cdr && cdr.answerTime ? Math.round((endTime - cdr.answerTime) / 1000) : 0;
+
+        if (cdr) {
+          cdr.status = 'completed';
+          cdr.endTime = endTime;
+          cdr.duration = Math.round((endTime - cdr.startTime) / 1000);
+          cdr.talkTime = talkTime;
+          cdr.hangupBy = 'callee';
+          cdr.hangupCause = 'normal_clearing';
+          await cdr.save();
+        }
+
+        await LeadModel.findByIdAndUpdate(lead._id, {
+          status: 'completed', outcome: 'answered', assignedAgent: agentExt,
+          duration: talkTime, $push: { callIds: callId }
+        });
+
+        this._incrementStat(activeCall.campaignId, 'totalTalkTime', talkTime);
+
+        if (this.callHandler.presenceHandler) this.callHandler._emitPresence(agentExt, 'idle');
+
+        this.setAgentState(activeCall.campaignId, agentExt, 'wrap-up');
+        const wrapUpMs = (config.wrapUpTime || 10) * 1000;
+        setTimeout(() => {
+          const sm = this.agentStates.get(activeCall.campaignId);
+          if (sm) {
+            const a = sm.get(agentExt);
+            if (a && a.state === 'wrap-up') {
+              a.state = 'idle'; a.since = Date.now(); a.callCount = (a.callCount || 0) + 1;
+              a.lastCallEnd = Date.now(); a.currentCallId = null;
+            }
+          }
+        }, wrapUpMs);
+
+        this.activeCalls.delete(callId);
+        if (this._carrierSidMap) this._carrierSidMap.delete(carrierSid);
+
+        logger.info(`DIALER CALL ENDED [AMD]: ${lead.phone} <-> ${agentExt} talk=${talkTime}s [${callId}]`);
+        this._checkCampaignComplete(activeCall.campaignId);
+      });
+
+    } catch (err) {
+      logger.error(`DIALER BRIDGE [AMD] FAILED: ${err.message}`);
+      const { getAdapter: ga } = require('./carrier-adapters');
+      const a = ga(carrier);
+      if (a && carrierSid) await a.hangupCall(carrierSid);
+      this._incrementStat(activeCall.campaignId, 'abandoned');
+      await this._callFailed(callId, activeCall.campaignId, lead, agentExt, 'abandoned', config, cdr);
+    }
+  }
+
+  // ============================================================
+  // Register dialer webhook routes (called from app.js)
+  // These are PUBLIC — carrier needs to reach them
+  // ============================================================
+  registerWebhookRoutes(app) {
+    // Voice webhook — call answered
+    app.post('/webhook/dialer/:campaignId/voice', (req, res) => {
+      this.handleVoiceWebhook(req, res);
+    });
+
+    // AMD result webhook
+    app.post('/webhook/dialer/:campaignId/amd', (req, res) => {
+      this.handleAmdWebhook(req, res).catch(err => {
+        logger.error(`DIALER WEBHOOK amd: ${err.message}`);
+        if (!res.headersSent) res.status(200).send('OK');
+      });
+    });
+
+    // Call status webhook
+    app.post('/webhook/dialer/:campaignId/status', (req, res) => {
+      this.handleStatusWebhook(req, res).catch(err => {
+        logger.error(`DIALER WEBHOOK status: ${err.message}`);
+        if (!res.headersSent) res.status(200).send('OK');
+      });
+    });
+
+    // Bridge TwiML — Twilio/SignalWire redirect here to bridge to agent SIP
+    app.post('/webhook/dialer/:campaignId/bridge', (req, res) => {
+      const agentExt = req.query.agent || '';
+      const externalIp = process.env.EXTERNAL_IP || '127.0.0.1';
+      const sipPort = process.env.SIP_PORT || 5060;
+
+      logger.info(`DIALER BRIDGE TwiML: routing carrier call to sip:${agentExt}@${externalIp}:${sipPort}`);
+
+      res.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Dial timeout="60" callerId="${req.body.From || ''}">
+    <Sip>sip:${agentExt}@${externalIp}:${sipPort};transport=udp</Sip>
+  </Dial>
+</Response>`);
+    });
+
+    logger.info('DIALER: webhook routes registered at /webhook/dialer/');
   }
 
   // ============================================================

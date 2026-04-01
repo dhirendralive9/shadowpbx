@@ -47,9 +47,26 @@
 
     <div class="grid-3" style="margin-bottom:0">
       <div class="form-group" style="display:flex;align-items:flex-end;gap:12px;padding-bottom:14px">
-        <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="c-amd"> AMD</label>
+        <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="c-amd" onchange="toggleAmdSettings()"> AMD</label>
         <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="c-dnc" checked> DNC check</label>
       </div>
+      <div class="form-group" id="amd-carrier-wrap" style="display:none">
+        <label class="form-label">AMD carrier (REST API)</label>
+        <select class="form-select" id="c-carrier">
+          <option value="telnyx">Telnyx</option>
+          <option value="signalwire">SignalWire</option>
+          <option value="twilio">Twilio</option>
+        </select>
+      </div>
+      <div class="form-group" id="amd-action-wrap" style="display:none">
+        <label class="form-label">On machine detected</label>
+        <select class="form-select" id="c-amdaction">
+          <option value="hangup">Hang up</option>
+          <option value="leave-message">Leave message</option>
+        </select>
+      </div>
+    </div>
+    <div class="grid-3" style="margin-bottom:0">
       <div class="form-group" style="display:flex;align-items:flex-end">
         <div style="display:flex;gap:8px">
           <button type="submit" class="btn btn-primary btn-sm" id="c-submit-btn">Create</button>
@@ -144,6 +161,13 @@ document.getElementById('c-strategy') && document.getElementById('c-strategy').a
   document.getElementById('predictive-settings').style.display = this.value === 'predictive' ? 'block' : 'none';
 });
 
+// AMD toggle — show/hide carrier and action selectors
+function toggleAmdSettings() {
+  var on = document.getElementById('c-amd').checked;
+  document.getElementById('amd-carrier-wrap').style.display = on ? 'block' : 'none';
+  document.getElementById('amd-action-wrap').style.display = on ? 'block' : 'none';
+}
+
 // ─── Load trunks and extensions for the form ───
 async function loadFormData() {
   try {
@@ -198,6 +222,9 @@ function showAdd() {
   document.getElementById('c-retrydelay').value = '30';
   document.getElementById('c-amd').checked = false;
   document.getElementById('c-dnc').checked = true;
+  document.getElementById('c-carrier').value = 'telnyx';
+  document.getElementById('c-amdaction').value = 'hangup';
+  toggleAmdSettings();
   document.getElementById('c-submit-btn').textContent = 'Create';
   document.getElementById('predictive-settings').style.display = 'none';
   setSelectedAgents([]);
@@ -217,6 +244,9 @@ function showEdit(c) {
   document.getElementById('c-retrydelay').value = c.retryDelay;
   document.getElementById('c-amd').checked = c.amd;
   document.getElementById('c-dnc').checked = c.dncEnabled !== false;
+  document.getElementById('c-carrier').value = c.carrier || 'telnyx';
+  document.getElementById('c-amdaction').value = c.amdAction || 'hangup';
+  toggleAmdSettings();
   document.getElementById('c-submit-btn').textContent = 'Update';
   document.getElementById('predictive-settings').style.display = c.strategy === 'predictive' ? 'block' : 'none';
   if (c.strategy === 'predictive') {
@@ -318,6 +348,8 @@ async function saveCampaign(e) {
     retryAttempts: parseInt(document.getElementById('c-retries').value) || 3,
     retryDelay: parseInt(document.getElementById('c-retrydelay').value) || 30,
     amd: document.getElementById('c-amd').checked,
+    amdAction: document.getElementById('c-amdaction').value,
+    carrier: document.getElementById('c-amd').checked ? document.getElementById('c-carrier').value : '',
     dncEnabled: document.getElementById('c-dnc').checked,
   };
   if (body.strategy === 'predictive') {

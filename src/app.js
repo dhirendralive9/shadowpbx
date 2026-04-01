@@ -271,6 +271,9 @@ async function main() {
   // Appointment webhook routes (PUBLIC — Twilio/SignalWire must reach these)
   appointmentHandler.registerWebhookRoutes(app);
 
+  // Dialer webhook routes (PUBLIC — carriers must reach these for AMD)
+  dialerEngine.registerWebhookRoutes(app);
+
   // API auth middleware
   app.use('/api', (req, res, next) => {
     const token = req.headers['x-api-key'] || req.query.apikey;

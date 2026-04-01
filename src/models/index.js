@@ -285,8 +285,9 @@ const campaignSchema = new mongoose.Schema({
     enum: ['auto', 'predictive'],
     default: 'auto'
   },
-  trunk: { type: String, required: true },           // outbound trunk name
+  trunk: { type: String, required: true },           // outbound SIP trunk name (non-AMD calls)
   callerId: { type: String, required: true },         // outbound caller ID
+  carrier: { type: String, enum: ['', 'telnyx', 'signalwire', 'twilio'], default: '' },  // REST API carrier (for AMD)
   agents: [{ type: String }],                         // extension numbers assigned
 
   // Dialing settings
