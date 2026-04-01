@@ -8,7 +8,6 @@
   </div>
 </div>
 
-<!-- ═══════════════════ ADD / EDIT FORM ═══════════════════ -->
 <% if (role === 'admin') { %>
 <div id="add-form" style="display:none;margin-bottom:16px" class="card">
   <form onsubmit="saveCampaign(event)">
@@ -22,100 +21,86 @@
     </div>
     <div class="grid-3" style="margin-bottom:0">
       <div class="form-group"><label class="form-label">Trunk</label><select class="form-select" id="c-trunk" required></select></div>
-      <div class="form-group"><label class="form-label">Max concurrent calls</label><input class="form-input" id="c-maxconcurrent" type="number" value="10" min="1" max="200"></div>
-      <div class="form-group"><label class="form-label">Ring timeout (sec)</label><input class="form-input" id="c-ringtimeout" type="number" value="30" min="10" max="60"></div>
+      <div class="form-group"><label class="form-label">Max concurrent</label><input class="form-input" id="c-maxconcurrent" type="number" value="10" min="1" max="200"></div>
+      <div class="form-group"><label class="form-label">Ring timeout (s)</label><input class="form-input" id="c-ringtimeout" type="number" value="30" min="10" max="60"></div>
     </div>
     <div class="grid-3" style="margin-bottom:0">
-      <div class="form-group"><label class="form-label">Wrap-up time (sec)</label><input class="form-input" id="c-wrapup" type="number" value="10" min="0" max="120"></div>
+      <div class="form-group"><label class="form-label">Wrap-up (s)</label><input class="form-input" id="c-wrapup" type="number" value="10" min="0" max="120"></div>
       <div class="form-group"><label class="form-label">Retry attempts</label><input class="form-input" id="c-retries" type="number" value="3" min="1" max="10"></div>
       <div class="form-group"><label class="form-label">Retry delay (min)</label><input class="form-input" id="c-retrydelay" type="number" value="30" min="1" max="1440"></div>
     </div>
-
-    <!-- Agents -->
     <div style="margin:12px 0">
-      <label class="form-label">Agents (select extensions)</label>
+      <label class="form-label">Agents</label>
       <div id="c-agents" style="max-height:120px;overflow-y:auto;border:0.5px solid var(--border);border-radius:var(--radius);padding:8px;display:flex;flex-wrap:wrap;gap:4px 16px"></div>
     </div>
-
-    <!-- Predictive settings -->
     <div id="predictive-settings" style="display:none">
       <div class="grid-3" style="margin-bottom:0">
-        <div class="form-group"><label class="form-label">Dial ratio</label><input class="form-input" id="c-dialratio" type="number" value="1.2" min="1" max="5" step="0.1"></div>
-        <div class="form-group"><label class="form-label">Max abandon rate %</label><input class="form-input" id="c-maxabandoned" type="number" value="3" min="1" max="10"></div>
+        <div class="form-group"><label class="form-label">Initial dial ratio</label><input class="form-input" id="c-dialratio" type="number" value="1.2" min="1" max="5" step="0.1"></div>
+        <div class="form-group"><label class="form-label">Max abandon %</label><input class="form-input" id="c-maxabandoned" type="number" value="3" min="1" max="10"></div>
       </div>
     </div>
-
     <div class="grid-3" style="margin-bottom:0">
       <div class="form-group" style="display:flex;align-items:flex-end;gap:12px;padding-bottom:14px">
-        <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="c-amd" onchange="toggleAmdSettings()"> AMD</label>
-        <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="c-dnc" checked> DNC check</label>
+        <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="c-amd" onchange="toggleAmd()"> AMD</label>
+        <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="c-dnc" checked> DNC</label>
       </div>
-      <div class="form-group" id="amd-carrier-wrap" style="display:none">
-        <label class="form-label">AMD carrier (REST API)</label>
-        <select class="form-select" id="c-carrier">
-          <option value="telnyx">Telnyx</option>
-          <option value="signalwire">SignalWire</option>
-          <option value="twilio">Twilio</option>
-        </select>
-      </div>
-      <div class="form-group" id="amd-action-wrap" style="display:none">
-        <label class="form-label">On machine detected</label>
-        <select class="form-select" id="c-amdaction">
-          <option value="hangup">Hang up</option>
-          <option value="leave-message">Leave message</option>
-        </select>
-      </div>
+      <div class="form-group" id="amd-carrier-wrap" style="display:none"><label class="form-label">Carrier</label>
+        <select class="form-select" id="c-carrier"><option value="telnyx">Telnyx</option><option value="signalwire">SignalWire</option><option value="twilio">Twilio</option></select></div>
+      <div class="form-group" id="amd-action-wrap" style="display:none"><label class="form-label">On machine</label>
+        <select class="form-select" id="c-amdaction"><option value="hangup">Hang up</option><option value="leave-message">Leave message</option></select></div>
     </div>
-    <div class="grid-3" style="margin-bottom:0">
-      <div class="form-group" style="display:flex;align-items:flex-end">
-        <div style="display:flex;gap:8px">
-          <button type="submit" class="btn btn-primary btn-sm" id="c-submit-btn">Create</button>
-          <button type="button" class="btn btn-sm" onclick="hideAdd()">Cancel</button>
-        </div>
-      </div>
+    <div style="display:flex;gap:8px;margin-top:4px">
+      <button type="submit" class="btn btn-primary btn-sm" id="c-submit-btn">Create</button>
+      <button type="button" class="btn btn-sm" onclick="hideAdd()">Cancel</button>
     </div>
   </form>
 </div>
 <% } %>
 
-<!-- ═══════════════════ CAMPAIGN LIST ═══════════════════ -->
 <div id="camp-list"></div>
 
-<!-- ═══════════════════ CSV IMPORT ═══════════════════ -->
-<div id="import-panel" style="display:none;margin-top:16px" class="card">
-  <div class="card-head">
-    <span class="card-title" id="import-title">Import leads</span>
-    <button class="btn btn-sm" onclick="document.getElementById('import-panel').style.display='none'">Close</button>
+<!-- ═══════ LIVE DASHBOARD ═══════ -->
+<div id="live-panel" style="display:none;margin-top:16px">
+  <div class="sec-head">
+    <span class="sec-title" id="live-title">Live dashboard</span>
+    <div style="display:flex;gap:8px;align-items:center">
+      <span class="pill p-ok" style="font-size:10px;animation:pulse 1.5s infinite">LIVE</span>
+      <button class="btn btn-sm" onclick="closeLive()">Close</button>
+    </div>
   </div>
-  <form onsubmit="uploadCSV(event)" enctype="multipart/form-data">
+  <div class="grid-4" style="margin-bottom:12px" id="live-stats"></div>
+  <div style="margin-bottom:12px">
+    <div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text-secondary)">Agents</div>
+    <div id="live-agents" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+    <div id="live-agent-summary" style="margin-top:6px"></div>
+  </div>
+</div>
+
+<!-- ═══════ CSV IMPORT (admin) ═══════ -->
+<% if (role === 'admin') { %>
+<div id="import-panel" style="display:none;margin-top:16px" class="card">
+  <div class="card-head"><span class="card-title" id="import-title">Import leads</span>
+    <button class="btn btn-sm" onclick="document.getElementById('import-panel').style.display='none'">Close</button></div>
+  <form onsubmit="uploadCSV(event)">
     <input type="hidden" id="import-campaign-id" value="">
     <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
-      <div class="form-group" style="flex:1;min-width:200px">
-        <label class="form-label">CSV file</label>
-        <input class="form-input" type="file" id="import-file" accept=".csv,.tsv,.txt" required>
-      </div>
-      <div class="form-group">
-        <button type="submit" class="btn btn-primary btn-sm">Import</button>
-      </div>
+      <div class="form-group" style="flex:1;min-width:200px"><label class="form-label">CSV file</label>
+        <input class="form-input" type="file" id="import-file" accept=".csv,.tsv,.txt" required></div>
+      <div class="form-group"><button type="submit" class="btn btn-primary btn-sm">Import</button></div>
     </div>
-    <div class="muted" style="font-size:11px;margin-top:4px">CSV must have a header row. Auto-detects columns: phone, name, company, email. Other columns are stored as custom fields.</div>
+    <div class="muted" style="font-size:11px;margin-top:4px">Header row required. Auto-detects: phone, name, company, email.</div>
   </form>
   <div id="import-result" style="margin-top:8px"></div>
 </div>
+<% } %>
 
-<!-- ═══════════════════ LEADS VIEWER ═══════════════════ -->
+<!-- ═══════ LEADS VIEWER ═══════ -->
 <div id="leads-panel" style="display:none;margin-top:16px">
-  <div class="sec-head">
-    <span class="sec-title" id="leads-title">Leads</span>
+  <div class="sec-head"><span class="sec-title" id="leads-title">Leads</span>
     <div style="display:flex;gap:8px">
       <select class="form-select" id="leads-filter" onchange="loadLeads()" style="width:130px;font-size:11px">
-        <option value="">All statuses</option>
-        <option value="pending">Pending</option>
-        <option value="calling">Calling</option>
-        <option value="completed">Completed</option>
-        <option value="failed">Failed</option>
-        <option value="dnc">DNC</option>
-        <option value="scheduled">Scheduled</option>
+        <option value="">All</option><option value="pending">Pending</option><option value="calling">Calling</option>
+        <option value="completed">Completed</option><option value="failed">Failed</option><option value="dnc">DNC</option><option value="scheduled">Scheduled</option>
       </select>
       <button class="btn btn-sm" onclick="loadLeads()">Refresh</button>
       <button class="btn btn-sm" onclick="document.getElementById('leads-panel').style.display='none'">Close</button>
@@ -125,352 +110,202 @@
   <div id="leads-list"></div>
 </div>
 
+<style>
+.grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+@media(max-width:900px){.grid-4{grid-template-columns:repeat(2,1fr)}}
+.lv-card{background:var(--bg-surface);border-radius:var(--radius);padding:10px 14px;border:0.5px solid var(--border)}
+.lv-card .lv-val{font-size:22px;font-weight:700;line-height:1.1}
+.lv-card .lv-lbl{font-size:10px;color:var(--text-tertiary);margin-top:2px}
+.ag-chip{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:var(--radius);font-size:11px;border:0.5px solid var(--border);background:var(--bg-surface)}
+.ag-chip .ag-dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+.ag-idle{background:var(--color-ok)}.ag-oncall{background:var(--color-error)}.ag-wrapup{background:var(--color-warn)}
+.ag-reserved{background:#818cf8}.ag-paused{background:var(--text-tertiary)}.ag-offline{background:var(--border)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+</style>
+
 <script>
-var API = '/api', KEY = '<%= apiKey %>', H = { 'X-API-Key': KEY };
-var J = { 'X-API-Key': KEY, 'Content-Type': 'application/json' };
-var myRole = '<%= role %>';
-var currentLeadsCampaignId = '';
+var API='/api',KEY='<%= apiKey %>',H={'X-API-Key':KEY},J={'X-API-Key':KEY,'Content-Type':'application/json'};
+var myRole='<%= typeof role!=="undefined"?role:"admin" %>';
+var isAdmin=myRole==='admin',isSupervisor=myRole==='supervisor';
+var currentLeadsCampaignId='',liveCampaignId='',liveInterval=null;
 
-function esc(s) { if (!s) return ''; var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
-function showToast(msg, isError) {
-  var el = document.createElement('div');
-  el.className = 'toast ' + (isError ? 'toast-error' : 'toast-success');
-  el.textContent = msg; document.body.appendChild(el);
-  setTimeout(function() { el.remove(); }, 3000);
+function esc(s){if(!s)return '';var d=document.createElement('div');d.textContent=s;return d.innerHTML}
+function showToast(m,e){var el=document.createElement('div');el.className='toast '+(e?'toast-error':'toast-success');el.textContent=m;document.body.appendChild(el);setTimeout(function(){el.remove()},3000)}
+function statusPill(s){var m={draft:'p-gray',running:'p-ok',paused:'p-warn',completed:'p-info',archived:'p-gray'};return '<span class="pill '+(m[s]||'p-gray')+'">'+esc(s)+'</span>'}
+function stratBadge(s){return '<span class="pill '+(s==='predictive'?'p-warn':'p-info')+'" style="font-size:10px">'+esc(s)+'</span>'}
+function leadPill(s){var m={pending:'p-gray',calling:'p-warn',completed:'p-ok',failed:'p-err',dnc:'p-err',scheduled:'p-info',abandoned:'p-warn'};return '<span class="pill '+(m[s]||'p-gray')+'">'+esc(s)+'</span>'}
+function fmtPct(v){return(v||0)+'%'}
+function fmtDate(d){return d?new Date(d).toLocaleString():'—'}
+function fmtSec(s){if(!s)return '0s';var m=Math.floor(s/60);return m>0?m+'m '+(s%60)+'s':s+'s'}
+
+// ─── Form toggles ───
+if(document.getElementById('c-strategy'))document.getElementById('c-strategy').addEventListener('change',function(){document.getElementById('predictive-settings').style.display=this.value==='predictive'?'block':'none'});
+function toggleAmd(){var o=document.getElementById('c-amd').checked;document.getElementById('amd-carrier-wrap').style.display=o?'block':'none';document.getElementById('amd-action-wrap').style.display=o?'block':'none'}
+
+// ─── Form data ───
+async function loadFormData(){
+  if(!isAdmin)return;
+  try{
+    var[tR,eR]=await Promise.all([fetch(API+'/trunks',{headers:H}).then(r=>r.json()),fetch(API+'/extensions',{headers:H}).then(r=>r.json())]);
+    if(tR.success&&tR.trunks){var s=document.getElementById('c-trunk');if(s){s.innerHTML='<option value="">— select —</option>';tR.trunks.forEach(function(t){s.innerHTML+='<option value="'+esc(t.name)+'">'+esc(t.name)+'</option>'})}}
+    if(eR.success&&eR.extensions){var d=document.getElementById('c-agents');if(d)d.innerHTML=eR.extensions.map(function(e){return '<label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;min-width:120px"><input type="checkbox" class="agent-cb" value="'+esc(e.extension)+'"> '+esc(e.extension)+' ('+esc(e.name)+')</label>'}).join('')}
+  }catch(e){}
 }
+function getAgents(){return Array.from(document.querySelectorAll('.agent-cb:checked')).map(function(c){return c.value})}
+function setAgents(a){document.querySelectorAll('.agent-cb').forEach(function(c){c.checked=a.includes(c.value)})}
 
-function statusPill(s) {
-  var map = { draft: 'p-gray', running: 'p-ok', paused: 'p-warn', completed: 'p-info', archived: 'p-gray' };
-  return '<span class="pill ' + (map[s] || 'p-gray') + '">' + esc(s) + '</span>';
+function showAdd(){
+  ['c-edit-id','c-name','c-callerid'].forEach(function(id){document.getElementById(id).value=''});
+  document.getElementById('c-strategy').value='auto';document.getElementById('c-trunk').value='';
+  document.getElementById('c-maxconcurrent').value='10';document.getElementById('c-ringtimeout').value='30';
+  document.getElementById('c-wrapup').value='10';document.getElementById('c-retries').value='3';document.getElementById('c-retrydelay').value='30';
+  document.getElementById('c-amd').checked=false;document.getElementById('c-dnc').checked=true;
+  document.getElementById('c-carrier').value='telnyx';document.getElementById('c-amdaction').value='hangup';
+  toggleAmd();document.getElementById('c-submit-btn').textContent='Create';
+  document.getElementById('predictive-settings').style.display='none';setAgents([]);
+  document.getElementById('add-form').style.display='block';
 }
-
-function strategyBadge(s) {
-  return '<span class="pill ' + (s === 'predictive' ? 'p-warn' : 'p-info') + '" style="font-size:10px">' + esc(s) + '</span>';
+function showEdit(c){
+  document.getElementById('c-edit-id').value=c._id;document.getElementById('c-name').value=c.name;
+  document.getElementById('c-strategy').value=c.strategy;document.getElementById('c-callerid').value=c.callerId;
+  document.getElementById('c-trunk').value=c.trunk;document.getElementById('c-maxconcurrent').value=c.maxConcurrent;
+  document.getElementById('c-ringtimeout').value=c.ringTimeout;document.getElementById('c-wrapup').value=c.wrapUpTime;
+  document.getElementById('c-retries').value=c.retryAttempts;document.getElementById('c-retrydelay').value=c.retryDelay;
+  document.getElementById('c-amd').checked=c.amd;document.getElementById('c-dnc').checked=c.dncEnabled!==false;
+  document.getElementById('c-carrier').value=c.carrier||'telnyx';document.getElementById('c-amdaction').value=c.amdAction||'hangup';
+  toggleAmd();document.getElementById('c-submit-btn').textContent='Update';
+  document.getElementById('predictive-settings').style.display=c.strategy==='predictive'?'block':'none';
+  if(c.strategy==='predictive'){document.getElementById('c-dialratio').value=c.dialRatio||1.2;document.getElementById('c-maxabandoned').value=c.maxAbandoned||3}
+  setAgents(c.agents||[]);document.getElementById('add-form').style.display='block';
 }
+function hideAdd(){document.getElementById('add-form').style.display='none'}
 
-function leadStatusPill(s) {
-  var map = { pending: 'p-gray', calling: 'p-warn', completed: 'p-ok', failed: 'p-err', dnc: 'p-err', scheduled: 'p-info', abandoned: 'p-warn' };
-  return '<span class="pill ' + (map[s] || 'p-gray') + '">' + esc(s) + '</span>';
-}
-
-function fmtPct(v) { return (v || 0) + '%'; }
-function fmtDate(d) { return d ? new Date(d).toLocaleString() : '—'; }
-
-// Strategy toggle
-document.getElementById('c-strategy') && document.getElementById('c-strategy').addEventListener('change', function() {
-  document.getElementById('predictive-settings').style.display = this.value === 'predictive' ? 'block' : 'none';
-});
-
-// AMD toggle — show/hide carrier and action selectors
-function toggleAmdSettings() {
-  var on = document.getElementById('c-amd').checked;
-  document.getElementById('amd-carrier-wrap').style.display = on ? 'block' : 'none';
-  document.getElementById('amd-action-wrap').style.display = on ? 'block' : 'none';
-}
-
-// ─── Load trunks and extensions for the form ───
-async function loadFormData() {
-  try {
-    var [tRes, eRes] = await Promise.all([
-      fetch(API + '/trunks', { headers: H }).then(r => r.json()),
-      fetch(API + '/extensions', { headers: H }).then(r => r.json())
-    ]);
-    if (tRes.success && tRes.trunks) {
-      var sel = document.getElementById('c-trunk');
-      if (sel) {
-        sel.innerHTML = '<option value="">— select trunk —</option>';
-        tRes.trunks.forEach(function(t) {
-          sel.innerHTML += '<option value="' + esc(t.name) + '">' + esc(t.name) + ' (' + esc(t.host) + ')</option>';
-        });
+// ═══════ CAMPAIGN LIST ═══════
+async function loadCampaigns(){
+  try{
+    var d=await(await fetch(API+'/campaigns',{headers:H})).json();
+    var c=document.getElementById('camp-list');
+    if(!d.success||!d.campaigns||!d.campaigns.length){c.innerHTML='<div class="card"><div class="empty">No campaigns yet</div></div>';document.getElementById('camp-summary').textContent='';return}
+    var run=d.campaigns.filter(function(x){return x.status==='running'}).length;
+    document.getElementById('camp-summary').textContent=d.campaigns.length+' campaign(s)'+(run?', '+run+' running':'');
+    c.innerHTML=d.campaigns.map(function(cp){
+      var s=cp.stats||{},prog=s.totalLeads>0?Math.round(((s.completed||0)/s.totalLeads)*100):0;
+      var ctrl='';
+      // Admin: everything
+      if(isAdmin){
+        if(cp.status==='draft'||cp.status==='paused')ctrl+='<button class="btn btn-sm" style="background:var(--color-ok);color:#fff;border-color:var(--color-ok)" onclick="startCamp(\''+cp._id+'\')">Start</button> ';
+        if(cp.status==='running'){ctrl+='<button class="btn btn-sm" onclick="pauseCamp(\''+cp._id+'\')">Pause</button> ';ctrl+='<button class="btn btn-sm btn-danger" onclick="stopCamp(\''+cp._id+'\')">Stop</button> '}
+        if(cp.status==='running')ctrl+='<button class="btn btn-sm" onclick="openLive(\''+cp._id+'\',\''+esc(cp.name)+'\')">Live</button> ';
+        ctrl+='<button class="btn btn-sm" onclick="showImport(\''+cp._id+'\',\''+esc(cp.name)+'\')">Import</button> ';
+        ctrl+='<button class="btn btn-sm" onclick="showLeads(\''+cp._id+'\',\''+esc(cp.name)+'\')">Leads</button> ';
+        if(cp.status!=='running'){ctrl+='<button class="btn btn-sm" onclick=\'showEdit('+JSON.stringify(cp).replace(/'/g,"&#39;")+')\'> Edit</button> ';ctrl+='<button class="btn btn-sm btn-danger" onclick="delCamp(\''+cp._id+'\',\''+esc(cp.name)+'\')">Delete</button>'}
       }
-    }
-    if (eRes.success && eRes.extensions) {
-      var div = document.getElementById('c-agents');
-      if (div) {
-        div.innerHTML = eRes.extensions.map(function(e) {
-          return '<label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;min-width:120px">' +
-            '<input type="checkbox" class="agent-cb" value="' + esc(e.extension) + '"> ' +
-            esc(e.extension) + ' (' + esc(e.name) + ')</label>';
-        }).join('');
+      // Supervisor: start/pause, live, view leads — no create/edit/delete/import/DNC
+      if(isSupervisor){
+        if(cp.status==='draft'||cp.status==='paused')ctrl+='<button class="btn btn-sm" style="background:var(--color-ok);color:#fff;border-color:var(--color-ok)" onclick="startCamp(\''+cp._id+'\')">Start</button> ';
+        if(cp.status==='running'){ctrl+='<button class="btn btn-sm" onclick="pauseCamp(\''+cp._id+'\')">Pause</button> ';ctrl+='<button class="btn btn-sm" onclick="openLive(\''+cp._id+'\',\''+esc(cp.name)+'\')">Live</button> '}
+        ctrl+='<button class="btn btn-sm" onclick="showLeads(\''+cp._id+'\',\''+esc(cp.name)+'\')">Leads</button> ';
       }
-    }
-  } catch (e) {}
-}
-
-function getSelectedAgents() {
-  var cbs = document.querySelectorAll('.agent-cb:checked');
-  return Array.from(cbs).map(function(cb) { return cb.value; });
-}
-
-function setSelectedAgents(agents) {
-  document.querySelectorAll('.agent-cb').forEach(function(cb) {
-    cb.checked = agents.includes(cb.value);
-  });
-}
-
-// ─── Form ───
-function showAdd() {
-  document.getElementById('c-edit-id').value = '';
-  document.getElementById('c-name').value = '';
-  document.getElementById('c-strategy').value = 'auto';
-  document.getElementById('c-callerid').value = '';
-  document.getElementById('c-trunk').value = '';
-  document.getElementById('c-maxconcurrent').value = '10';
-  document.getElementById('c-ringtimeout').value = '30';
-  document.getElementById('c-wrapup').value = '10';
-  document.getElementById('c-retries').value = '3';
-  document.getElementById('c-retrydelay').value = '30';
-  document.getElementById('c-amd').checked = false;
-  document.getElementById('c-dnc').checked = true;
-  document.getElementById('c-carrier').value = 'telnyx';
-  document.getElementById('c-amdaction').value = 'hangup';
-  toggleAmdSettings();
-  document.getElementById('c-submit-btn').textContent = 'Create';
-  document.getElementById('predictive-settings').style.display = 'none';
-  setSelectedAgents([]);
-  document.getElementById('add-form').style.display = 'block';
-}
-
-function showEdit(c) {
-  document.getElementById('c-edit-id').value = c._id;
-  document.getElementById('c-name').value = c.name;
-  document.getElementById('c-strategy').value = c.strategy;
-  document.getElementById('c-callerid').value = c.callerId;
-  document.getElementById('c-trunk').value = c.trunk;
-  document.getElementById('c-maxconcurrent').value = c.maxConcurrent;
-  document.getElementById('c-ringtimeout').value = c.ringTimeout;
-  document.getElementById('c-wrapup').value = c.wrapUpTime;
-  document.getElementById('c-retries').value = c.retryAttempts;
-  document.getElementById('c-retrydelay').value = c.retryDelay;
-  document.getElementById('c-amd').checked = c.amd;
-  document.getElementById('c-dnc').checked = c.dncEnabled !== false;
-  document.getElementById('c-carrier').value = c.carrier || 'telnyx';
-  document.getElementById('c-amdaction').value = c.amdAction || 'hangup';
-  toggleAmdSettings();
-  document.getElementById('c-submit-btn').textContent = 'Update';
-  document.getElementById('predictive-settings').style.display = c.strategy === 'predictive' ? 'block' : 'none';
-  if (c.strategy === 'predictive') {
-    document.getElementById('c-dialratio').value = c.dialRatio || 1.2;
-    document.getElementById('c-maxabandoned').value = c.maxAbandoned || 3;
-  }
-  setSelectedAgents(c.agents || []);
-  document.getElementById('add-form').style.display = 'block';
-}
-function hideAdd() { document.getElementById('add-form').style.display = 'none'; }
-
-// ─── CRUD ───
-async function loadCampaigns() {
-  try {
-    var d = await (await fetch(API + '/campaigns', { headers: H })).json();
-    var c = document.getElementById('camp-list');
-    if (!d.success || !d.campaigns || !d.campaigns.length) {
-      c.innerHTML = '<div class="card"><div class="empty">No campaigns yet</div></div>';
-      document.getElementById('camp-summary').textContent = ''; return;
-    }
-
-    var running = d.campaigns.filter(function(x) { return x.status === 'running'; }).length;
-    document.getElementById('camp-summary').textContent = d.campaigns.length + ' campaign(s)' + (running ? ', ' + running + ' running' : '');
-
-    c.innerHTML = d.campaigns.map(function(cp) {
-      var s = cp.stats || {};
-      var progress = s.totalLeads > 0 ? Math.round(((s.completed || 0) / s.totalLeads) * 100) : 0;
-
-      var controls = '';
-      if (myRole === 'admin') {
-        if (cp.status === 'draft' || cp.status === 'paused') {
-          controls += '<button class="btn btn-sm" style="background:var(--color-ok);color:#fff;border-color:var(--color-ok)" onclick="startCamp(\'' + cp._id + '\')">Start</button> ';
-        }
-        if (cp.status === 'running') {
-          controls += '<button class="btn btn-sm" onclick="pauseCamp(\'' + cp._id + '\')">Pause</button> ';
-          controls += '<button class="btn btn-sm btn-danger" onclick="stopCamp(\'' + cp._id + '\')">Stop</button> ';
-        }
-        controls += '<button class="btn btn-sm" onclick="showImport(\'' + cp._id + '\',\'' + esc(cp.name) + '\')">Import CSV</button> ';
-        controls += '<button class="btn btn-sm" onclick="showLeads(\'' + cp._id + '\',\'' + esc(cp.name) + '\')">Leads</button> ';
-        if (cp.status !== 'running') {
-          controls += '<button class="btn btn-sm" onclick=\'showEdit(' + JSON.stringify(cp).replace(/'/g, "&#39;") + ')\'>Edit</button> ';
-          controls += '<button class="btn btn-sm btn-danger" onclick="delCamp(\'' + cp._id + '\',\'' + esc(cp.name) + '\')">Delete</button>';
-        }
-      } else {
-        controls += '<button class="btn btn-sm" onclick="showLeads(\'' + cp._id + '\',\'' + esc(cp.name) + '\')">Leads</button>';
-      }
-
-      return '<div class="card" style="margin-bottom:12px">' +
-        '<div class="card-head">' +
-          '<div style="display:flex;align-items:center;gap:10px">' +
-            '<span class="card-title">' + esc(cp.name) + '</span>' +
-            statusPill(cp.status) + ' ' + strategyBadge(cp.strategy) +
-          '</div>' +
-          '<div style="display:flex;gap:6px;flex-wrap:wrap">' + controls + '</div>' +
-        '</div>' +
-        '<div style="display:flex;gap:20px;font-size:12px;color:var(--text-secondary);flex-wrap:wrap">' +
-          '<span>Trunk: <span class="mono">' + esc(cp.trunk) + '</span></span>' +
-          '<span>CID: <span class="mono">' + esc(cp.callerId) + '</span></span>' +
-          '<span>Agents: <b>' + (cp.agents ? cp.agents.length : 0) + '</b></span>' +
-          '<span>Leads: <b>' + (s.totalLeads || 0) + '</b></span>' +
-        '</div>' +
-        (s.totalLeads > 0 ?
-          '<div style="margin-top:8px">' +
-            '<div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px">' +
-              '<span>Progress: ' + (s.completed || 0) + ' / ' + s.totalLeads + '</span>' +
-              '<span>' + progress + '%</span>' +
-            '</div>' +
-            '<div style="height:6px;background:var(--bg-tertiary);border-radius:3px;overflow:hidden">' +
-              '<div style="height:100%;width:' + progress + '%;background:var(--accent);border-radius:3px;transition:width 0.3s"></div>' +
-            '</div>' +
-          '</div>' +
-          '<div style="display:flex;gap:16px;font-size:11px;color:var(--text-tertiary);margin-top:6px;flex-wrap:wrap">' +
-            '<span>Dialed: ' + (s.dialed || 0) + '</span>' +
-            '<span>Answered: ' + (s.answered || 0) + '</span>' +
-            '<span>No answer: ' + (s.noAnswer || 0) + '</span>' +
-            '<span>Busy: ' + (s.busy || 0) + '</span>' +
-            '<span>Machine: ' + (s.machine || 0) + '</span>' +
-            '<span>Answer rate: ' + fmtPct(Math.round((s.answerRate || 0) * 100)) + '</span>' +
-            '<span>Calls/hr: ' + (s.callsPerHour || 0) + '</span>' +
-            (cp.strategy === 'predictive' ?
-              '<span>Abandon: ' + fmtPct(Math.round((s.abandonRate || 0) * 100)) + '</span>' +
-              '<span>Dial ratio: <b>' + (s.currentDialRatio || '1.0') + '</b></span>' +
-              '<span style="font-size:10px;color:var(--text-tertiary)">Rolling: ans=' + (s.rollingAnswerRate || 0) + '% abn=' + (s.rollingAbandonRate || 0) + '%</span>'
-            : '') +
-          '</div>'
-        : '') +
+      return '<div class="card" style="margin-bottom:12px"><div class="card-head"><div style="display:flex;align-items:center;gap:10px"><span class="card-title">'+esc(cp.name)+'</span>'+statusPill(cp.status)+' '+stratBadge(cp.strategy)+(cp.amd?' <span class="pill p-info" style="font-size:9px">AMD</span>':'')+'</div><div style="display:flex;gap:6px;flex-wrap:wrap">'+ctrl+'</div></div>'+
+      '<div style="display:flex;gap:20px;font-size:12px;color:var(--text-secondary);flex-wrap:wrap"><span>Trunk: <span class="mono">'+esc(cp.trunk)+'</span></span><span>CID: <span class="mono">'+esc(cp.callerId)+'</span></span><span>Agents: <b>'+(cp.agents?cp.agents.length:0)+'</b></span><span>Leads: <b>'+(s.totalLeads||0)+'</b></span>'+(cp.carrier?'<span>Carrier: <span class="mono">'+esc(cp.carrier)+'</span></span>':'')+'</div>'+
+      (s.totalLeads>0?'<div style="margin-top:8px"><div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px"><span>Progress: '+(s.completed||0)+' / '+s.totalLeads+'</span><span>'+prog+'%</span></div><div style="height:6px;background:var(--bg-tertiary);border-radius:3px;overflow:hidden"><div style="height:100%;width:'+prog+'%;background:var(--accent);border-radius:3px;transition:width 0.3s"></div></div></div>'+
+      '<div style="display:flex;gap:16px;font-size:11px;color:var(--text-tertiary);margin-top:6px;flex-wrap:wrap"><span>Dialed: '+(s.dialed||0)+'</span><span>Answered: '+(s.answered||0)+'</span><span>No-ans: '+(s.noAnswer||0)+'</span><span>Busy: '+(s.busy||0)+'</span><span>Machine: '+(s.machine||0)+'</span><span>Ans: '+fmtPct(Math.round((s.answerRate||0)*100))+'</span><span>Calls/hr: '+(s.callsPerHour||0)+'</span>'+(cp.strategy==='predictive'?'<span>Abandon: '+fmtPct(Math.round((s.abandonRate||0)*100))+'</span><span>Ratio: <b>'+(s.currentDialRatio||'1.0')+'</b></span>':'')+'</div>':'')+
       '</div>';
     }).join('');
-  } catch (e) { console.error('campaigns load', e); }
+  }catch(e){console.error('campaigns',e)}
 }
 
-async function saveCampaign(e) {
-  e.preventDefault();
-  var editId = document.getElementById('c-edit-id').value;
-  var body = {
-    name: document.getElementById('c-name').value,
-    strategy: document.getElementById('c-strategy').value,
-    callerId: document.getElementById('c-callerid').value,
-    trunk: document.getElementById('c-trunk').value,
-    agents: getSelectedAgents(),
-    maxConcurrent: parseInt(document.getElementById('c-maxconcurrent').value) || 10,
-    ringTimeout: parseInt(document.getElementById('c-ringtimeout').value) || 30,
-    wrapUpTime: parseInt(document.getElementById('c-wrapup').value) || 10,
-    retryAttempts: parseInt(document.getElementById('c-retries').value) || 3,
-    retryDelay: parseInt(document.getElementById('c-retrydelay').value) || 30,
-    amd: document.getElementById('c-amd').checked,
-    amdAction: document.getElementById('c-amdaction').value,
-    carrier: document.getElementById('c-amd').checked ? document.getElementById('c-carrier').value : '',
-    dncEnabled: document.getElementById('c-dnc').checked,
-  };
-  if (body.strategy === 'predictive') {
-    body.dialRatio = parseFloat(document.getElementById('c-dialratio').value) || 1.2;
-    body.maxAbandoned = parseInt(document.getElementById('c-maxabandoned').value) || 3;
-  }
-  if (!body.trunk) { showToast('Select a trunk', true); return; }
-  if (body.agents.length === 0) { showToast('Select at least one agent', true); return; }
+// ═══════ LIVE DASHBOARD ═══════
+function openLive(id,name){
+  liveCampaignId=id;
+  document.getElementById('live-title').textContent=name+' — Live';
+  document.getElementById('live-panel').style.display='block';
+  if(liveInterval)clearInterval(liveInterval);
+  refreshLive();liveInterval=setInterval(refreshLive,2000);
+}
+function closeLive(){if(liveInterval)clearInterval(liveInterval);liveInterval=null;liveCampaignId='';document.getElementById('live-panel').style.display='none'}
 
-  var url = editId ? API + '/campaigns/' + editId : API + '/campaigns';
-  var d = await (await fetch(url, { method: editId ? 'PUT' : 'POST', headers: J, body: JSON.stringify(body) })).json();
-  if (d.success) { hideAdd(); showToast(editId ? 'Updated' : 'Campaign created'); loadCampaigns(); }
-  else showToast(d.error || 'Failed', true);
+async function refreshLive(){
+  if(!liveCampaignId)return;
+  try{
+    var d=await(await fetch(API+'/campaigns/'+liveCampaignId+'/live',{headers:H})).json();
+    if(!d.success)return;
+    var l=d.live,s=l.stats||{},ac=l.agentCounts||{};
+
+    document.getElementById('live-stats').innerHTML=
+      sc(l.activeCalls||0,'Active calls','var(--accent)')+sc(l.ringingCalls||0,'Ringing','var(--color-warn)')+
+      sc(l.connectedCalls||0,'Connected','var(--color-ok)')+sc(s.dialed||0,'Total dialed','')+
+      sc(s.answered||0,'Answered','var(--color-ok)')+sc(s.answerRate+'%','Answer rate','')+
+      sc(fmtSec(s.avgTalkTime),'Avg talk','')+sc(s.callsPerHour||0,'Calls/hr','')+
+      sc(s.abandoned||0,'Abandoned',s.abandonRate>3?'var(--color-error)':'')+
+      sc(s.rollingAbandonRate+'%','Abandon (rolling)',s.rollingAbandonRate>3?'var(--color-error)':'')+
+      sc(s.currentDialRatio||'—','Dial ratio','var(--accent)')+sc(s.rollingAnswerRate+'%','Answer (rolling)','');
+
+    var agents=l.agents||[];
+    document.getElementById('live-agents').innerHTML=agents.length===0?'<span class="muted" style="font-size:12px">No agents</span>':
+      agents.map(function(a){
+        var dc='ag-offline',lb=a.state;
+        if(a.state==='idle'){dc='ag-idle';lb='idle'}else if(a.state==='on-call'){dc='ag-oncall';lb='on call'}
+        else if(a.state==='wrap-up'){dc='ag-wrapup';lb='wrap-up'}else if(a.state==='reserved'){dc='ag-reserved';lb='reserved'}
+        else if(a.state==='paused'){dc='ag-paused';lb='paused'}else{dc='ag-offline';lb='offline'}
+        return '<div class="ag-chip"><span class="ag-dot '+dc+'"></span><span class="mono" style="font-weight:600">'+esc(a.extension)+'</span><span style="color:var(--text-tertiary)">'+lb+'</span>'+(a.callCount?'<span style="color:var(--text-tertiary);font-size:10px">('+a.callCount+')</span>':'')+'</div>';
+      }).join('');
+
+    document.getElementById('live-agent-summary').innerHTML=
+      '<div style="display:flex;gap:14px;font-size:11px;color:var(--text-secondary)">'+
+      '<span style="color:var(--color-ok)">● Idle: '+(ac.idle||0)+'</span>'+
+      '<span style="color:var(--color-error)">● On-call: '+(ac.onCall||0)+'</span>'+
+      '<span style="color:var(--color-warn)">● Wrap-up: '+(ac.wrapUp||0)+'</span>'+
+      '<span style="color:#818cf8">● Reserved: '+(ac.reserved||0)+'</span>'+
+      '<span>● Paused: '+(ac.paused||0)+'</span>'+
+      '<span style="color:var(--text-tertiary)">● Offline: '+(ac.loggedOut||0)+'</span></div>';
+  }catch(e){console.error('live',e)}
+}
+function sc(v,l,c){return '<div class="lv-card"><div class="lv-val"'+(c?' style="color:'+c+'"':'')+'>'+v+'</div><div class="lv-lbl">'+l+'</div></div>'}
+
+// ═══════ CAMPAIGN ACTIONS ═══════
+async function saveCampaign(e){
+  e.preventDefault();var id=document.getElementById('c-edit-id').value;
+  var b={name:document.getElementById('c-name').value,strategy:document.getElementById('c-strategy').value,
+    callerId:document.getElementById('c-callerid').value,trunk:document.getElementById('c-trunk').value,
+    agents:getAgents(),maxConcurrent:parseInt(document.getElementById('c-maxconcurrent').value)||10,
+    ringTimeout:parseInt(document.getElementById('c-ringtimeout').value)||30,wrapUpTime:parseInt(document.getElementById('c-wrapup').value)||10,
+    retryAttempts:parseInt(document.getElementById('c-retries').value)||3,retryDelay:parseInt(document.getElementById('c-retrydelay').value)||30,
+    amd:document.getElementById('c-amd').checked,amdAction:document.getElementById('c-amdaction').value,
+    carrier:document.getElementById('c-amd').checked?document.getElementById('c-carrier').value:'',
+    dncEnabled:document.getElementById('c-dnc').checked};
+  if(b.strategy==='predictive'){b.dialRatio=parseFloat(document.getElementById('c-dialratio').value)||1.2;b.maxAbandoned=parseInt(document.getElementById('c-maxabandoned').value)||3}
+  if(!b.trunk){showToast('Select a trunk',true);return}if(b.agents.length===0){showToast('Select at least one agent',true);return}
+  var d=await(await fetch(id?API+'/campaigns/'+id:API+'/campaigns',{method:id?'PUT':'POST',headers:J,body:JSON.stringify(b)})).json();
+  if(d.success){hideAdd();showToast(id?'Updated':'Created');loadCampaigns()}else showToast(d.error||'Failed',true);
+}
+async function delCamp(id,n){if(!confirm('Delete "'+n+'" and all leads?'))return;await fetch(API+'/campaigns/'+id,{method:'DELETE',headers:H});showToast('Deleted');loadCampaigns()}
+async function startCamp(id){var d=await(await fetch(API+'/campaigns/'+id+'/start',{method:'POST',headers:J})).json();if(d.success){showToast('Started');loadCampaigns()}else showToast(d.error||'Failed',true)}
+async function pauseCamp(id){var d=await(await fetch(API+'/campaigns/'+id+'/pause',{method:'POST',headers:J})).json();if(d.success){showToast('Paused');loadCampaigns()}else showToast(d.error||'Failed',true)}
+async function stopCamp(id){if(!confirm('Stop this campaign?'))return;var d=await(await fetch(API+'/campaigns/'+id+'/stop',{method:'POST',headers:J})).json();if(d.success){showToast('Stopped');loadCampaigns();closeLive()}else showToast(d.error||'Failed',true)}
+
+// ─── CSV Import (admin) ───
+function showImport(id,n){document.getElementById('import-campaign-id').value=id;document.getElementById('import-title').textContent='Import — '+n;document.getElementById('import-result').innerHTML='';document.getElementById('import-file').value='';document.getElementById('import-panel').style.display='block'}
+async function uploadCSV(e){
+  e.preventDefault();var id=document.getElementById('import-campaign-id').value,f=document.getElementById('import-file').files[0];if(!f)return;
+  var fd=new FormData();fd.append('file',f);
+  var d=await(await fetch(API+'/campaigns/'+id+'/import',{method:'POST',headers:{'X-API-Key':KEY},body:fd})).json();
+  if(d.success){var r=d.import;document.getElementById('import-result').innerHTML='<div style="padding:8px;background:var(--bg-surface);border-radius:var(--radius);font-size:12px"><b>Done:</b> '+r.imported+' imported, '+r.duplicates+' dupes, '+r.dncFiltered+' DNC, '+r.invalid+' invalid. Total: '+r.totalInCampaign+'</div>';showToast(r.imported+' imported');loadCampaigns()}
+  else document.getElementById('import-result').innerHTML='<div style="color:var(--color-error);font-size:12px">'+esc(d.error)+'</div>';
 }
 
-async function delCamp(id, name) {
-  if (!confirm('Delete campaign "' + name + '" and all its leads?')) return;
-  await fetch(API + '/campaigns/' + id, { method: 'DELETE', headers: H });
-  showToast('Campaign deleted'); loadCampaigns();
+// ─── Leads ───
+function showLeads(id,n){currentLeadsCampaignId=id;document.getElementById('leads-title').textContent='Leads — '+n;document.getElementById('leads-filter').value='';document.getElementById('leads-panel').style.display='block';loadLeads()}
+async function loadLeads(){
+  if(!currentLeadsCampaignId)return;var st=document.getElementById('leads-filter').value;
+  var d=await(await fetch(API+'/campaigns/'+currentLeadsCampaignId+'/leads?limit=100'+(st?'&status='+st:''),{headers:H})).json();
+  if(!d.success)return;var sm=d.summary||{};
+  document.getElementById('leads-summary').innerHTML='Total: <b>'+d.total+'</b>&nbsp;&nbsp;'+Object.keys(sm).map(function(k){return leadPill(k)+' '+sm[k]}).join('&nbsp;&nbsp;');
+  if(!d.leads||!d.leads.length){document.getElementById('leads-list').innerHTML='<div class="empty">No leads</div>';return}
+  document.getElementById('leads-list').innerHTML='<table class="tbl"><thead><tr><th>Status</th><th>Phone</th><th>Name</th><th>Company</th><th>Att.</th><th>Outcome</th><th>Disposition</th><th>Agent</th><th>Last attempt</th></tr></thead><tbody>'+
+    d.leads.map(function(l){return '<tr><td>'+leadPill(l.status)+'</td><td class="mono" style="font-size:12px">'+esc(l.phone)+'</td><td style="font-size:12px">'+esc(l.name||'—')+'</td><td style="font-size:12px">'+esc(l.company||'—')+'</td><td>'+(l.attempts||0)+'</td><td style="font-size:11px">'+esc(l.outcome||'—')+'</td><td style="font-size:11px">'+esc(l.disposition||'—')+'</td><td class="mono" style="font-size:11px">'+esc(l.assignedAgent||'—')+'</td><td style="font-size:11px">'+(l.lastAttempt?fmtDate(l.lastAttempt):'—')+'</td></tr>'}).join('')+'</tbody></table>';
 }
 
-async function startCamp(id) {
-  var d = await (await fetch(API + '/campaigns/' + id + '/start', { method: 'POST', headers: J })).json();
-  if (d.success) { showToast('Campaign started'); loadCampaigns(); }
-  else showToast(d.error || 'Failed to start', true);
-}
-
-async function pauseCamp(id) {
-  var d = await (await fetch(API + '/campaigns/' + id + '/pause', { method: 'POST', headers: J })).json();
-  if (d.success) { showToast('Campaign paused'); loadCampaigns(); }
-  else showToast(d.error || 'Failed', true);
-}
-
-async function stopCamp(id) {
-  if (!confirm('Stop this campaign? Active calls will finish but no new calls will be placed.')) return;
-  var d = await (await fetch(API + '/campaigns/' + id + '/stop', { method: 'POST', headers: J })).json();
-  if (d.success) { showToast('Campaign stopped'); loadCampaigns(); }
-  else showToast(d.error || 'Failed', true);
-}
-
-// ─── CSV Import ───
-function showImport(id, name) {
-  document.getElementById('import-campaign-id').value = id;
-  document.getElementById('import-title').textContent = 'Import leads — ' + name;
-  document.getElementById('import-result').innerHTML = '';
-  document.getElementById('import-file').value = '';
-  document.getElementById('import-panel').style.display = 'block';
-}
-
-async function uploadCSV(e) {
-  e.preventDefault();
-  var id = document.getElementById('import-campaign-id').value;
-  var file = document.getElementById('import-file').files[0];
-  if (!file) return;
-  var fd = new FormData();
-  fd.append('file', file);
-  var d = await (await fetch(API + '/campaigns/' + id + '/import', { method: 'POST', headers: { 'X-API-Key': KEY }, body: fd })).json();
-  if (d.success) {
-    var r = d.import;
-    document.getElementById('import-result').innerHTML =
-      '<div style="padding:8px;background:var(--bg-surface);border-radius:var(--radius);font-size:12px">' +
-        '<b>Import complete:</b> ' + r.imported + ' imported, ' + r.duplicates + ' duplicates, ' +
-        r.dncFiltered + ' DNC filtered, ' + r.invalid + ' invalid. Total in campaign: ' + r.totalInCampaign +
-      '</div>';
-    showToast(r.imported + ' leads imported');
-    loadCampaigns();
-  } else {
-    document.getElementById('import-result').innerHTML = '<div style="color:var(--color-error);font-size:12px">' + esc(d.error) + '</div>';
-  }
-}
-
-// ─── Leads viewer ───
-function showLeads(id, name) {
-  currentLeadsCampaignId = id;
-  document.getElementById('leads-title').textContent = 'Leads — ' + name;
-  document.getElementById('leads-filter').value = '';
-  document.getElementById('leads-panel').style.display = 'block';
-  loadLeads();
-}
-
-async function loadLeads() {
-  if (!currentLeadsCampaignId) return;
-  var status = document.getElementById('leads-filter').value;
-  var url = API + '/campaigns/' + currentLeadsCampaignId + '/leads?limit=100' + (status ? '&status=' + status : '');
-  var d = await (await fetch(url, { headers: H })).json();
-  if (!d.success) return;
-
-  // Summary
-  var sum = d.summary || {};
-  var sumHtml = Object.keys(sum).map(function(k) { return leadStatusPill(k) + ' ' + sum[k]; }).join('&nbsp;&nbsp;');
-  document.getElementById('leads-summary').innerHTML = 'Total: <b>' + d.total + '</b>&nbsp;&nbsp;' + sumHtml;
-
-  if (!d.leads || !d.leads.length) {
-    document.getElementById('leads-list').innerHTML = '<div class="empty">No leads' + (status ? ' with status "' + status + '"' : '') + '</div>';
-    return;
-  }
-
-  document.getElementById('leads-list').innerHTML = '<table class="tbl"><thead><tr>' +
-    '<th>Status</th><th>Phone</th><th>Name</th><th>Company</th><th>Attempts</th><th>Outcome</th><th>Disposition</th><th>Agent</th><th>Last attempt</th>' +
-  '</tr></thead><tbody>' +
-  d.leads.map(function(l) {
-    return '<tr>' +
-      '<td>' + leadStatusPill(l.status) + '</td>' +
-      '<td class="mono" style="font-size:12px">' + esc(l.phone) + '</td>' +
-      '<td style="font-size:12px">' + esc(l.name || '—') + '</td>' +
-      '<td style="font-size:12px">' + esc(l.company || '—') + '</td>' +
-      '<td>' + (l.attempts || 0) + '</td>' +
-      '<td style="font-size:11px">' + esc(l.outcome || '—') + '</td>' +
-      '<td style="font-size:11px">' + esc(l.disposition || '—') + '</td>' +
-      '<td class="mono" style="font-size:11px">' + esc(l.assignedAgent || '—') + '</td>' +
-      '<td style="font-size:11px">' + (l.lastAttempt ? fmtDate(l.lastAttempt) : '—') + '</td>' +
-    '</tr>';
-  }).join('') + '</tbody></table>';
-}
-
-// ─── Init ───
 loadFormData().then(loadCampaigns);
 </script>
 <%- include('../partials/foot') %>
