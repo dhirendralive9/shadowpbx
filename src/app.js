@@ -284,7 +284,76 @@ async function main() {
   });
 
   app.use('/api', createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler, monitorHandler, timeConditionService, presenceHandler, queueHandler, appointmentHandler, dialerEngine));
-  app.get('/health', (req, res) => res.json({ status: 'ok', service: 'ShadowPBX', version: '2.0.0' }));
+  // ─── Health & Monitoring Endpoint ───
+  app.get('/health', async (req, res) => {
+    const uptime = process.uptime();
+    const mem = process.memoryUsage();
+    const checks = { sip: 'ok', rtpengine: 'unknown', mongodb: 'ok', trunks: [] };
+
+    // MongoDB
+    try {
+      if (mongoose.connection.readyState !== 1) checks.mongodb = 'disconnected';
+    } catch (e) { checks.mongodb = 'error'; }
+
+    // RTPEngine ping
+    try {
+      if (rtpengine) {
+        const rtpConf = { host: process.env.RTPENGINE_HOST || '127.0.0.1', port: parseInt(process.env.RTPENGINE_PORT) || 22222 };
+        const ping = await rtpengine.ping(rtpConf);
+        checks.rtpengine = ping && ping.result === 'pong' ? 'ok' : 'error';
+      } else { checks.rtpengine = 'not_configured'; }
+    } catch (e) { checks.rtpengine = 'error'; }
+
+    // Trunk status
+    try {
+      checks.trunks = await trunkManager.getStatus();
+    } catch (e) { checks.trunks = []; }
+
+    // Extension count
+    let extOnline = 0, extTotal = 0;
+    try {
+      const { Extension } = require('./models');
+      const exts = await Extension.find({}, 'extension').lean();
+      extTotal = exts.length;
+      for (const e of exts) {
+        if (await registrar.isRegistered(e.extension)) extOnline++;
+      }
+    } catch (e) {}
+
+    // Active calls
+    const activeCalls = callHandler.activeCalls ? callHandler.activeCalls.size : 0;
+
+    // Dialer campaigns
+    const runningCampaigns = dialerEngine ? dialerEngine.getRunningCampaigns() : [];
+    let dialerActiveCalls = 0;
+    if (dialerEngine) {
+      for (const [, c] of dialerEngine.activeCalls) dialerActiveCalls++;
+    }
+
+    const overall = (checks.mongodb === 'ok' && checks.rtpengine === 'ok') ? 'healthy' :
+                    (checks.mongodb === 'ok' ? 'degraded' : 'unhealthy');
+
+    res.json({
+      status: overall,
+      service: 'ShadowPBX',
+      version: '2.0.0',
+      uptime: Math.round(uptime),
+      uptimeHuman: `${Math.floor(uptime / 86400)}d ${Math.floor((uptime % 86400) / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`,
+      memory: {
+        rss: Math.round(mem.rss / 1024 / 1024) + ' MB',
+        heapUsed: Math.round(mem.heapUsed / 1024 / 1024) + ' MB',
+        heapTotal: Math.round(mem.heapTotal / 1024 / 1024) + ' MB'
+      },
+      checks,
+      extensions: { total: extTotal, online: extOnline },
+      calls: { active: activeCalls },
+      dialer: {
+        runningCampaigns: runningCampaigns.length,
+        activeCalls: dialerActiveCalls,
+        campaigns: runningCampaigns.map(c => ({ name: c.name, strategy: c.strategy, agents: c.agentCounts }))
+      }
+    });
+  });
 
   // Web GUI routes
   app.use('/', createWebRouter(process.env.ADMIN_SECRET));
@@ -417,17 +486,170 @@ async function main() {
 
   setInterval(() => emitDashboardState(io), 3000);
 
+  // ─── Service Watchdog — monitors critical dependencies ───
+  let lastRtpOk = true;
+  let lastMongoOk = true;
+  setInterval(async () => {
+    // RTPEngine health check
+    try {
+      if (rtpengine) {
+        const rtpConf = { host: process.env.RTPENGINE_HOST || '127.0.0.1', port: parseInt(process.env.RTPENGINE_PORT) || 22222 };
+        const ping = await rtpengine.ping(rtpConf);
+        const isOk = ping && ping.result === 'pong';
+        if (!isOk && lastRtpOk) {
+          logger.error('WATCHDOG: RTPEngine is NOT responding — media/recording may fail');
+          // Auto-pause all dialer campaigns (no media = bad calls)
+          if (dialerEngine) {
+            for (const [id] of dialerEngine.runningCampaigns) {
+              logger.warn(`WATCHDOG: auto-pausing campaign ${id} due to RTPEngine failure`);
+              dialerEngine.pauseCampaign(id).catch(() => {});
+            }
+          }
+        } else if (isOk && !lastRtpOk) {
+          logger.info('WATCHDOG: RTPEngine recovered');
+        }
+        lastRtpOk = isOk;
+      }
+    } catch (e) {
+      if (lastRtpOk) logger.error('WATCHDOG: RTPEngine check failed: ' + e.message);
+      lastRtpOk = false;
+    }
+
+    // MongoDB health check
+    try {
+      const isOk = mongoose.connection.readyState === 1;
+      if (!isOk && lastMongoOk) {
+        logger.error('WATCHDOG: MongoDB connection lost');
+      } else if (isOk && !lastMongoOk) {
+        logger.info('WATCHDOG: MongoDB reconnected');
+      }
+      lastMongoOk = isOk;
+    } catch (e) {}
+
+  }, 30000); // every 30 seconds
+
+  // ─── Trunk Registration Monitor — re-check trunk registrations every 5 min ───
+  setInterval(async () => {
+    try {
+      const trunkStatus = await trunkManager.getStatus();
+      for (const t of trunkStatus) {
+        if (t.enabled && !t.registered) {
+          logger.warn(`WATCHDOG: trunk "${t.name}" (${t.host}) is NOT registered — outbound calls may fail`);
+        }
+      }
+    } catch (e) {}
+  }, 300000); // every 5 minutes
+
   server.listen(apiPort, () => logger.info(`API + GUI on port ${apiPort}`));
 
+  // ─── Startup Self-Check ───
+  setTimeout(async () => {
+    logger.info('Running startup self-check...');
+    const issues = [];
+
+    // MongoDB
+    if (mongoose.connection.readyState !== 1) issues.push('MongoDB not connected');
+
+    // RTPEngine
+    try {
+      if (rtpengine) {
+        const rtpConf = { host: process.env.RTPENGINE_HOST || '127.0.0.1', port: parseInt(process.env.RTPENGINE_PORT) || 22222 };
+        const ping = await rtpengine.ping(rtpConf);
+        if (!ping || ping.result !== 'pong') issues.push('RTPEngine not responding');
+      } else { issues.push('RTPEngine not configured'); }
+    } catch (e) { issues.push('RTPEngine: ' + e.message); }
+
+    // Trunks
+    try {
+      const trunkStatus = await trunkManager.getStatus();
+      const enabledTrunks = trunkStatus.filter(t => t.enabled);
+      const registeredTrunks = trunkStatus.filter(t => t.registered);
+      if (enabledTrunks.length === 0) issues.push('No trunks configured');
+      else if (registeredTrunks.length === 0) issues.push('No trunks registered (outbound will fail)');
+    } catch (e) {}
+
+    // Required env vars
+    if (!process.env.EXTERNAL_IP) issues.push('EXTERNAL_IP not set');
+    if (!process.env.ADMIN_SECRET) issues.push('ADMIN_SECRET not set');
+
+    // Disk space check (recordings dir)
+    try {
+      const { execSync } = require('child_process');
+      const df = execSync('df -h /var/lib/shadowpbx 2>/dev/null || df -h / 2>/dev/null').toString();
+      const lines = df.trim().split('\n');
+      if (lines.length >= 2) {
+        const parts = lines[1].split(/\s+/);
+        const usePct = parseInt(parts[4]);
+        if (usePct > 90) issues.push(`Disk usage critical: ${parts[4]} used`);
+        else if (usePct > 80) logger.warn(`STARTUP: disk usage high: ${parts[4]}`);
+      }
+    } catch (e) {}
+
+    if (issues.length === 0) {
+      logger.info('Startup self-check: ALL OK');
+    } else {
+      logger.warn('Startup self-check: ' + issues.length + ' issue(s):');
+      issues.forEach(i => logger.warn('  - ' + i));
+    }
+  }, 3000);
+
   // 9. Graceful shutdown
-  const shutdown = async () => {
-    logger.info('Shutting down...');
-    await dialerEngine.shutdown();
-    await mongoose.disconnect();
+  let isShuttingDown = false;
+  const shutdown = async (signal) => {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+    logger.info(`Shutdown signal received (${signal}), starting graceful shutdown...`);
+
+    // Step 1: Pause all dialer campaigns (stop new calls, let active finish)
+    try {
+      await dialerEngine.shutdown();
+      logger.info('Shutdown: dialer campaigns paused');
+    } catch (e) { logger.warn(`Shutdown: dialer error: ${e.message}`); }
+
+    // Step 2: Wait for active calls to finish (max 30 seconds)
+    const activeCalls = callHandler.activeCalls ? callHandler.activeCalls.size : 0;
+    if (activeCalls > 0) {
+      logger.info(`Shutdown: waiting for ${activeCalls} active call(s) to finish (max 30s)...`);
+      const waitStart = Date.now();
+      while (callHandler.activeCalls && callHandler.activeCalls.size > 0 && (Date.now() - waitStart) < 30000) {
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      const remaining = callHandler.activeCalls ? callHandler.activeCalls.size : 0;
+      if (remaining > 0) logger.warn(`Shutdown: ${remaining} call(s) still active, proceeding anyway`);
+      else logger.info('Shutdown: all calls completed');
+    }
+
+    // Step 3: Close Socket.IO connections
+    try {
+      io.disconnectSockets(true);
+      logger.info('Shutdown: Socket.IO connections closed');
+    } catch (e) {}
+
+    // Step 4: Close HTTP server
+    try {
+      await new Promise((resolve) => { server.close(resolve); setTimeout(resolve, 5000); });
+      logger.info('Shutdown: HTTP server closed');
+    } catch (e) {}
+
+    // Step 5: Disconnect MongoDB
+    try {
+      await mongoose.disconnect();
+      logger.info('Shutdown: MongoDB disconnected');
+    } catch (e) {}
+
+    logger.info('Shutdown complete. Goodbye.');
     process.exit(0);
   };
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('uncaughtException', (err) => {
+    logger.error(`Uncaught exception: ${err.message}\n${err.stack}`);
+    // Don't exit on uncaught exceptions — log and continue
+    // Critical errors will be caught by systemd and restarted
+  });
+  process.on('unhandledRejection', (reason) => {
+    logger.error(`Unhandled rejection: ${reason}`);
+  });
 
   logger.info('===========================================');
   logger.info('  ShadowPBX v2.0 Ready!');
