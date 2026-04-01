@@ -307,7 +307,20 @@ class DialerEngine {
 
     const config = running.config;
 
-    // Check schedule
+    // ─── TCPA Compliance: auto-pause if abandon rate too high ───
+    const stats = this.statsCache.get(campaignId);
+    if (stats && config.strategy === 'predictive') {
+      const rollingAbandon = stats._rollingAbandonRate || 0;
+      const maxAbandon = (config.maxAbandoned || 3) / 100;
+      // If rolling abandon rate exceeds 2x the target, auto-pause to protect compliance
+      if (rollingAbandon > maxAbandon * 2 && (stats.dialed || 0) > 20) {
+        logger.warn(`DIALER COMPLIANCE: abandon rate ${(rollingAbandon * 100).toFixed(1)}% exceeds 2x target ${(maxAbandon * 100).toFixed(1)}% — AUTO-PAUSING campaign ${campaignId}`);
+        this.pauseCampaign(campaignId).catch(() => {});
+        return;
+      }
+    }
+
+    // ─── Schedule check (time-of-day restrictions) ───
     if (config.schedule && config.schedule.enabled) {
       if (!this._isInSchedule(config.schedule)) return;
     }
@@ -1117,35 +1130,49 @@ class DialerEngine {
   }
 
   // ============================================================
-  // CALL FAILED — handle no-answer, busy, error, abandoned
+  // CALL FAILED — handle no-answer, busy, error, machine, abandoned
   // ============================================================
   async _callFailed(callId, campaignId, lead, agentExt, outcome, config, cdr) {
     const { Lead: LeadModel, CDR: CDRModel } = require('../models');
 
     // Update CDR
     if (cdr) {
-      cdr.status = outcome === 'busy' ? 'busy' : 'failed';
+      cdr.status = outcome === 'busy' ? 'busy' : (outcome === 'machine' ? 'completed' : 'failed');
       cdr.endTime = new Date();
       cdr.duration = Math.round((cdr.endTime - cdr.startTime) / 1000);
       cdr.hangupCause = outcome;
       cdr.hangupBy = 'system';
+      if (outcome === 'machine') cdr.amdResult = 'machine';
       await cdr.save();
     }
 
-    // Update lead — schedule retry or mark as failed
+    // Update lead — schedule retry or mark as final
     const maxAttempts = config.retryAttempts || 3;
     const retryDelayMin = config.retryDelay || 30;
 
-    if (lead.attempts < maxAttempts && (outcome === 'no-answer' || outcome === 'busy')) {
-      // Schedule retry
-      const nextAttempt = new Date(Date.now() + retryDelayMin * 60 * 1000);
+    if (lead.attempts < maxAttempts && ['no-answer', 'busy', 'machine'].includes(outcome)) {
+      // Schedule retry — abandoned leads get priority (shorter delay)
+      const delay = outcome === 'abandoned'
+        ? Math.max(5, retryDelayMin / 2) // half delay for abandoned (they DID answer)
+        : retryDelayMin;
+      const nextAttempt = new Date(Date.now() + delay * 60 * 1000);
       await LeadModel.findByIdAndUpdate(lead._id, {
         status: 'pending',
         outcome,
         nextAttempt,
         $push: { callIds: callId }
       });
-      logger.debug(`DIALER: ${lead.phone} retry scheduled at ${nextAttempt.toISOString()} (attempt ${lead.attempts}/${maxAttempts})`);
+      logger.debug(`DIALER: ${lead.phone} retry in ${delay}min (attempt ${lead.attempts}/${maxAttempts}) outcome=${outcome}`);
+    } else if (outcome === 'abandoned' && lead.attempts < maxAttempts) {
+      // Abandoned calls always get retried (TCPA requires callback attempt)
+      const nextAttempt = new Date(Date.now() + 5 * 60 * 1000); // 5 min
+      await LeadModel.findByIdAndUpdate(lead._id, {
+        status: 'scheduled',
+        outcome: 'abandoned',
+        nextAttempt,
+        $push: { callIds: callId }
+      });
+      logger.info(`DIALER COMPLIANCE: abandoned lead ${lead.phone} scheduled for priority retry`);
     } else {
       // Max attempts reached or fatal error
       await LeadModel.findByIdAndUpdate(lead._id, {

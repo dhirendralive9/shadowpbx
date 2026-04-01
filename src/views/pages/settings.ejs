@@ -5,6 +5,7 @@
   <a href="#blocklist" class="settings-tab active" data-tab="blocklist" onclick="switchTab('blocklist')">Blocklist</a>
   <a href="#audio" class="settings-tab" data-tab="audio" onclick="switchTab('audio')">Audio library</a>
   <a href="#sipdomains" class="settings-tab" data-tab="sipdomains" onclick="switchTab('sipdomains')">SIP Domains</a>
+  <a href="#dnc" class="settings-tab" data-tab="dnc" onclick="switchTab('dnc')">DNC list</a>
   <a href="#maintenance" class="settings-tab" data-tab="maintenance" onclick="switchTab('maintenance')">Maintenance</a>
   <a href="#backup" class="settings-tab" data-tab="backup" onclick="switchTab('backup')">Backup</a>
   <a href="#system" class="settings-tab" data-tab="system" onclick="switchTab('system')">System</a>
@@ -103,6 +104,55 @@
   </div>
 
   <div id="sd-list"></div>
+</div>
+
+<!-- ═══════════════════ DNC (DO NOT CALL) ═══════════════════ -->
+<div id="panel-dnc" class="settings-panel">
+  <div class="sec-head">
+    <span class="sec-title">Do Not Call list</span>
+    <div style="display:flex;align-items:center;gap:10px">
+      <span class="muted" style="font-size:11px" id="dnc-summary"></span>
+      <button class="btn btn-sm" onclick="document.getElementById('dnc-add').style.display=document.getElementById('dnc-add').style.display==='none'?'block':'none'">+ Add number</button>
+      <button class="btn btn-sm" onclick="document.getElementById('dnc-import').style.display=document.getElementById('dnc-import').style.display==='none'?'block':'none'">Import CSV</button>
+    </div>
+  </div>
+
+  <div style="margin-bottom:12px;padding:10px;background:var(--bg-surface);border-radius:var(--radius);font-size:12px;color:var(--text-secondary)">
+    Numbers on this list will never be dialed by any campaign. Numbers are checked at CSV import time and again at dial time.
+    Agents can also add numbers by setting a lead's disposition to <b>"DNC"</b>.
+  </div>
+
+  <!-- Add single number -->
+  <div id="dnc-add" style="display:none;margin-bottom:16px" class="card">
+    <form onsubmit="addDnc(event)" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+      <div class="form-group" style="flex:1;min-width:160px"><label class="form-label">Phone number</label><input class="form-input" id="dnc-phone" placeholder="5551234567" required></div>
+      <div class="form-group" style="flex:1;min-width:160px"><label class="form-label">Reason</label><input class="form-input" id="dnc-reason" placeholder="Customer requested"></div>
+      <div class="form-group"><button type="submit" class="btn btn-primary btn-sm">Add</button></div>
+      <div class="form-group"><button type="button" class="btn btn-sm" onclick="document.getElementById('dnc-add').style.display='none'">Cancel</button></div>
+    </form>
+  </div>
+
+  <!-- CSV import -->
+  <div id="dnc-import" style="display:none;margin-bottom:16px" class="card">
+    <form onsubmit="importDnc(event)">
+      <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+        <div class="form-group" style="flex:1;min-width:200px"><label class="form-label">CSV file (phone numbers in first column)</label>
+          <input class="form-input" type="file" id="dnc-file" accept=".csv,.txt" required></div>
+        <div class="form-group"><button type="submit" class="btn btn-primary btn-sm">Import</button></div>
+        <div class="form-group"><button type="button" class="btn btn-sm" onclick="document.getElementById('dnc-import').style.display='none'">Cancel</button></div>
+      </div>
+    </form>
+    <div id="dnc-import-result" style="margin-top:8px"></div>
+  </div>
+
+  <!-- Search -->
+  <div style="margin-bottom:12px;display:flex;gap:8px">
+    <input class="form-input" id="dnc-search" placeholder="Search phone number..." style="max-width:250px" onkeyup="if(event.key==='Enter')searchDnc()">
+    <button class="btn btn-sm" onclick="searchDnc()">Search</button>
+    <button class="btn btn-sm" onclick="document.getElementById('dnc-search').value='';loadDnc()">Clear</button>
+  </div>
+
+  <div id="dnc-list"></div>
 </div>
 
 <!-- ═══════════════════ MAINTENANCE ═══════════════════ -->
@@ -304,6 +354,7 @@ function switchTab(tab) {
   if (tab === 'blocklist') loadBlocklist();
   if (tab === 'audio') loadAudioFiles();
   if (tab === 'sipdomains') loadSipDomains();
+  if (tab === 'dnc') loadDnc();
   if (tab === 'maintenance') { loadSettings(); loadStorage(); }
   if (tab === 'backup') { loadDbStats(); loadBackups(); loadSettings(); }
   if (tab === 'system') loadSystem();
@@ -643,9 +694,95 @@ async function deleteSipDomain(domain) {
   loadSipDomains();
 }
 
+// ═══════════════════ DNC Management ═══════════════════
+async function loadDnc() {
+  try {
+    var d = await (await fetch(API + '/dnc?limit=100', { headers: H })).json();
+    var c = document.getElementById('dnc-list');
+    if (!d.success || !d.dnc || !d.dnc.length) {
+      c.innerHTML = '<div class="card"><div class="empty">DNC list is empty</div></div>';
+      document.getElementById('dnc-summary').textContent = 'Total: ' + (d.total || 0);
+      return;
+    }
+    document.getElementById('dnc-summary').textContent = 'Showing ' + d.dnc.length + ' of ' + d.total;
+    c.innerHTML = '<table class="tbl"><thead><tr><th>Phone</th><th>Reason</th><th>Source</th><th>Added by</th><th>Date</th><th></th></tr></thead><tbody>' +
+      d.dnc.map(function(n) {
+        return '<tr>' +
+          '<td class="mono" style="font-weight:600">' + esc(n.phone) + '</td>' +
+          '<td style="font-size:12px">' + esc(n.reason || '—') + '</td>' +
+          '<td><span class="pill p-gray" style="font-size:10px">' + esc(n.source || 'admin') + '</span></td>' +
+          '<td style="font-size:12px">' + esc(n.addedBy || '—') + '</td>' +
+          '<td style="font-size:11px;color:var(--text-tertiary)">' + (n.createdAt ? new Date(n.createdAt).toLocaleDateString() : '—') + '</td>' +
+          '<td style="text-align:right"><button class="btn btn-sm btn-danger" onclick="deleteDnc(\'' + esc(n.phone) + '\')">Remove</button></td>' +
+        '</tr>';
+      }).join('') + '</tbody></table>';
+  } catch (e) { console.error('dnc load', e); }
+}
+
+async function addDnc(e) {
+  e.preventDefault();
+  var phone = document.getElementById('dnc-phone').value.trim();
+  var reason = document.getElementById('dnc-reason').value.trim();
+  if (!phone) return;
+  var d = await (await fetch(API + '/dnc', { method: 'POST', headers: J, body: JSON.stringify({ phone: phone, reason: reason, source: 'admin' }) })).json();
+  if (d.success) {
+    showToast('Added to DNC: ' + phone);
+    document.getElementById('dnc-phone').value = '';
+    document.getElementById('dnc-reason').value = '';
+    document.getElementById('dnc-add').style.display = 'none';
+    loadDnc();
+  } else { showToast(d.error || 'Failed', true); }
+}
+
+async function deleteDnc(phone) {
+  if (!confirm('Remove ' + phone + ' from DNC list? Campaigns will be able to dial this number again.')) return;
+  await fetch(API + '/dnc/' + encodeURIComponent(phone), { method: 'DELETE', headers: H });
+  showToast('Removed from DNC');
+  loadDnc();
+}
+
+async function searchDnc() {
+  var q = document.getElementById('dnc-search').value.trim().replace(/[^\d]/g, '');
+  if (!q) { loadDnc(); return; }
+  var d = await (await fetch(API + '/dnc/check/' + q, { headers: H })).json();
+  var c = document.getElementById('dnc-list');
+  if (d.success && d.isDnc && d.details) {
+    var n = d.details;
+    c.innerHTML = '<table class="tbl"><thead><tr><th>Phone</th><th>Reason</th><th>Source</th><th>Added by</th><th>Date</th><th></th></tr></thead><tbody>' +
+      '<tr><td class="mono" style="font-weight:600">' + esc(n.phone) + '</td>' +
+      '<td style="font-size:12px">' + esc(n.reason || '—') + '</td>' +
+      '<td><span class="pill p-gray" style="font-size:10px">' + esc(n.source || 'admin') + '</span></td>' +
+      '<td style="font-size:12px">' + esc(n.addedBy || '—') + '</td>' +
+      '<td style="font-size:11px">' + (n.createdAt ? new Date(n.createdAt).toLocaleDateString() : '—') + '</td>' +
+      '<td style="text-align:right"><button class="btn btn-sm btn-danger" onclick="deleteDnc(\'' + esc(n.phone) + '\')">Remove</button></td></tr>' +
+      '</tbody></table>';
+    document.getElementById('dnc-summary').textContent = 'Found: ' + q;
+  } else {
+    c.innerHTML = '<div class="card"><div class="empty">' + esc(q) + ' is NOT on the DNC list</div></div>';
+    document.getElementById('dnc-summary').textContent = 'Not found';
+  }
+}
+
+async function importDnc(e) {
+  e.preventDefault();
+  var file = document.getElementById('dnc-file').files[0];
+  if (!file) return;
+  var fd = new FormData(); fd.append('file', file);
+  var d = await (await fetch(API + '/dnc/import', { method: 'POST', headers: { 'X-API-Key': KEY }, body: fd })).json();
+  if (d.success) {
+    document.getElementById('dnc-import-result').innerHTML =
+      '<div style="padding:8px;background:var(--bg-surface);border-radius:var(--radius);font-size:12px">' +
+      '<b>Import complete:</b> ' + d.imported + ' imported, ' + d.duplicates + ' duplicates, ' + d.invalid + ' invalid</div>';
+    showToast(d.imported + ' numbers added to DNC');
+    loadDnc();
+  } else {
+    document.getElementById('dnc-import-result').innerHTML = '<div style="color:var(--color-error);font-size:12px">' + esc(d.error) + '</div>';
+  }
+}
+
 // ─── Init ───
 var initTab = window.location.hash.replace('#', '') || 'blocklist';
-if (['blocklist', 'audio', 'sipdomains', 'maintenance', 'backup', 'system'].indexOf(initTab) === -1) initTab = 'blocklist';
+if (['blocklist', 'audio', 'sipdomains', 'dnc', 'maintenance', 'backup', 'system'].indexOf(initTab) === -1) initTab = 'blocklist';
 switchTab(initTab);
 </script>
 <%- include('../partials/foot') %>
