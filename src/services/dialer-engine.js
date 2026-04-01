@@ -300,9 +300,6 @@ class DialerEngine {
 
   // ============================================================
   // DIAL LOOP — runs every 1 second per campaign
-  //
-  // Phase 1: just pops leads and prepares for calling.
-  // Phase 2 will add actual srf.createUAC() origination.
   // ============================================================
   async _dialLoop(campaignId) {
     const running = this.runningCampaigns.get(campaignId);
@@ -331,10 +328,9 @@ class DialerEngine {
     let toDial = 0;
 
     if (config.strategy === 'auto') {
-      // Auto: 1 call per idle agent, minus active ringing calls
       toDial = Math.max(0, idleAgents.length - activeCount);
     } else {
-      // Predictive: use dial ratio (Phase 4 will refine this)
+      // Predictive: use dial ratio
       const stats = this.statsCache.get(campaignId) || {};
       const answerRate = stats.answerRate || 0.5;
       const dialRatio = config.dialRatio || 1.2;
@@ -351,7 +347,7 @@ class DialerEngine {
     const { Lead, DNC } = require('../models');
 
     for (let i = 0; i < toDial; i++) {
-      // Atomic pop: findOneAndUpdate prevents two workers grabbing the same lead
+      // Atomic pop
       const lead = await Lead.findOneAndUpdate(
         {
           campaignId: config._id,
@@ -369,17 +365,13 @@ class DialerEngine {
       );
 
       if (!lead) {
-        // No more leads — check if campaign is done
         const remaining = await Lead.countDocuments({
           campaignId: config._id,
           status: { $in: ['pending', 'scheduled'] }
         });
-        if (remaining === 0) {
+        if (remaining === 0 && activeCount === 0) {
           logger.info(`DIALER: campaign ${campaignId} — all leads processed`);
-          // Auto-stop only if no calls are active
-          if (activeCount === 0) {
-            this.stopCampaign(campaignId).catch(() => {});
-          }
+          this.stopCampaign(campaignId).catch(() => {});
         }
         break;
       }
@@ -389,17 +381,15 @@ class DialerEngine {
         const isDnc = await DNC.findOne({ phone: lead.phone });
         if (isDnc) {
           lead.status = 'dnc';
-          lead.outcome = '';
           await lead.save();
-          logger.info(`DIALER: lead ${lead.phone} is on DNC list, skipping`);
+          logger.info(`DIALER: ${lead.phone} on DNC, skipping`);
           continue;
         }
       }
 
-      // Reserve an agent for this lead
+      // Reserve an agent
       const agent = idleAgents.shift();
       if (!agent) {
-        // No more idle agents — put lead back
         lead.status = 'pending';
         lead.attempts = Math.max(0, lead.attempts - 1);
         await lead.save();
@@ -407,26 +397,377 @@ class DialerEngine {
       }
 
       this.setAgentState(campaignId, agent, 'reserved');
-
-      // Queue the call for origination
-      // Phase 2 will replace this with actual srf.createUAC()
-      const callId = uuidv4();
-      this.activeCalls.set(callId, {
-        campaignId,
-        leadId: lead._id.toString(),
-        agentExt: agent,
-        lead: lead.toObject(),
-        uac: null,
-        uas: null,
-        status: 'pending'  // will become 'ringing' when originated
-      });
-
-      // Increment dialed count
       this._incrementStat(campaignId, 'dialed');
 
-      logger.info(`DIALER: queued call ${callId} — ${lead.phone} -> agent ${agent} (campaign ${config.name})`);
+      // Originate the outbound call (async — don't block the loop)
+      const callId = uuidv4();
+      this._originateCall(callId, campaignId, lead, agent, config).catch(err => {
+        logger.error(`DIALER: originate error ${lead.phone}: ${err.message}`);
+      });
+    }
+  }
 
-      // Phase 2 will add: await this._originateCall(callId, campaignId, lead, agent, config);
+  // ============================================================
+  // CALL ORIGINATION — Place outbound call via trunk
+  //
+  // Flow:
+  //   1. Get trunk config
+  //   2. Create outbound UAC to lead's phone via PSTN trunk
+  //   3. Wait for answer (ringTimeout)
+  //   4. On answer → bridge to agent extension via B2BUA
+  //   5. Both legs through RTPEngine for recording
+  //   6. On hangup → cleanup, update lead + CDR, wrap-up timer
+  // ============================================================
+  async _originateCall(callId, campaignId, lead, agentExt, config) {
+    const { CDR, Lead: LeadModel } = require('../models');
+
+    // Track this call
+    this.activeCalls.set(callId, {
+      campaignId,
+      leadId: lead._id.toString(),
+      agentExt,
+      lead: lead.toObject(),
+      uac: null,
+      uas: null,
+      status: 'ringing'
+    });
+
+    // Get trunk
+    const trunk = this.trunkManager.getTrunk(config.trunk);
+    if (!trunk) {
+      logger.error(`DIALER: trunk "${config.trunk}" not found`);
+      await this._callFailed(callId, campaignId, lead, agentExt, 'trunk_not_found', config);
+      return;
+    }
+
+    const host = trunk.host || '';
+    const port = trunk.port || 5060;
+    const username = trunk.username || '';
+    const password = trunk.password || '';
+    const targetUri = `sip:${lead.phone}@${host}:${port}`;
+    const sipDomain = process.env.SIP_DOMAIN || 'shadowpbx';
+
+    // Create CDR
+    const cdr = new CDR({
+      callId,
+      sipCallId: callId,
+      from: config.callerId,
+      to: lead.phone,
+      direction: 'outbound',
+      status: 'ringing',
+      startTime: new Date(),
+      trunkUsed: config.trunk,
+      campaignId: campaignId,
+      leadId: lead._id.toString(),
+      fromIp: process.env.EXTERNAL_IP || ''
+    });
+    await cdr.save();
+
+    logger.info(`DIALER CALL: ${config.callerId} -> ${lead.phone} via ${config.trunk} [${callId}] agent=${agentExt}`);
+
+    try {
+      // Step 1: Originate outbound call to the lead
+      const uac = await this.srf.createUAC(targetUri, {
+        headers: {
+          'From': `<sip:${username}@${host}>`,
+          'To': `<sip:${lead.phone}@${host}>`,
+          'P-Asserted-Identity': `<sip:${config.callerId}@${host}>`
+        },
+        auth: { username, password },
+        timeout: (config.ringTimeout || 30) * 1000
+      });
+
+      logger.info(`DIALER ANSWERED: ${lead.phone} picked up [${callId}]`);
+
+      // Update tracking
+      const activeCall = this.activeCalls.get(callId);
+      if (activeCall) {
+        activeCall.uac = uac;
+        activeCall.status = 'answered';
+      }
+
+      // Update CDR
+      cdr.status = 'answered';
+      cdr.answerTime = new Date();
+      await cdr.save();
+
+      this._incrementStat(campaignId, 'answered');
+
+      // Step 2: Bridge to agent
+      await this._bridgeToAgent(callId, campaignId, uac, lead, agentExt, config, cdr);
+
+    } catch (err) {
+      // Outbound call failed (no answer, busy, error)
+      const sipStatus = err.status || 0;
+      let outcome = 'failed';
+
+      if (sipStatus === 486 || sipStatus === 600) {
+        outcome = 'busy';
+        this._incrementStat(campaignId, 'busy');
+      } else if (sipStatus === 480 || sipStatus === 408 || sipStatus === 487) {
+        outcome = 'no-answer';
+        this._incrementStat(campaignId, 'noAnswer');
+      } else {
+        this._incrementStat(campaignId, 'failed');
+      }
+
+      logger.info(`DIALER ${outcome.toUpperCase()}: ${lead.phone} [${callId}] sip=${sipStatus}`);
+
+      await this._callFailed(callId, campaignId, lead, agentExt, outcome, config, cdr);
+    }
+  }
+
+  // ============================================================
+  // BRIDGE TO AGENT — Connect answered lead to the reserved agent
+  //
+  // Creates a second call leg to the agent's registered SIP phone,
+  // routes both legs through RTPEngine for recording.
+  // ============================================================
+  async _bridgeToAgent(callId, campaignId, leadUac, lead, agentExt, config, cdr) {
+    // Get agent's registered contact
+    const agentContacts = await this.registrar.getContacts(agentExt);
+    if (agentContacts.length === 0) {
+      logger.warn(`DIALER BRIDGE: agent ${agentExt} not registered, can't bridge`);
+      // Agent went offline — hang up lead, put lead back
+      try { leadUac.destroy(); } catch (e) {}
+      await this._callFailed(callId, campaignId, lead, agentExt, 'no-answer', config, cdr);
+      return;
+    }
+
+    const contact = agentContacts.sort((a, b) =>
+      (b.registeredAt ? new Date(b.registeredAt).getTime() : 0) -
+      (a.registeredAt ? new Date(a.registeredAt).getTime() : 0)
+    )[0];
+
+    const agentUri = `sip:${agentExt}@${contact.ip}:${contact.port}`;
+    const sipDomain = process.env.SIP_DOMAIN || 'shadowpbx';
+    const externalIp = process.env.EXTERNAL_IP || '127.0.0.1';
+
+    logger.info(`DIALER BRIDGE: connecting ${lead.phone} -> agent ${agentExt} at ${agentUri} [${callId}]`);
+
+    try {
+      // Set up RTPEngine for the lead leg
+      const rtpHelper = require('../utils/rtp-helper');
+      const leadFromTag = leadUac.sip ? leadUac.sip.remoteTag : `lead-${callId}`;
+      const leadSdp = leadUac.remote ? leadUac.remote.sdp : '';
+
+      let rtpOffer = null;
+      if (leadSdp && this.rtpengine) {
+        rtpOffer = await rtpHelper.offer(this.rtpengine, callId, leadFromTag, leadSdp, { 'record call': 'yes' });
+      }
+
+      // Call the agent
+      const agentUac = await this.srf.createUAC(agentUri, {
+        localSdp: rtpOffer ? rtpOffer.sdp : leadSdp,
+        headers: {
+          'From': `<sip:${lead.phone}@${sipDomain}>`,
+          'To': `<sip:${agentExt}@${sipDomain}>`,
+          'Contact': `<sip:${lead.phone}@${externalIp}>`,
+          'X-Campaign': config.name || '',
+          'X-Lead-Name': lead.name || '',
+          'X-Lead-Phone': lead.phone || ''
+        },
+        callingNumber: lead.phone
+      });
+
+      logger.info(`DIALER BRIDGED: ${lead.phone} <-> agent ${agentExt} [${callId}]`);
+
+      // Complete RTPEngine answer with agent's SDP
+      if (rtpOffer && agentUac.remote && this.rtpengine) {
+        const agentToTag = agentUac.sip ? agentUac.sip.remoteTag : '';
+        if (agentToTag) {
+          await rtpHelper.answer(this.rtpengine, callId, leadFromTag, agentToTag, agentUac.remote.sdp, { 'record call': 'yes' });
+        }
+        // Re-INVITE the lead with RTPEngine's answer SDP
+        try { await leadUac.modify(rtpOffer.sdp); } catch (e) {}
+      }
+
+      // Update tracking
+      const activeCall = this.activeCalls.get(callId);
+      if (activeCall) {
+        activeCall.uas = agentUac; // agent leg
+        activeCall.status = 'connected';
+      }
+
+      // Update agent state
+      this.setAgentState(campaignId, agentExt, 'on-call');
+      const agentState = this.agentStates.get(campaignId);
+      if (agentState) {
+        const as = agentState.get(agentExt);
+        if (as) as.currentCallId = callId;
+      }
+
+      // Update CDR
+      cdr.to = `${lead.phone} -> ${agentExt}`;
+      cdr.recorded = !!rtpOffer;
+      cdr.rtpengineCallId = callId;
+      await cdr.save();
+
+      // Emit BLF presence
+      if (this.callHandler.presenceHandler) {
+        this.callHandler._emitPresence(agentExt, 'confirmed', { callId, remoteParty: lead.phone, direction: 'recipient' });
+      }
+
+      // Socket.IO: push screen pop to agent
+      // (Phase 5 will add proper screen pop UI — for now just log)
+      logger.info(`DIALER SCREEN-POP: agent ${agentExt} — ${lead.name || 'Unknown'} (${lead.phone}) ${lead.company || ''}`);
+
+      // Handle hangup from either side
+      let callEnded = false;
+      const onCallEnd = async (hangupBy) => {
+        if (callEnded) return;
+        callEnded = true;
+
+        const endTime = new Date();
+        const talkTime = cdr.answerTime ? Math.round((endTime - cdr.answerTime) / 1000) : 0;
+
+        // Destroy the other leg
+        try { if (hangupBy === 'lead') agentUac.destroy(); else leadUac.destroy(); } catch (e) {}
+
+        // Clean up RTPEngine
+        if (this.rtpengine) {
+          await rtpHelper.del(this.rtpengine, callId, leadFromTag);
+        }
+
+        // Update CDR
+        cdr.status = 'completed';
+        cdr.endTime = endTime;
+        cdr.duration = Math.round((endTime - cdr.startTime) / 1000);
+        cdr.talkTime = talkTime;
+        cdr.hangupBy = hangupBy === 'lead' ? 'caller' : 'callee';
+        cdr.hangupCause = 'normal_clearing';
+        await cdr.save();
+
+        // Update lead
+        const { Lead: LeadModel } = require('../models');
+        await LeadModel.findByIdAndUpdate(lead._id, {
+          status: 'completed',
+          outcome: 'answered',
+          assignedAgent: agentExt,
+          duration: talkTime,
+          $push: { callIds: callId }
+        });
+
+        // Update stats
+        this._incrementStat(campaignId, 'totalTalkTime', talkTime);
+
+        // BLF idle
+        if (this.callHandler.presenceHandler) {
+          this.callHandler._emitPresence(agentExt, 'idle');
+        }
+
+        // Agent → wrap-up
+        this.setAgentState(campaignId, agentExt, 'wrap-up');
+        const wrapUpMs = (config.wrapUpTime || 10) * 1000;
+        setTimeout(() => {
+          const stateMap = this.agentStates.get(campaignId);
+          if (stateMap) {
+            const as = stateMap.get(agentExt);
+            if (as && as.state === 'wrap-up') {
+              as.state = 'idle';
+              as.since = Date.now();
+              as.callCount = (as.callCount || 0) + 1;
+              as.lastCallEnd = Date.now();
+              as.currentCallId = null;
+              logger.debug(`DIALER: agent ${agentExt} wrap-up done, now idle`);
+            }
+          }
+        }, wrapUpMs);
+
+        // Remove from active calls
+        this.activeCalls.delete(callId);
+
+        logger.info(`DIALER CALL ENDED: ${lead.phone} <-> ${agentExt} talk=${talkTime}s hangup=${hangupBy} [${callId}]`);
+
+        // Check if campaign is done
+        this._checkCampaignComplete(campaignId);
+      };
+
+      leadUac.on('destroy', () => onCallEnd('lead'));
+      agentUac.on('destroy', () => onCallEnd('agent'));
+
+    } catch (err) {
+      logger.error(`DIALER BRIDGE FAILED: agent ${agentExt} error=${err.message} [${callId}]`);
+      // Can't reach agent — hang up lead, mark as abandoned
+      try { leadUac.destroy(); } catch (e) {}
+
+      this._incrementStat(campaignId, 'abandoned');
+      await this._callFailed(callId, campaignId, lead, agentExt, 'abandoned', config, cdr);
+    }
+  }
+
+  // ============================================================
+  // CALL FAILED — handle no-answer, busy, error, abandoned
+  // ============================================================
+  async _callFailed(callId, campaignId, lead, agentExt, outcome, config, cdr) {
+    const { Lead: LeadModel, CDR: CDRModel } = require('../models');
+
+    // Update CDR
+    if (cdr) {
+      cdr.status = outcome === 'busy' ? 'busy' : 'failed';
+      cdr.endTime = new Date();
+      cdr.duration = Math.round((cdr.endTime - cdr.startTime) / 1000);
+      cdr.hangupCause = outcome;
+      cdr.hangupBy = 'system';
+      await cdr.save();
+    }
+
+    // Update lead — schedule retry or mark as failed
+    const maxAttempts = config.retryAttempts || 3;
+    const retryDelayMin = config.retryDelay || 30;
+
+    if (lead.attempts < maxAttempts && (outcome === 'no-answer' || outcome === 'busy')) {
+      // Schedule retry
+      const nextAttempt = new Date(Date.now() + retryDelayMin * 60 * 1000);
+      await LeadModel.findByIdAndUpdate(lead._id, {
+        status: 'pending',
+        outcome,
+        nextAttempt,
+        $push: { callIds: callId }
+      });
+      logger.debug(`DIALER: ${lead.phone} retry scheduled at ${nextAttempt.toISOString()} (attempt ${lead.attempts}/${maxAttempts})`);
+    } else {
+      // Max attempts reached or fatal error
+      await LeadModel.findByIdAndUpdate(lead._id, {
+        status: 'failed',
+        outcome,
+        $push: { callIds: callId }
+      });
+    }
+
+    // Release agent back to idle
+    this.setAgentState(campaignId, agentExt, 'idle');
+    const stateMap = this.agentStates.get(campaignId);
+    if (stateMap) {
+      const as = stateMap.get(agentExt);
+      if (as) as.currentCallId = null;
+    }
+
+    // Remove from active calls
+    this.activeCalls.delete(callId);
+
+    // Check if campaign is done
+    this._checkCampaignComplete(campaignId);
+  }
+
+  // ============================================================
+  // Check if campaign has no more leads and no active calls
+  // ============================================================
+  async _checkCampaignComplete(campaignId) {
+    const { Lead: LeadModel } = require('../models');
+    const remaining = await LeadModel.countDocuments({
+      campaignId: this.runningCampaigns.get(campaignId)?.config?._id,
+      status: { $in: ['pending', 'scheduled', 'calling'] }
+    });
+
+    let activeCalls = 0;
+    for (const [, call] of this.activeCalls) {
+      if (call.campaignId === campaignId) activeCalls++;
+    }
+
+    if (remaining === 0 && activeCalls === 0) {
+      logger.info(`DIALER: campaign ${campaignId} — all leads processed, stopping`);
+      this.stopCampaign(campaignId).catch(() => {});
     }
   }
 
