@@ -261,9 +261,138 @@ const cdrSchema = new mongoose.Schema({
   pickedUpAt: Date,
   voicemailId: String,
   rtpengineCallId: String,
+  // Dialer campaign fields
+  campaignId: String,
+  leadId: String,
+  amdResult: { type: String, enum: ['', 'human', 'machine', 'notsure', 'fax'], default: '' },
 });
 
 cdrSchema.index({ startTime: -1 });
+cdrSchema.index({ campaignId: 1, startTime: -1 });
+
+// ============================================================
+// Campaign (Dialer)
+// ============================================================
+const campaignSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  status: {
+    type: String,
+    enum: ['draft', 'running', 'paused', 'completed', 'archived'],
+    default: 'draft'
+  },
+  strategy: {
+    type: String,
+    enum: ['auto', 'predictive'],
+    default: 'auto'
+  },
+  trunk: { type: String, required: true },           // outbound trunk name
+  callerId: { type: String, required: true },         // outbound caller ID
+  agents: [{ type: String }],                         // extension numbers assigned
+
+  // Dialing settings
+  maxConcurrent: { type: Number, default: 10 },       // max simultaneous outbound calls
+  ringTimeout: { type: Number, default: 30 },          // seconds to ring before abandoning
+  wrapUpTime: { type: Number, default: 10 },           // seconds agent unavailable after call
+  retryAttempts: { type: Number, default: 3 },         // max dial attempts per lead
+  retryDelay: { type: Number, default: 30 },           // minutes between retries
+
+  // Predictive settings
+  dialRatio: { type: Number, default: 1.2 },           // calls per available agent
+  maxAbandoned: { type: Number, default: 3 },           // max abandon rate %
+
+  // AMD
+  amd: { type: Boolean, default: false },
+  amdAction: { type: String, enum: ['hangup', 'leave-message'], default: 'hangup' },
+
+  // Schedule
+  schedule: {
+    enabled: { type: Boolean, default: false },
+    timezone: { type: String, default: 'America/New_York' },
+    days: { type: [Number], default: [1, 2, 3, 4, 5] },  // 0=Sun...6=Sat
+    startTime: { type: String, default: '09:00' },         // HH:MM
+    endTime: { type: String, default: '17:00' }
+  },
+
+  // DNC
+  dncEnabled: { type: Boolean, default: true },
+
+  // Stats (updated in real-time)
+  stats: {
+    totalLeads: { type: Number, default: 0 },
+    dialed: { type: Number, default: 0 },
+    answered: { type: Number, default: 0 },
+    noAnswer: { type: Number, default: 0 },
+    busy: { type: Number, default: 0 },
+    failed: { type: Number, default: 0 },
+    machine: { type: Number, default: 0 },
+    abandoned: { type: Number, default: 0 },
+    completed: { type: Number, default: 0 },
+    totalTalkTime: { type: Number, default: 0 },         // seconds
+    avgTalkTime: { type: Number, default: 0 },
+    answerRate: { type: Number, default: 0 },             // 0-1
+    abandonRate: { type: Number, default: 0 },            // 0-1
+    currentDialRatio: { type: Number, default: 1 },
+    callsPerHour: { type: Number, default: 0 },
+  },
+
+  startedAt: Date,
+  pausedAt: Date,
+  completedAt: Date,
+  enabled: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now }
+});
+
+campaignSchema.index({ status: 1 });
+
+// ============================================================
+// Lead (Dialer number list)
+// ============================================================
+const leadSchema = new mongoose.Schema({
+  campaignId: { type: mongoose.Schema.Types.ObjectId, ref: 'Campaign', required: true, index: true },
+  phone: { type: String, required: true },
+  name: { type: String, default: '' },
+  company: { type: String, default: '' },
+  email: { type: String, default: '' },
+  status: {
+    type: String,
+    enum: ['pending', 'calling', 'completed', 'failed', 'dnc', 'scheduled', 'abandoned'],
+    default: 'pending'
+  },
+  attempts: { type: Number, default: 0 },
+  lastAttempt: Date,
+  nextAttempt: Date,                                    // null = ready to dial now
+  outcome: {
+    type: String,
+    enum: ['', 'answered', 'no-answer', 'busy', 'machine', 'failed', 'abandoned'],
+    default: ''
+  },
+  disposition: {
+    type: String,
+    enum: ['', 'interested', 'not-interested', 'callback', 'wrong-number', 'dnc', 'voicemail', 'no-answer'],
+    default: ''
+  },
+  callbackTime: Date,                                   // if disposition=callback
+  assignedAgent: { type: String, default: '' },          // last agent who handled
+  duration: { type: Number, default: 0 },                // total talk time seconds
+  callIds: [{ type: String }],                           // CDR callIds for this lead
+  customFields: { type: mongoose.Schema.Types.Mixed, default: {} },  // arbitrary CSV columns
+  createdAt: { type: Date, default: Date.now }
+});
+
+leadSchema.index({ campaignId: 1, status: 1, nextAttempt: 1 });
+leadSchema.index({ campaignId: 1, phone: 1 }, { unique: true });
+leadSchema.index({ phone: 1 });
+
+// ============================================================
+// DNC (Do Not Call) — outbound specific
+// ============================================================
+const dncSchema = new mongoose.Schema({
+  phone: { type: String, required: true, unique: true, index: true },
+  reason: { type: String, default: '' },
+  source: { type: String, enum: ['agent', 'admin', 'import', 'system'], default: 'admin' },
+  addedBy: { type: String, default: '' },               // username who added
+  createdAt: { type: Date, default: Date.now }
+});
 
 // ============================================================
 // Voicemail Message
@@ -422,5 +551,8 @@ const SystemSettings = mongoose.model('SystemSettings', systemSettingsSchema);
 const Appointment = mongoose.model('Appointment', appointmentSchema);
 const AppointmentMessage = mongoose.model('AppointmentMessage', appointmentMessageSchema);
 const SIPDomain = mongoose.model('SIPDomain', sipDomainSchema);
+const Campaign = mongoose.model('Campaign', campaignSchema);
+const Lead = mongoose.model('Lead', leadSchema);
+const DNC = mongoose.model('DNC', dncSchema);
 
-module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, IVR, TimeCondition, Queue, User, ChatMessage, BlockedNumber, CDR, VoicemailMessage, ActiveCall, SystemSettings, Appointment, AppointmentMessage, SIPDomain };
+module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, IVR, TimeCondition, Queue, User, ChatMessage, BlockedNumber, CDR, VoicemailMessage, ActiveCall, SystemSettings, Appointment, AppointmentMessage, SIPDomain, Campaign, Lead, DNC };

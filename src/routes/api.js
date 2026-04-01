@@ -2,7 +2,7 @@ const express = require('express');
 const { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, CDR } = require('../models');
 const logger = require('../utils/logger');
 
-function createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler, monitorHandler, timeConditionService, presenceHandler, queueHandler, appointmentHandler) {
+function createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler, monitorHandler, timeConditionService, presenceHandler, queueHandler, appointmentHandler, dialerEngine) {
   const router = express.Router();
 
   // ============================================================
@@ -1234,6 +1234,260 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
       res.setHeader('Content-Disposition', `inline; filename="${require('path').basename(cdr.recordingPath)}"`);
       fs.createReadStream(cdr.recordingPath).pipe(res);
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // ============================================================
+  // Campaigns (Dialer)
+  // ============================================================
+  const { Campaign, Lead, DNC } = require('../models');
+  const csvUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+
+  // Campaign CRUD
+  router.get('/campaigns', async (req, res) => {
+    try {
+      const campaigns = await Campaign.find({}).sort({ createdAt: -1 });
+      res.json({ success: true, campaigns });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.get('/campaigns/:id', async (req, res) => {
+    try {
+      const c = await Campaign.findById(req.params.id);
+      if (!c) return res.status(404).json({ success: false, error: 'Not found' });
+      const liveStatus = dialerEngine ? dialerEngine.getCampaignStatus(req.params.id) : {};
+      res.json({ success: true, campaign: c, live: liveStatus });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.post('/campaigns', async (req, res) => {
+    try {
+      const { name, strategy, trunk, callerId, agents, maxConcurrent, ringTimeout,
+              wrapUpTime, retryAttempts, retryDelay, amd, amdAction, schedule,
+              dialRatio, maxAbandoned, dncEnabled } = req.body;
+      if (!name || !trunk || !callerId) {
+        return res.status(400).json({ success: false, error: 'name, trunk, callerId required' });
+      }
+      const c = await Campaign.create({
+        name, strategy: strategy || 'auto', trunk, callerId,
+        agents: agents || [], maxConcurrent: maxConcurrent || 10,
+        ringTimeout: ringTimeout || 30, wrapUpTime: wrapUpTime || 10,
+        retryAttempts: retryAttempts || 3, retryDelay: retryDelay || 30,
+        amd: amd || false, amdAction: amdAction || 'hangup',
+        schedule: schedule || {}, dialRatio: dialRatio || 1.2,
+        maxAbandoned: maxAbandoned || 3, dncEnabled: dncEnabled !== false
+      });
+      logger.info(`Campaign created: ${name} (${c._id})`);
+      res.status(201).json({ success: true, campaign: c });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.put('/campaigns/:id', async (req, res) => {
+    try {
+      const updates = {};
+      ['name', 'strategy', 'trunk', 'callerId', 'agents', 'maxConcurrent', 'ringTimeout',
+       'wrapUpTime', 'retryAttempts', 'retryDelay', 'amd', 'amdAction', 'schedule',
+       'dialRatio', 'maxAbandoned', 'dncEnabled', 'enabled'].forEach(k => {
+        if (req.body[k] !== undefined) updates[k] = req.body[k];
+      });
+      const c = await Campaign.findByIdAndUpdate(req.params.id, updates, { new: true });
+      if (!c) return res.status(404).json({ success: false, error: 'Not found' });
+      res.json({ success: true, campaign: c });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.delete('/campaigns/:id', async (req, res) => {
+    try {
+      const c = await Campaign.findById(req.params.id);
+      if (!c) return res.status(404).json({ success: false, error: 'Not found' });
+      if (c.status === 'running') return res.status(400).json({ success: false, error: 'Stop campaign before deleting' });
+      await Lead.deleteMany({ campaignId: c._id });
+      await Campaign.findByIdAndDelete(req.params.id);
+      logger.info(`Campaign deleted: ${c.name} (${c._id})`);
+      res.json({ success: true, message: 'Campaign and leads deleted' });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // Campaign controls
+  router.post('/campaigns/:id/start', async (req, res) => {
+    try {
+      const c = await dialerEngine.startCampaign(req.params.id);
+      res.json({ success: true, campaign: c });
+    } catch (err) { res.status(400).json({ success: false, error: err.message }); }
+  });
+
+  router.post('/campaigns/:id/pause', async (req, res) => {
+    try {
+      const c = await dialerEngine.pauseCampaign(req.params.id);
+      res.json({ success: true, campaign: c });
+    } catch (err) { res.status(400).json({ success: false, error: err.message }); }
+  });
+
+  router.post('/campaigns/:id/stop', async (req, res) => {
+    try {
+      const c = await dialerEngine.stopCampaign(req.params.id);
+      res.json({ success: true, campaign: c });
+    } catch (err) { res.status(400).json({ success: false, error: err.message }); }
+  });
+
+  // Campaign live status
+  router.get('/campaigns/:id/live', async (req, res) => {
+    try {
+      const status = dialerEngine ? dialerEngine.getCampaignStatus(req.params.id) : {};
+      res.json({ success: true, live: status });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // Agent controls
+  router.post('/campaigns/:id/agents/:ext/login', async (req, res) => {
+    try { dialerEngine.agentLogin(req.params.id, req.params.ext); res.json({ success: true }); }
+    catch (err) { res.status(400).json({ success: false, error: err.message }); }
+  });
+  router.post('/campaigns/:id/agents/:ext/logout', async (req, res) => {
+    try { dialerEngine.agentLogout(req.params.id, req.params.ext); res.json({ success: true }); }
+    catch (err) { res.status(400).json({ success: false, error: err.message }); }
+  });
+  router.post('/campaigns/:id/agents/:ext/pause', async (req, res) => {
+    try { dialerEngine.agentPause(req.params.id, req.params.ext); res.json({ success: true }); }
+    catch (err) { res.status(400).json({ success: false, error: err.message }); }
+  });
+  router.post('/campaigns/:id/agents/:ext/unpause', async (req, res) => {
+    try { dialerEngine.agentUnpause(req.params.id, req.params.ext); res.json({ success: true }); }
+    catch (err) { res.status(400).json({ success: false, error: err.message }); }
+  });
+
+  // CSV Import
+  router.post('/campaigns/:id/import', csvUpload.single('file'), async (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ success: false, error: 'CSV file required' });
+      const csvContent = req.file.buffer.toString('utf-8');
+      const mapping = req.body.mapping ? JSON.parse(req.body.mapping) : null;
+      const result = await dialerEngine.importCSV(req.params.id, csvContent, mapping);
+      res.json({ success: true, import: result });
+    } catch (err) { res.status(400).json({ success: false, error: err.message }); }
+  });
+
+  // Leads
+  router.get('/campaigns/:id/leads', async (req, res) => {
+    try {
+      const page = parseInt(req.query.page) || 1;
+      const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+      const status = req.query.status || '';
+      const filter = { campaignId: req.params.id };
+      if (status) filter.status = status;
+
+      const [leads, total] = await Promise.all([
+        Lead.find(filter).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
+        Lead.countDocuments(filter)
+      ]);
+
+      // Status summary
+      const statusCounts = await Lead.aggregate([
+        { $match: { campaignId: require('mongoose').Types.ObjectId.createFromHexString(req.params.id) } },
+        { $group: { _id: '$status', count: { $sum: 1 } } }
+      ]);
+      const summary = {};
+      statusCounts.forEach(s => { summary[s._id] = s.count; });
+
+      res.json({ success: true, leads, total, page, limit, summary });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // Update lead disposition
+  router.put('/campaigns/:campaignId/leads/:leadId', async (req, res) => {
+    try {
+      const updates = {};
+      ['disposition', 'callbackTime', 'status'].forEach(k => {
+        if (req.body[k] !== undefined) updates[k] = req.body[k];
+      });
+      if (req.body.disposition === 'callback' && req.body.callbackTime) {
+        updates.status = 'scheduled';
+        updates.nextAttempt = new Date(req.body.callbackTime);
+      }
+      if (req.body.disposition === 'dnc') {
+        updates.status = 'dnc';
+        // Also add to DNC list
+        const lead = await Lead.findById(req.params.leadId);
+        if (lead) {
+          await DNC.findOneAndUpdate(
+            { phone: lead.phone },
+            { phone: lead.phone, reason: 'Agent marked DNC', source: 'agent', addedBy: req.body.agent || '' },
+            { upsert: true }
+          );
+        }
+      }
+      const lead = await Lead.findByIdAndUpdate(req.params.leadId, updates, { new: true });
+      if (!lead) return res.status(404).json({ success: false, error: 'Lead not found' });
+      res.json({ success: true, lead });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // Running campaigns summary
+  router.get('/dialer/running', async (req, res) => {
+    try {
+      const running = dialerEngine ? dialerEngine.getRunningCampaigns() : [];
+      res.json({ success: true, campaigns: running });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // ============================================================
+  // DNC (Do Not Call) List
+  // ============================================================
+  router.get('/dnc', async (req, res) => {
+    try {
+      const page = parseInt(req.query.page) || 1;
+      const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+      const [items, total] = await Promise.all([
+        DNC.find({}).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit),
+        DNC.countDocuments()
+      ]);
+      res.json({ success: true, dnc: items, total, page, limit });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.post('/dnc', async (req, res) => {
+    try {
+      const { phone, reason, source, addedBy } = req.body;
+      if (!phone) return res.status(400).json({ success: false, error: 'phone required' });
+      const clean = phone.replace(/[^\d]/g, '');
+      if (await DNC.findOne({ phone: clean })) return res.status(409).json({ success: false, error: 'Already on DNC list' });
+      const d = await DNC.create({ phone: clean, reason: reason || '', source: source || 'admin', addedBy: addedBy || '' });
+      logger.info(`DNC added: ${clean}`);
+      res.status(201).json({ success: true, dnc: d });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.delete('/dnc/:phone', async (req, res) => {
+    try {
+      const d = await DNC.findOneAndDelete({ phone: req.params.phone });
+      if (!d) return res.status(404).json({ success: false, error: 'Not found' });
+      logger.info(`DNC removed: ${req.params.phone}`);
+      res.json({ success: true, message: 'Removed from DNC' });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.get('/dnc/check/:phone', async (req, res) => {
+    try {
+      const d = await DNC.findOne({ phone: req.params.phone.replace(/[^\d]/g, '') });
+      res.json({ success: true, isDnc: !!d, details: d || null });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // DNC CSV import
+  router.post('/dnc/import', csvUpload.single('file'), async (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ success: false, error: 'CSV file required' });
+      const lines = req.file.buffer.toString('utf-8').split(/\r?\n/).filter(l => l.trim());
+      let imported = 0, duplicates = 0, invalid = 0;
+      for (let i = 1; i < lines.length; i++) {
+        const phone = lines[i].split(',')[0].trim().replace(/[^\d]/g, '');
+        if (!phone || phone.length < 7) { invalid++; continue; }
+        try {
+          await DNC.create({ phone, reason: 'CSV import', source: 'import' });
+          imported++;
+        } catch (e) { duplicates++; }
+      }
+      res.json({ success: true, imported, duplicates, invalid, total: lines.length - 1 });
+    } catch (err) { res.status(400).json({ success: false, error: err.message }); }
   });
 
   // ============================================================

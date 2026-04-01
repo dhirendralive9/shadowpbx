@@ -191,6 +191,10 @@ function createWebRouter(apiKey) {
     res.render('pages/queues', locals(req));
   });
 
+  router.get('/campaigns', authMiddleware, supervisorUp, (req, res) => {
+    res.render('pages/campaigns', locals(req));
+  });
+
   // ─── Admin only ───
   router.get('/trunks', authMiddleware, adminOnly, (req, res) => {
     res.render('pages/trunks', locals(req));
