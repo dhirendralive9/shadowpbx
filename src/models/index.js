@@ -184,6 +184,7 @@ const outboundRouteSchema = new mongoose.Schema({
   strip: { type: Number, default: 0 },
   callerIdNumber: { type: String },
   allowedExtensions: [{ type: String }],  // empty = all allowed
+  allowDialer: { type: Boolean, default: false },  // allow use in dialer campaigns
   enabled: { type: Boolean, default: true },
   priority: { type: Number, default: 10 },
   createdAt: { type: Date, default: Date.now }
@@ -285,7 +286,8 @@ const campaignSchema = new mongoose.Schema({
     enum: ['auto', 'predictive'],
     default: 'auto'
   },
-  trunk: { type: String, required: true },           // outbound SIP trunk name (non-AMD calls)
+  trunk: { type: String, default: '' },                 // legacy: direct trunk name (optional)
+  outboundRoute: { type: String, default: '' },         // outbound route ID or name
   callerId: { type: String, required: true },         // outbound caller ID
   carrier: { type: String, enum: ['', 'telnyx', 'signalwire', 'twilio'], default: '' },  // REST API carrier (for AMD)
   agents: [{ type: String }],                         // extension numbers assigned

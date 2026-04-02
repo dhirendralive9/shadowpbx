@@ -20,7 +20,7 @@
       <div class="form-group"><label class="form-label">Caller ID</label><input class="form-input" id="c-callerid" placeholder="+15559876543" required></div>
     </div>
     <div class="grid-3" style="margin-bottom:0">
-      <div class="form-group"><label class="form-label">Trunk</label><select class="form-select" id="c-trunk" required></select></div>
+      <div class="form-group"><label class="form-label">Outbound route</label><select class="form-select" id="c-route" required></select></div>
       <div class="form-group"><label class="form-label">Max concurrent</label><input class="form-input" id="c-maxconcurrent" type="number" value="10" min="1" max="200"></div>
       <div class="form-group"><label class="form-label">Ring timeout (s)</label><input class="form-input" id="c-ringtimeout" type="number" value="30" min="10" max="60"></div>
     </div>
@@ -158,9 +158,9 @@ function toggleAmd(){var o=document.getElementById('c-amd').checked;document.get
 async function loadFormData(){
   if(!isAdmin)return;
   try{
-    var[tR,eR]=await Promise.all([fetch(API+'/trunks',{headers:H}).then(r=>r.json()),fetch(API+'/extensions',{headers:H}).then(r=>r.json())]);
-    if(tR.success&&tR.trunks){var s=document.getElementById('c-trunk');if(s){s.innerHTML='<option value="">— select —</option>';tR.trunks.forEach(function(t){s.innerHTML+='<option value="'+esc(t.name)+'">'+esc(t.name)+'</option>'})}}
-    if(eR.success&&eR.extensions){var d=document.getElementById('c-agents');if(d)d.innerHTML=eR.extensions.map(function(e){return '<label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;min-width:120px"><input type="checkbox" class="agent-cb" value="'+esc(e.extension)+'"> '+esc(e.extension)+' ('+esc(e.name)+')</label>'}).join('')}
+    var[rRes,eRes]=await Promise.all([fetch(API+'/outbound-routes/dialer',{headers:H}).then(r=>r.json()),fetch(API+'/extensions',{headers:H}).then(r=>r.json())]);
+    if(rRes.success&&rRes.routes){var s=document.getElementById('c-route');if(s){s.innerHTML='<option value="">— select outbound route —</option>';rRes.routes.forEach(function(r){s.innerHTML+='<option value="'+esc(r.name)+'">'+esc(r.name)+' ('+esc((r.patterns||[]).join(', '))+' → '+esc(r.trunk)+')</option>'})}}
+    if(eRes.success&&eRes.extensions){var d=document.getElementById('c-agents');if(d)d.innerHTML=eRes.extensions.map(function(e){return '<label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;min-width:120px"><input type="checkbox" class="agent-cb" value="'+esc(e.extension)+'"> '+esc(e.extension)+' ('+esc(e.name)+')</label>'}).join('')}
   }catch(e){}
 }
 function getAgents(){return Array.from(document.querySelectorAll('.agent-cb:checked')).map(function(c){return c.value})}
@@ -168,7 +168,7 @@ function setAgents(a){document.querySelectorAll('.agent-cb').forEach(function(c)
 
 function showAdd(){
   ['c-edit-id','c-name','c-callerid'].forEach(function(id){document.getElementById(id).value=''});
-  document.getElementById('c-strategy').value='auto';document.getElementById('c-trunk').value='';
+  document.getElementById('c-strategy').value='auto';document.getElementById('c-route').value='';
   document.getElementById('c-maxconcurrent').value='10';document.getElementById('c-ringtimeout').value='30';
   document.getElementById('c-wrapup').value='10';document.getElementById('c-retries').value='3';document.getElementById('c-retrydelay').value='30';
   document.getElementById('c-amd').checked=false;document.getElementById('c-dnc').checked=true;
@@ -180,7 +180,7 @@ function showAdd(){
 function showEdit(c){
   document.getElementById('c-edit-id').value=c._id;document.getElementById('c-name').value=c.name;
   document.getElementById('c-strategy').value=c.strategy;document.getElementById('c-callerid').value=c.callerId;
-  document.getElementById('c-trunk').value=c.trunk;document.getElementById('c-maxconcurrent').value=c.maxConcurrent;
+  document.getElementById('c-route').value=c.outboundRoute||c.trunk||'';document.getElementById('c-maxconcurrent').value=c.maxConcurrent;
   document.getElementById('c-ringtimeout').value=c.ringTimeout;document.getElementById('c-wrapup').value=c.wrapUpTime;
   document.getElementById('c-retries').value=c.retryAttempts;document.getElementById('c-retrydelay').value=c.retryDelay;
   document.getElementById('c-amd').checked=c.amd;document.getElementById('c-dnc').checked=c.dncEnabled!==false;
@@ -323,7 +323,7 @@ function sc(v,l,c){return '<div class="lv-card"><div class="lv-val"'+(c?' style=
 async function saveCampaign(e){
   e.preventDefault();var id=document.getElementById('c-edit-id').value;
   var b={name:document.getElementById('c-name').value,strategy:document.getElementById('c-strategy').value,
-    callerId:document.getElementById('c-callerid').value,trunk:document.getElementById('c-trunk').value,
+    callerId:document.getElementById('c-callerid').value,outboundRoute:document.getElementById('c-route').value,
     agents:getAgents(),maxConcurrent:parseInt(document.getElementById('c-maxconcurrent').value)||10,
     ringTimeout:parseInt(document.getElementById('c-ringtimeout').value)||30,wrapUpTime:parseInt(document.getElementById('c-wrapup').value)||10,
     retryAttempts:parseInt(document.getElementById('c-retries').value)||3,retryDelay:parseInt(document.getElementById('c-retrydelay').value)||30,
@@ -331,7 +331,7 @@ async function saveCampaign(e){
     carrier:document.getElementById('c-amd').checked?document.getElementById('c-carrier').value:'',
     dncEnabled:document.getElementById('c-dnc').checked};
   if(b.strategy==='predictive'){b.dialRatio=parseFloat(document.getElementById('c-dialratio').value)||1.2;b.maxAbandoned=parseInt(document.getElementById('c-maxabandoned').value)||3}
-  if(!b.trunk){showToast('Select a trunk',true);return}if(b.agents.length===0){showToast('Select at least one agent',true);return}
+  if(!b.outboundRoute){showToast('Select an outbound route',true);return}if(b.agents.length===0){showToast('Select at least one agent',true);return}
   var d=await(await fetch(id?API+'/campaigns/'+id:API+'/campaigns',{method:id?'PUT':'POST',headers:J,body:JSON.stringify(b)})).json();
   if(d.success){hideAdd();showToast(id?'Updated':'Created');loadCampaigns()}else showToast(d.error||'Failed',true);
 }

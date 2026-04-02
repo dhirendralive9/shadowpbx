@@ -255,10 +255,10 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
 
   router.post('/outbound-routes', async (req, res) => {
     try {
-      const { name, patterns, trunk, prepend, strip, callerIdNumber, priority, allowedExtensions } = req.body;
+      const { name, patterns, trunk, prepend, strip, callerIdNumber, priority, allowedExtensions, allowDialer } = req.body;
       if (!name || !patterns || !trunk) return res.status(400).json({ success: false, error: 'name, patterns, trunk required' });
-      const route = await OutboundRoute.create({ name, patterns, trunk, prepend, strip, callerIdNumber, priority, allowedExtensions: allowedExtensions || [] });
-      logger.info(`Outbound route: ${name} patterns=${patterns.join(',')} -> trunk:${trunk} allowed=${(allowedExtensions || []).length || 'all'}`);
+      const route = await OutboundRoute.create({ name, patterns, trunk, prepend, strip, callerIdNumber, priority, allowedExtensions: allowedExtensions || [], allowDialer: allowDialer || false });
+      logger.info(`Outbound route: ${name} patterns=${patterns.join(',')} -> trunk:${trunk} dialer=${allowDialer || false}`);
       res.status(201).json({ success: true, route });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
@@ -275,6 +275,14 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
     try {
       await OutboundRoute.findByIdAndDelete(req.params.id);
       res.json({ success: true, message: 'Route deleted' });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // Outbound routes enabled for dialer campaigns
+  router.get('/outbound-routes/dialer', async (req, res) => {
+    try {
+      const routes = await OutboundRoute.find({ enabled: true, allowDialer: true }).sort('priority');
+      res.json({ success: true, routes });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
 
@@ -1261,15 +1269,19 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
 
   router.post('/campaigns', async (req, res) => {
     try {
-      const { name, strategy, trunk, callerId, carrier, agents, maxConcurrent, ringTimeout,
+      const { name, strategy, outboundRoute, trunk, callerId, carrier, agents, maxConcurrent, ringTimeout,
               wrapUpTime, retryAttempts, retryDelay, amd, amdAction, schedule,
               dialRatio, maxAbandoned, dncEnabled } = req.body;
-      if (!name || !trunk || !callerId) {
-        return res.status(400).json({ success: false, error: 'name, trunk, callerId required' });
+      if (!name || !callerId) {
+        return res.status(400).json({ success: false, error: 'name and callerId required' });
+      }
+      if (!outboundRoute && !trunk) {
+        return res.status(400).json({ success: false, error: 'outbound route required' });
       }
       const c = await Campaign.create({
-        name, strategy: strategy || 'auto', trunk, callerId,
-        carrier: carrier || '',
+        name, strategy: strategy || 'auto',
+        outboundRoute: outboundRoute || '', trunk: trunk || '',
+        callerId, carrier: carrier || '',
         agents: agents || [], maxConcurrent: maxConcurrent || 10,
         ringTimeout: ringTimeout || 30, wrapUpTime: wrapUpTime || 10,
         retryAttempts: retryAttempts || 3, retryDelay: retryDelay || 30,
@@ -1285,7 +1297,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   router.put('/campaigns/:id', async (req, res) => {
     try {
       const updates = {};
-      ['name', 'strategy', 'trunk', 'callerId', 'carrier', 'agents', 'maxConcurrent', 'ringTimeout',
+      ['name', 'strategy', 'outboundRoute', 'trunk', 'callerId', 'carrier', 'agents', 'maxConcurrent', 'ringTimeout',
        'wrapUpTime', 'retryAttempts', 'retryDelay', 'amd', 'amdAction', 'schedule',
        'dialRatio', 'maxAbandoned', 'dncEnabled', 'enabled'].forEach(k => {
         if (req.body[k] !== undefined) updates[k] = req.body[k];

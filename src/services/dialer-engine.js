@@ -425,53 +425,65 @@ class DialerEngine {
   //   AMD ON  → Carrier REST API with AMD detection, webhook-driven
   // ============================================================
   async _originateCall(callId, campaignId, lead, agentExt, config) {
-    const { CDR } = require('../models');
+    const { CDR, OutboundRoute } = require('../models');
+
+    // ─── Resolve outbound route → trunk + dial rules ───
+    let trunkName = config.trunk || '';
+    let dialNumber = lead.phone;
+
+    if (config.outboundRoute) {
+      const query = config.outboundRoute.match(/^[0-9a-f]{24}$/i)
+        ? { _id: config.outboundRoute, enabled: true }
+        : { name: config.outboundRoute, enabled: true };
+      const route = await OutboundRoute.findOne(query);
+      if (route) {
+        trunkName = route.trunk;
+        if (route.strip > 0) dialNumber = dialNumber.substring(route.strip);
+        if (route.prepend) dialNumber = route.prepend + dialNumber;
+        if (!config.callerId && route.callerIdNumber) config.callerId = route.callerIdNumber;
+        logger.debug(`DIALER: route "${route.name}" → trunk=${trunkName} dial=${dialNumber} strip=${route.strip} prepend=${route.prepend || ''}`);
+      } else {
+        logger.warn(`DIALER: outbound route "${config.outboundRoute}" not found, falling back to trunk`);
+      }
+    }
 
     // Track this call
     this.activeCalls.set(callId, {
-      campaignId,
-      leadId: lead._id.toString(),
-      agentExt,
-      lead: lead.toObject(),
-      uac: null,
-      uas: null,
-      status: 'ringing',
-      carrierCallSid: null
+      campaignId, leadId: lead._id.toString(), agentExt,
+      lead: lead.toObject(), uac: null, uas: null,
+      status: 'ringing', carrierCallSid: null
     });
 
-    // Create CDR
     const cdr = new CDR({
-      callId,
-      sipCallId: callId,
-      from: config.callerId,
-      to: lead.phone,
-      direction: 'outbound',
-      status: 'ringing',
-      startTime: new Date(),
-      trunkUsed: config.trunk,
-      campaignId: campaignId,
-      leadId: lead._id.toString(),
+      callId, sipCallId: callId, from: config.callerId, to: lead.phone,
+      direction: 'outbound', status: 'ringing', startTime: new Date(),
+      trunkUsed: trunkName || config.outboundRoute,
+      campaignId, leadId: lead._id.toString(),
       fromIp: process.env.EXTERNAL_IP || ''
     });
     await cdr.save();
 
-    // Choose origination path
+    // Pass resolved values downstream
+    config._resolvedTrunk = trunkName;
+    config._dialNumber = dialNumber;
+
     if (config.amd && config.carrier) {
-      // AMD enabled → use carrier REST API
       await this._originateViaCarrierAPI(callId, campaignId, lead, agentExt, config, cdr);
     } else {
-      // No AMD → direct SIP origination
       await this._originateViaSIP(callId, campaignId, lead, agentExt, config, cdr);
     }
   }
 
   // ============================================================
-  // SIP ORIGINATION (non-AMD) — existing Phase 2 logic
+  // SIP ORIGINATION (non-AMD)
   // ============================================================
   async _originateViaSIP(callId, campaignId, lead, agentExt, config, cdr) {
-    const trunk = this.trunkManager.getTrunk(config.trunk);
+    const trunkName = config._resolvedTrunk || config.trunk || '';
+    const dialNumber = config._dialNumber || lead.phone;
+
+    const trunk = this.trunkManager.getTrunk(trunkName);
     if (!trunk) {
-      logger.error(`DIALER: trunk "${config.trunk}" not found`);
+      logger.error(`DIALER: trunk "${trunkName}" not found`);
       await this._callFailed(callId, campaignId, lead, agentExt, 'trunk_not_found', config, cdr);
       return;
     }
@@ -480,9 +492,9 @@ class DialerEngine {
     const port = trunk.port || 5060;
     const username = trunk.username || '';
     const password = trunk.password || '';
-    const targetUri = `sip:${lead.phone}@${host}:${port}`;
+    const targetUri = `sip:${dialNumber}@${host}:${port}`;
 
-    logger.info(`DIALER CALL [SIP]: ${config.callerId} -> ${lead.phone} via ${config.trunk} [${callId}] agent=${agentExt}`);
+    logger.info(`DIALER CALL [SIP]: ${config.callerId} -> ${dialNumber} via ${trunkName} [${callId}] agent=${agentExt}`);
 
     try {
       const uac = await this.srf.createUAC(targetUri, {
