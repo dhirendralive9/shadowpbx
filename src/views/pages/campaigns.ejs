@@ -59,7 +59,7 @@
 
 <div id="camp-list"></div>
 
-<!-- ═══════ LIVE DASHBOARD ═══════ -->
+<!-- ═══════ LIVE DASHBOARD + AGENT WALLBOARD ═══════ -->
 <div id="live-panel" style="display:none;margin-top:16px">
   <div class="sec-head">
     <span class="sec-title" id="live-title">Live dashboard</span>
@@ -68,12 +68,24 @@
       <button class="btn btn-sm" onclick="closeLive()">Close</button>
     </div>
   </div>
-  <div class="grid-4" style="margin-bottom:12px" id="live-stats"></div>
-  <div style="margin-bottom:12px">
-    <div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text-secondary)">Agents</div>
-    <div id="live-agents" style="display:flex;flex-wrap:wrap;gap:6px"></div>
-    <div id="live-agent-summary" style="margin-top:6px"></div>
+
+  <!-- KPI stat cards -->
+  <div class="grid-4" style="margin-bottom:14px" id="live-stats"></div>
+
+  <!-- Agent Wallboard Table -->
+  <div style="margin-bottom:14px">
+    <div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text-secondary)">Agent wallboard</div>
+    <div id="live-agent-table"></div>
   </div>
+
+  <!-- Active Calls Feed -->
+  <div style="margin-bottom:14px">
+    <div style="font-size:12px;font-weight:600;margin-bottom:6px;color:var(--text-secondary)">Active calls</div>
+    <div id="live-calls-feed"></div>
+  </div>
+
+  <!-- Agent state summary bar -->
+  <div id="live-agent-summary" style="margin-bottom:8px"></div>
 </div>
 
 <!-- ═══════ CSV IMPORT (admin) ═══════ -->
@@ -232,25 +244,69 @@ async function refreshLive(){
     if(!d.success)return;
     var l=d.live,s=l.stats||{},ac=l.agentCounts||{};
 
+    // KPI cards
     document.getElementById('live-stats').innerHTML=
       sc(l.activeCalls||0,'Active calls','var(--accent)')+sc(l.ringingCalls||0,'Ringing','var(--color-warn)')+
-      sc(l.connectedCalls||0,'Connected','var(--color-ok)')+sc(s.dialed||0,'Total dialed','')+
+      sc(l.connectedCalls||0,'Connected','var(--color-ok)')+sc(s.dialed||0,'Dialed','')+
       sc(s.answered||0,'Answered','var(--color-ok)')+sc(s.answerRate+'%','Answer rate','')+
       sc(fmtSec(s.avgTalkTime),'Avg talk','')+sc(s.callsPerHour||0,'Calls/hr','')+
-      sc(s.abandoned||0,'Abandoned',s.abandonRate>3?'var(--color-error)':'')+
-      sc(s.rollingAbandonRate+'%','Abandon (rolling)',s.rollingAbandonRate>3?'var(--color-error)':'')+
-      sc(s.currentDialRatio||'—','Dial ratio','var(--accent)')+sc(s.rollingAnswerRate+'%','Answer (rolling)','');
+      sc(s.abandoned||0,'Abandoned',s.rollingAbandonRate>3?'var(--color-error)':'')+
+      sc(s.rollingAbandonRate+'%','Abandon rate',s.rollingAbandonRate>3?'var(--color-error)':'')+
+      sc(s.currentDialRatio||'—','Dial ratio','var(--accent)')+
+      sc(s.machine||0,'Machine','');
 
+    // ─── Agent Wallboard Table ───
     var agents=l.agents||[];
-    document.getElementById('live-agents').innerHTML=agents.length===0?'<span class="muted" style="font-size:12px">No agents</span>':
-      agents.map(function(a){
-        var dc='ag-offline',lb=a.state;
-        if(a.state==='idle'){dc='ag-idle';lb='idle'}else if(a.state==='on-call'){dc='ag-oncall';lb='on call'}
-        else if(a.state==='wrap-up'){dc='ag-wrapup';lb='wrap-up'}else if(a.state==='reserved'){dc='ag-reserved';lb='reserved'}
-        else if(a.state==='paused'){dc='ag-paused';lb='paused'}else{dc='ag-offline';lb='offline'}
-        return '<div class="ag-chip"><span class="ag-dot '+dc+'"></span><span class="mono" style="font-weight:600">'+esc(a.extension)+'</span><span style="color:var(--text-tertiary)">'+lb+'</span>'+(a.callCount?'<span style="color:var(--text-tertiary);font-size:10px">('+a.callCount+')</span>':'')+'</div>';
-      }).join('');
+    if(agents.length===0){
+      document.getElementById('live-agent-table').innerHTML='<div class="muted" style="font-size:12px">No agents assigned</div>';
+    } else {
+      var rows=agents.map(function(a){
+        var stateColor={'idle':'var(--color-ok)','on-call':'var(--color-error)','wrap-up':'var(--color-warn)','reserved':'#818cf8','paused':'var(--text-tertiary)','logged-out':'var(--border)'};
+        var stateLabel={'idle':'Idle','on-call':'On Call','wrap-up':'Wrap-up','reserved':'Reserved','paused':'Paused','logged-out':'Offline'};
+        var col=stateColor[a.state]||'var(--border)';
+        var lbl=stateLabel[a.state]||a.state;
+        // Find active call for this agent
+        var agentCall=(l.callDetails||[]).find(function(c){return c.agent===a.extension});
+        var callInfo='—';
+        if(agentCall){
+          if(agentCall.status==='connected') callInfo='<span class="mono">'+esc(agentCall.phone)+'</span> '+esc(agentCall.leadName?(agentCall.leadName):'')+(agentCall.company?' <span class="muted">('+esc(agentCall.company)+')</span>':'')+' <span class="muted">'+fmtSec(agentCall.duration)+'</span>';
+          else if(agentCall.status==='ringing') callInfo='<span style="color:var(--color-warn)">Ringing</span> '+esc(agentCall.phone);
+          else callInfo=esc(agentCall.status)+' '+esc(agentCall.phone);
+        }
+        var dur=a.since?Math.round((Date.now()-a.since)/1000):0;
+        return '<tr>'+
+          '<td><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:'+col+';margin-right:6px'+(a.state==='on-call'?';animation:pulse 1s infinite':'')+'"></span><span class="mono" style="font-weight:600">'+esc(a.extension)+'</span></td>'+
+          '<td><span style="color:'+col+';font-weight:600">'+lbl+'</span></td>'+
+          '<td style="font-size:11px">'+callInfo+'</td>'+
+          '<td class="muted" style="font-size:11px">'+fmtSec(dur)+'</td>'+
+          '<td style="font-size:11px">'+(a.callCount||0)+'</td>'+
+        '</tr>';
+      });
+      document.getElementById('live-agent-table').innerHTML=
+        '<table class="tbl"><thead><tr><th>Agent</th><th>State</th><th>Current call</th><th>In state</th><th>Calls</th></tr></thead><tbody>'+rows.join('')+'</tbody></table>';
+    }
 
+    // ─── Active Calls Feed ───
+    var calls=l.callDetails||[];
+    if(calls.length===0){
+      document.getElementById('live-calls-feed').innerHTML='<div class="muted" style="font-size:12px">No active calls</div>';
+    } else {
+      document.getElementById('live-calls-feed').innerHTML=
+        '<table class="tbl"><thead><tr><th>Status</th><th>Lead</th><th>Phone</th><th>Company</th><th>Agent</th><th>Duration</th></tr></thead><tbody>'+
+        calls.map(function(c){
+          var stPill=c.status==='connected'?'<span class="pill p-ok">connected</span>':c.status==='ringing'?'<span class="pill p-warn" style="animation:pulse 0.8s infinite">ringing</span>':'<span class="pill p-gray">'+esc(c.status)+'</span>';
+          return '<tr>'+
+            '<td>'+stPill+'</td>'+
+            '<td style="font-size:12px">'+esc(c.leadName||'—')+'</td>'+
+            '<td class="mono" style="font-size:12px">'+esc(c.phone)+'</td>'+
+            '<td style="font-size:12px">'+esc(c.company||'—')+'</td>'+
+            '<td class="mono" style="font-size:12px;font-weight:600">'+esc(c.agent||'—')+'</td>'+
+            '<td class="muted" style="font-size:12px">'+(c.status==='connected'?fmtSec(c.duration):'—')+'</td>'+
+          '</tr>';
+        }).join('')+'</tbody></table>';
+    }
+
+    // ─── Agent state summary bar ───
     document.getElementById('live-agent-summary').innerHTML=
       '<div style="display:flex;gap:14px;font-size:11px;color:var(--text-secondary)">'+
       '<span style="color:var(--color-ok)">● Idle: '+(ac.idle||0)+'</span>'+

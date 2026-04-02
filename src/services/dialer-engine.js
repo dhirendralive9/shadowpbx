@@ -790,7 +790,7 @@ class DialerEngine {
 
       // Update tracking
       activeCall.uas = agentUac;
-      activeCall.status = 'connected';
+      activeCall.status = 'connected'; activeCall.connectedAt = Date.now();
 
       // Update agent state
       this.setAgentState(activeCall.campaignId, agentExt, 'on-call');
@@ -1019,7 +1019,7 @@ class DialerEngine {
       const activeCall = this.activeCalls.get(callId);
       if (activeCall) {
         activeCall.uas = agentUac; // agent leg
-        activeCall.status = 'connected';
+        activeCall.status = 'connected'; activeCall.connectedAt = Date.now();
       }
 
       // Update agent state
@@ -1621,11 +1621,21 @@ class DialerEngine {
     let activeCallCount = 0;
     let ringingCount = 0;
     let connectedCount = 0;
-    for (const [, call] of this.activeCalls) {
+    const callDetails = []; // for wallboard
+    for (const [callId, call] of this.activeCalls) {
       if (call.campaignId === campaignId) {
         activeCallCount++;
         if (call.status === 'ringing') ringingCount++;
         if (call.status === 'connected') connectedCount++;
+        callDetails.push({
+          callId,
+          phone: call.lead ? call.lead.phone : '',
+          leadName: call.lead ? (call.lead.name || '') : '',
+          company: call.lead ? (call.lead.company || '') : '',
+          agent: call.agentExt || '',
+          status: call.status || '',
+          duration: call.connectedAt ? Math.round((Date.now() - call.connectedAt) / 1000) : 0
+        });
       }
     }
 
@@ -1636,6 +1646,7 @@ class DialerEngine {
       activeCalls: activeCallCount,
       ringingCalls: ringingCount,
       connectedCalls: connectedCount,
+      callDetails,
       stats: {
         dialed: stats.dialed || 0,
         answered: stats.answered || 0,
@@ -1648,7 +1659,6 @@ class DialerEngine {
         abandonRate: Math.round((stats.abandonRate || 0) * 100),
         avgTalkTime: Math.round(stats.avgTalkTime || 0),
         callsPerHour: stats.callsPerHour || 0,
-        // Predictive-specific
         currentDialRatio: stats.currentDialRatio || 1,
         rollingAnswerRate: Math.round((stats._rollingAnswerRate || stats.answerRate || 0) * 100),
         rollingAbandonRate: Math.round((stats._rollingAbandonRate || stats.abandonRate || 0) * 1000) / 10,
