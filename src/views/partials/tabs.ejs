@@ -29,20 +29,11 @@ var tabs = [
   { id: 'voicemail',  label: 'Voicemail',   icon: 'voicemail', href: '/voicemail',   roles: ['admin','supervisor','agent'] },
   { id: 'chat',       label: 'Chat',        icon: 'chat',      href: '/chat',        roles: ['admin','supervisor','agent'] },
   { sep: true, roles: ['admin','supervisor'] },
-  // Call Flow group
-  { id: 'ringgroups',     label: 'Ring groups', icon: 'branch',   href: '/ringgroups',      roles: ['admin','supervisor'] },
-  { id: 'queues',         label: 'Queues',      icon: 'queue',    href: '/queues',          roles: ['admin','supervisor'] },
-  { id: 'ivr',            label: 'IVR',         icon: 'ivr',      href: '/ivr',             roles: ['admin'] },
-  { id: 'timeconditions', label: 'Time cond.',  icon: 'clock',    href: '/time-conditions', roles: ['admin'] },
-  { id: 'appointments',   label: 'Appts',       icon: 'calendar', href: '/appointments',    roles: ['admin','supervisor'] },
-  { sep: true, roles: ['admin'] },
-  // Network group
-  { id: 'trunks', label: 'Trunks', icon: 'server', href: '/trunks', roles: ['admin'] },
-  { id: 'routes', label: 'Routes', icon: 'route',  href: '/routes', roles: ['admin'] },
+  { id: 'callflow',   label: 'Call flow',   icon: 'branch',    href: '/ringgroups',  roles: ['admin','supervisor'] },
+  { id: 'network',    label: 'Network',     icon: 'globe',     href: '/trunks',      roles: ['admin'] },
   { sep: true, roles: ['admin','supervisor'] },
-  // Campaigns + Settings
-  { id: 'campaigns', label: 'Campaigns', icon: 'megaphone', href: '/campaigns', roles: ['admin','supervisor'] },
-  { id: 'settings',  label: '',          icon: 'settings',  href: '/settings',  roles: ['admin'] },
+  { id: 'campaigns',  label: 'Campaigns',   icon: 'megaphone', href: '/campaigns',   roles: ['admin','supervisor'] },
+  { id: 'settings',   label: '',            icon: 'settings',  href: '/settings',    roles: ['admin'] },
 ];
 %>
 <nav class="tabs">
