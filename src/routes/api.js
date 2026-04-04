@@ -887,6 +887,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
 
   router.put('/users/:id', async (req, res) => {
     try {
+      const identifier = req.params.id;
       const updates = {};
       ['name', 'email', 'role', 'extension', 'enabled', 'assignedExtensions', 'assignedRingGroups', 'assignedQueues', 'assignedIVRs'].forEach(k => {
         if (req.body[k] !== undefined) updates[k] = req.body[k];
@@ -894,7 +895,15 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
       if (req.body.password) {
         updates.password = await bcrypt.hash(req.body.password, 10);
       }
-      const user = await User.findByIdAndUpdate(req.params.id, updates, { new: true, select: '-password' });
+      // Protect admin from being disabled or role-changed
+      if (identifier === 'admin' && (updates.enabled === false || (updates.role && updates.role !== 'admin'))) {
+        return res.status(403).json({ success: false, error: 'Cannot disable or change role of the admin account' });
+      }
+      // Try by username first, then by _id
+      let user = await User.findOneAndUpdate({ username: identifier }, updates, { new: true, select: '-password' });
+      if (!user && identifier.match(/^[0-9a-f]{24}$/i)) {
+        user = await User.findByIdAndUpdate(identifier, updates, { new: true, select: '-password' });
+      }
       if (!user) return res.status(404).json({ success: false, error: 'User not found' });
       res.json({ success: true, user });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
@@ -902,7 +911,16 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
 
   router.delete('/users/:id', async (req, res) => {
     try {
-      const user = await User.findByIdAndDelete(req.params.id);
+      const identifier = req.params.id;
+      // Protect the default admin account
+      if (identifier === 'admin') {
+        return res.status(403).json({ success: false, error: 'Cannot delete the admin account' });
+      }
+      // Try by username first, then by _id
+      let user = await User.findOneAndDelete({ username: identifier });
+      if (!user && identifier.match(/^[0-9a-f]{24}$/i)) {
+        user = await User.findByIdAndDelete(identifier);
+      }
       if (!user) return res.status(404).json({ success: false, error: 'User not found' });
       res.json({ success: true, message: `User ${user.username} deleted` });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
