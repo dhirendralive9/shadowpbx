@@ -1,16 +1,14 @@
 <% var cfr = typeof role !== 'undefined' ? role : 'admin'; %>
-<%
-var cfTabs = [
-  { id: 'ringgroups',     label: 'Ring groups',      href: '/ringgroups',      roles: ['admin','supervisor'] },
-  { id: 'queues',         label: 'Queues',           href: '/queues',          roles: ['admin','supervisor'] },
-  { id: 'ivr',            label: 'IVR',              href: '/ivr',             roles: ['admin'] },
-  { id: 'timeconditions', label: 'Time conditions',  href: '/time-conditions', roles: ['admin'] },
-  { id: 'appointments',   label: 'Appointments',     href: '/appointments',    roles: ['admin','supervisor'] },
-];
-%>
-<div style="display:flex;gap:0;border-bottom:0.5px solid var(--border);margin-bottom:20px">
-<% cfTabs.forEach(function(t) { %>
-  <% if (!t.roles.includes(cfr)) return; %>
-  <a href="<%= t.href %>" class="settings-tab <%= cfActive === t.id ? 'active' : '' %>"><%= t.label %></a>
-<% }); %>
+<div class="sub-tabs">
+<% if (['admin','supervisor'].includes(cfr)) { %>
+  <a href="/ringgroups" class="sub-tab <%= cfActive === 'ringgroups' ? 'active' : '' %>">Ring groups</a>
+  <a href="/queues" class="sub-tab <%= cfActive === 'queues' ? 'active' : '' %>">Queues</a>
+<% } %>
+<% if (cfr === 'admin') { %>
+  <a href="/ivr" class="sub-tab <%= cfActive === 'ivr' ? 'active' : '' %>">IVR</a>
+  <a href="/time-conditions" class="sub-tab <%= cfActive === 'timeconditions' ? 'active' : '' %>">Time conditions</a>
+<% } %>
+<% if (['admin','supervisor'].includes(cfr)) { %>
+  <a href="/appointments" class="sub-tab <%= cfActive === 'appointments' ? 'active' : '' %>">Appointments</a>
+<% } %>
 </div>

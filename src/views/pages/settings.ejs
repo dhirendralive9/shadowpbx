@@ -1,15 +1,15 @@
 <%- include('../partials/head', { title: 'Settings', active: 'settings' }) %>
 
 <!-- Sub-navigation -->
-<div style="display:flex;gap:0;border-bottom:0.5px solid var(--border);margin-bottom:20px">
-  <a href="#blocklist" class="settings-tab active" data-tab="blocklist" onclick="switchTab('blocklist')">Blocklist</a>
-  <a href="#audio" class="settings-tab" data-tab="audio" onclick="switchTab('audio')">Audio library</a>
-  <a href="#sipdomains" class="settings-tab" data-tab="sipdomains" onclick="switchTab('sipdomains')">SIP Domains</a>
-  <a href="#dnc" class="settings-tab" data-tab="dnc" onclick="switchTab('dnc')">DNC list</a>
-  <a href="#users" class="settings-tab" data-tab="users" onclick="switchTab('users')">Users</a>
-  <a href="#maintenance" class="settings-tab" data-tab="maintenance" onclick="switchTab('maintenance')">Maintenance</a>
-  <a href="#backup" class="settings-tab" data-tab="backup" onclick="switchTab('backup')">Backup</a>
-  <a href="#system" class="settings-tab" data-tab="system" onclick="switchTab('system')">System</a>
+<div class="sub-tabs">
+  <a href="#blocklist" class="sub-tab active" data-tab="blocklist" onclick="switchTab('blocklist')">Blocklist</a>
+  <a href="#audio" class="sub-tab" data-tab="audio" onclick="switchTab('audio')">Audio library</a>
+  <a href="#sipdomains" class="sub-tab" data-tab="sipdomains" onclick="switchTab('sipdomains')">SIP Domains</a>
+  <a href="#dnc" class="sub-tab" data-tab="dnc" onclick="switchTab('dnc')">DNC list</a>
+  <a href="#users" class="sub-tab" data-tab="users" onclick="switchTab('users')">Users</a>
+  <a href="#maintenance" class="sub-tab" data-tab="maintenance" onclick="switchTab('maintenance')">Maintenance</a>
+  <a href="#backup" class="sub-tab" data-tab="backup" onclick="switchTab('backup')">Backup</a>
+  <a href="#system" class="sub-tab" data-tab="system" onclick="switchTab('system')">System</a>
 </div>
 
 <style>
@@ -371,9 +371,9 @@ function showToast(msg, isError) {
 
 // ─── Tab switching ───
 function switchTab(tab) {
-  document.querySelectorAll('.settings-tab').forEach(function(t) { t.classList.remove('active'); });
+  document.querySelectorAll('.sub-tab[data-tab]').forEach(function(t) { t.classList.remove('active'); });
   document.querySelectorAll('.settings-panel').forEach(function(p) { p.classList.remove('active'); });
-  var tabEl = document.querySelector('.settings-tab[data-tab="' + tab + '"]');
+  var tabEl = document.querySelector('.sub-tab[data-tab="' + tab + '"]');
   var panelEl = document.getElementById('panel-' + tab);
   if (tabEl) tabEl.classList.add('active');
   if (panelEl) panelEl.classList.add('active');
