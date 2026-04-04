@@ -6,6 +6,7 @@
   <a href="#audio" class="settings-tab" data-tab="audio" onclick="switchTab('audio')">Audio library</a>
   <a href="#sipdomains" class="settings-tab" data-tab="sipdomains" onclick="switchTab('sipdomains')">SIP Domains</a>
   <a href="#dnc" class="settings-tab" data-tab="dnc" onclick="switchTab('dnc')">DNC list</a>
+  <a href="#users" class="settings-tab" data-tab="users" onclick="switchTab('users')">Users</a>
   <a href="#maintenance" class="settings-tab" data-tab="maintenance" onclick="switchTab('maintenance')">Maintenance</a>
   <a href="#backup" class="settings-tab" data-tab="backup" onclick="switchTab('backup')">Backup</a>
   <a href="#system" class="settings-tab" data-tab="system" onclick="switchTab('system')">System</a>
@@ -104,6 +105,33 @@
   </div>
 
   <div id="sd-list"></div>
+</div>
+
+<!-- ═══════════════════ USERS (embedded) ═══════════════════ -->
+<div id="panel-users" class="settings-panel">
+  <div class="sec-head">
+    <span class="sec-title">User management</span>
+    <div style="display:flex;align-items:center;gap:10px">
+      <span class="muted" style="font-size:11px" id="user-summary"></span>
+      <button class="btn btn-sm" onclick="document.getElementById('user-add').style.display=document.getElementById('user-add').style.display==='none'?'block':'none'">+ Add user</button>
+    </div>
+  </div>
+
+  <div id="user-add" style="display:none;margin-bottom:16px" class="card">
+    <form onsubmit="addUser(event)" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+      <div class="form-group" style="flex:1;min-width:140px"><label class="form-label">Username</label><input class="form-input" id="u-username" required></div>
+      <div class="form-group" style="flex:1;min-width:140px"><label class="form-label">Name</label><input class="form-input" id="u-name" required></div>
+      <div class="form-group" style="flex:1;min-width:140px"><label class="form-label">Password</label><input class="form-input" id="u-password" type="password" required></div>
+      <div class="form-group" style="min-width:120px"><label class="form-label">Role</label>
+        <select class="form-select" id="u-role"><option value="admin">Admin</option><option value="supervisor">Supervisor</option><option value="agent">Agent</option></select>
+      </div>
+      <div class="form-group" style="min-width:100px"><label class="form-label">Extension</label><input class="form-input" id="u-ext" placeholder="2001"></div>
+      <div class="form-group"><button type="submit" class="btn btn-primary btn-sm">Create</button></div>
+      <div class="form-group"><button type="button" class="btn btn-sm" onclick="document.getElementById('user-add').style.display='none'">Cancel</button></div>
+    </form>
+  </div>
+
+  <div id="user-list"></div>
 </div>
 
 <!-- ═══════════════════ DNC (DO NOT CALL) ═══════════════════ -->
@@ -355,6 +383,7 @@ function switchTab(tab) {
   if (tab === 'audio') loadAudioFiles();
   if (tab === 'sipdomains') loadSipDomains();
   if (tab === 'dnc') loadDnc();
+  if (tab === 'users') loadUsers();
   if (tab === 'maintenance') { loadSettings(); loadStorage(); }
   if (tab === 'backup') { loadDbStats(); loadBackups(); loadSettings(); }
   if (tab === 'system') loadSystem();
@@ -694,6 +723,67 @@ async function deleteSipDomain(domain) {
   loadSipDomains();
 }
 
+// ═══════════════════ USERS Management ═══════════════════
+async function loadUsers() {
+  try {
+    var d = await (await fetch(API + '/users', { headers: H })).json();
+    var c = document.getElementById('user-list');
+    if (!d.success || !d.users || !d.users.length) {
+      c.innerHTML = '<div class="card"><div class="empty">No users</div></div>';
+      document.getElementById('user-summary').textContent = '';
+      return;
+    }
+    document.getElementById('user-summary').textContent = d.users.length + ' user(s)';
+    c.innerHTML = '<table class="tbl"><thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Extension</th><th>Status</th><th></th></tr></thead><tbody>' +
+      d.users.map(function(u) {
+        var rolePill = u.role === 'admin' ? 'p-err' : u.role === 'supervisor' ? 'p-warn' : 'p-info';
+        return '<tr>' +
+          '<td class="mono" style="font-weight:600">' + esc(u.username) + '</td>' +
+          '<td>' + esc(u.name || '—') + '</td>' +
+          '<td><span class="pill ' + rolePill + '" style="font-size:10px">' + esc(u.role) + '</span></td>' +
+          '<td class="mono">' + esc(u.extension || '—') + '</td>' +
+          '<td>' + (u.enabled !== false ? '<span class="pill p-ok" style="font-size:10px">active</span>' : '<span class="pill p-gray" style="font-size:10px">disabled</span>') + '</td>' +
+          '<td style="white-space:nowrap">' +
+            '<button class="btn btn-sm" onclick="toggleUser(\'' + esc(u.username) + '\',' + !(u.enabled !== false) + ')">' + (u.enabled !== false ? 'Disable' : 'Enable') + '</button> ' +
+            '<button class="btn btn-sm btn-danger" onclick="deleteUser(\'' + esc(u.username) + '\')">Delete</button>' +
+          '</td></tr>';
+      }).join('') + '</tbody></table>';
+  } catch (e) { console.error('users load', e); }
+}
+
+async function addUser(e) {
+  e.preventDefault();
+  var body = {
+    username: document.getElementById('u-username').value.trim(),
+    name: document.getElementById('u-name').value.trim(),
+    password: document.getElementById('u-password').value,
+    role: document.getElementById('u-role').value,
+    extension: document.getElementById('u-ext').value.trim()
+  };
+  var d = await (await fetch(API + '/users', { method: 'POST', headers: J, body: JSON.stringify(body) })).json();
+  if (d.success) {
+    showToast('User created: ' + body.username);
+    document.getElementById('user-add').style.display = 'none';
+    ['u-username','u-name','u-password','u-ext'].forEach(function(id) { document.getElementById(id).value = ''; });
+    loadUsers();
+  } else { showToast(d.error || 'Failed', true); }
+}
+
+async function toggleUser(username, enabled) {
+  await fetch(API + '/users/' + encodeURIComponent(username), {
+    method: 'PUT', headers: J, body: JSON.stringify({ enabled: enabled })
+  });
+  showToast(username + ' ' + (enabled ? 'enabled' : 'disabled'));
+  loadUsers();
+}
+
+async function deleteUser(username) {
+  if (!confirm('Delete user "' + username + '"?')) return;
+  await fetch(API + '/users/' + encodeURIComponent(username), { method: 'DELETE', headers: H });
+  showToast('User deleted');
+  loadUsers();
+}
+
 // ═══════════════════ DNC Management ═══════════════════
 async function loadDnc() {
   try {
@@ -782,7 +872,7 @@ async function importDnc(e) {
 
 // ─── Init ───
 var initTab = window.location.hash.replace('#', '') || 'blocklist';
-if (['blocklist', 'audio', 'sipdomains', 'dnc', 'maintenance', 'backup', 'system'].indexOf(initTab) === -1) initTab = 'blocklist';
+if (['blocklist', 'audio', 'sipdomains', 'dnc', 'users', 'maintenance', 'backup', 'system'].indexOf(initTab) === -1) initTab = 'blocklist';
 switchTab(initTab);
 </script>
 <%- include('../partials/foot') %>

@@ -130,6 +130,7 @@ a:hover { text-decoration: underline; }
 .tab:hover { color: var(--text-secondary); text-decoration: none; }
 .tab.active { color: var(--text-primary); border-bottom-color: var(--accent); }
 .tab svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
+.tab-sep { width: 1px; background: var(--border); margin: 6px 4px; align-self: stretch; opacity: 0.5; }
 .tab-num {
   font-size: 10px; font-family: var(--mono);
   background: var(--bg-surface); padding: 1px 5px;

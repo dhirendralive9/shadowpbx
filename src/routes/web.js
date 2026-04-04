@@ -221,7 +221,7 @@ function createWebRouter(apiKey) {
   });
 
   router.get('/users', authMiddleware, adminOnly, (req, res) => {
-    res.render('pages/users', locals(req));
+    res.redirect('/settings#users');
   });
 
   return router;

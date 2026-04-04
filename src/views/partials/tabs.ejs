@@ -1,139 +1,57 @@
 <% var r = typeof role !== 'undefined' ? role : 'admin'; %>
 <%
-// Icon SVGs (Lucide-style, 24x24 viewBox, stroke-based)
-var icons = {
-  grid:        '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>',
-  users2:      '<svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>',
-  phone:       '<svg viewBox="0 0 24 24"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92z"/></svg>',
-  filetext:    '<svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>',
-  voicemail:   '<svg viewBox="0 0 24 24"><circle cx="5.5" cy="11.5" r="4.5"/><circle cx="18.5" cy="11.5" r="4.5"/><line x1="5.5" y1="16" x2="18.5" y2="16"/></svg>',
-  msgsquare:   '<svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>',
-  gitbranch:   '<svg viewBox="0 0 24 24"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 01-9 9"/></svg>',
-  globe:       '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>',
-  megaphone:   '<svg viewBox="0 0 24 24"><path d="M3 11l18-5v12L3 13v-2z"/><path d="M11.6 16.8a3 3 0 11-5.8-1.6"/></svg>',
-  settings:    '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9c-.12-.62-.05-1.27.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06c.55.38 1.2.45 1.82.33.62-.12 1.14-.51 1.39-1.07V3a2 2 0 014 0v.09c.25.56.77.95 1.39 1.07.62.12 1.27.05 1.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06c-.38.55-.45 1.2-.33 1.82.12.62.51 1.14 1.07 1.39H21a2 2 0 010 4h-.09c-.56.25-.95.77-1.07 1.39z"/></svg>',
-  // Sub-menu icons
-  ringgroup:   '<svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>',
-  ivr:         '<svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><polyline points="17 2 12 7 7 2"/></svg>',
-  queue:       '<svg viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>',
-  clock:       '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
-  calendar:    '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>',
-  trunk:       '<svg viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>',
-  route:       '<svg viewBox="0 0 24 24"><circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 000-7h-11a3.5 3.5 0 010-7H15"/><circle cx="18" cy="5" r="3"/></svg>',
-  userscog:    '<svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><circle cx="19" cy="11" r="2"/><path d="M19 8v1m0 4v1m-2.12-4.12l.71.71m2.83 2.83l.7.7m-4.24 0l.71-.7m2.83-2.84l.7-.7"/></svg>',
-  chevdown:    '<svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>',
+var ic = {
+  grid:      '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>',
+  users:     '<svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>',
+  phone:     '<svg viewBox="0 0 24 24"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 16.92z"/></svg>',
+  filetext:  '<svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>',
+  voicemail: '<svg viewBox="0 0 24 24"><circle cx="5.5" cy="11.5" r="4.5"/><circle cx="18.5" cy="11.5" r="4.5"/><line x1="5.5" y1="16" x2="18.5" y2="16"/></svg>',
+  chat:      '<svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>',
+  branch:    '<svg viewBox="0 0 24 24"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 01-9 9"/></svg>',
+  queue:     '<svg viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>',
+  ivr:       '<svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><polyline points="17 2 12 7 7 2"/></svg>',
+  clock:     '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
+  calendar:  '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>',
+  globe:     '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>',
+  server:    '<svg viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>',
+  route:     '<svg viewBox="0 0 24 24"><circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 000-7h-11a3.5 3.5 0 010-7H15"/><circle cx="18" cy="5" r="3"/></svg>',
+  megaphone: '<svg viewBox="0 0 24 24"><path d="M3 11l18-5v12L3 13v-2z"/><path d="M11.6 16.8a3 3 0 11-5.8-1.6"/></svg>',
+  settings:  '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9c-.12-.62-.05-1.27.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06c.55.38 1.2.45 1.82.33.62-.12 1.14-.51 1.39-1.07V3a2 2 0 014 0v.09c.25.56.77.95 1.39 1.07.62.12 1.27.05 1.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06c-.38.55-.45 1.2-.33 1.82.12.62.51 1.14 1.07 1.39H21a2 2 0 010 4h-.09c-.56.25-.95.77-1.07 1.39z"/></svg>',
 };
 
-// ─── Define nav structure ───
-var navItems = [
+// ─── Flat nav items with group separators ───
+// 'sep' items render as a thin vertical divider
+var tabs = [
   { id: 'dashboard',  label: 'Overview',    icon: 'grid',      href: '/',            roles: ['admin','supervisor','agent'] },
-  { id: 'extensions', label: 'Extensions',  icon: 'users2',    href: '/extensions',  roles: ['admin','supervisor'] },
+  { id: 'extensions', label: 'Extensions',  icon: 'users',     href: '/extensions',  roles: ['admin','supervisor'] },
   { id: 'calls',      label: 'Calls',       icon: 'phone',     href: '/calls',       roles: ['admin','supervisor'] },
   { id: 'cdr',        label: 'CDR',         icon: 'filetext',  href: '/cdr',         roles: ['admin','supervisor','agent'] },
   { id: 'voicemail',  label: 'Voicemail',   icon: 'voicemail', href: '/voicemail',   roles: ['admin','supervisor','agent'] },
-  { id: 'chat',       label: 'Chat',        icon: 'msgsquare', href: '/chat',        roles: ['admin','supervisor','agent'] },
-  // ─── Call Flow dropdown ───
-  { id: 'callflow', label: 'Call flow', icon: 'gitbranch', roles: ['admin','supervisor'], children: [
-    { id: 'ringgroups',     label: 'Ring groups',      icon: 'ringgroup', href: '/ringgroups',      roles: ['admin','supervisor'] },
-    { id: 'queues',         label: 'Queues',           icon: 'queue',     href: '/queues',          roles: ['admin','supervisor'] },
-    { id: 'ivr',            label: 'IVR',              icon: 'ivr',       href: '/ivr',             roles: ['admin'] },
-    { id: 'timeconditions', label: 'Time conditions',  icon: 'clock',     href: '/time-conditions', roles: ['admin'] },
-    { id: 'appointments',   label: 'Appointments',     icon: 'calendar',  href: '/appointments',    roles: ['admin','supervisor'] },
-  ]},
-  // ─── Network dropdown ───
-  { id: 'network', label: 'Network', icon: 'globe', roles: ['admin'], children: [
-    { id: 'trunks', label: 'Trunks', icon: 'trunk', href: '/trunks', roles: ['admin'] },
-    { id: 'routes', label: 'Routes', icon: 'route', href: '/routes', roles: ['admin'] },
-  ]},
-  // ─── Campaigns ───
+  { id: 'chat',       label: 'Chat',        icon: 'chat',      href: '/chat',        roles: ['admin','supervisor','agent'] },
+  { sep: true, roles: ['admin','supervisor'] },
+  // Call Flow group
+  { id: 'ringgroups',     label: 'Ring groups', icon: 'branch',   href: '/ringgroups',      roles: ['admin','supervisor'] },
+  { id: 'queues',         label: 'Queues',      icon: 'queue',    href: '/queues',          roles: ['admin','supervisor'] },
+  { id: 'ivr',            label: 'IVR',         icon: 'ivr',      href: '/ivr',             roles: ['admin'] },
+  { id: 'timeconditions', label: 'Time cond.',  icon: 'clock',    href: '/time-conditions', roles: ['admin'] },
+  { id: 'appointments',   label: 'Appts',       icon: 'calendar', href: '/appointments',    roles: ['admin','supervisor'] },
+  { sep: true, roles: ['admin'] },
+  // Network group
+  { id: 'trunks', label: 'Trunks', icon: 'server', href: '/trunks', roles: ['admin'] },
+  { id: 'routes', label: 'Routes', icon: 'route',  href: '/routes', roles: ['admin'] },
+  { sep: true, roles: ['admin','supervisor'] },
+  // Campaigns + Settings
   { id: 'campaigns', label: 'Campaigns', icon: 'megaphone', href: '/campaigns', roles: ['admin','supervisor'] },
-  // ─── Settings dropdown ───
-  { id: 'settingsmenu', label: 'Settings', icon: 'settings', roles: ['admin'], children: [
-    { id: 'users',    label: 'Users',    icon: 'userscog', href: '/users',    roles: ['admin'] },
-    { id: 'settings', label: 'Settings', icon: 'settings', href: '/settings', roles: ['admin'] },
-  ]},
+  { id: 'settings',  label: '',          icon: 'settings',  href: '/settings',  roles: ['admin'] },
 ];
-
-// Check if active tab is inside a dropdown
-function isChildActive(item) {
-  if (!item.children) return false;
-  return item.children.some(function(c) { return c.id === active; });
-}
 %>
-
 <nav class="tabs">
-  <% navItems.forEach(function(item) { %>
-    <% if (!item.roles.includes(r)) return; %>
-
-    <% if (item.children) { %>
-      <%
-        // Filter children by role
-        var visibleChildren = item.children.filter(function(c) { return c.roles.includes(r); });
-        if (visibleChildren.length === 0) return;
-        var dropActive = isChildActive(item);
-      %>
-      <div class="tab-dropdown">
-        <a href="#" class="tab <%= dropActive ? 'active' : '' %>" onclick="event.preventDefault(); toggleDrop(this.parentNode)">
-          <%- icons[item.icon] || '' %>
-          <%= item.label %>
-          <span class="tab-chev"><%- icons.chevdown %></span>
-        </a>
-        <div class="tab-drop-menu">
-          <% visibleChildren.forEach(function(child) { %>
-            <a href="<%= child.href %>" class="tab-drop-item <%= active === child.id ? 'active' : '' %>">
-              <%- icons[child.icon] || '' %>
-              <%= child.label %>
-            </a>
-          <% }); %>
-        </div>
-      </div>
-    <% } else { %>
-      <a href="<%= item.href %>" class="tab <%= active === item.id ? 'active' : '' %>">
-        <%- icons[item.icon] || '' %>
-        <%= item.label %>
-      </a>
-    <% } %>
-  <% }); %>
+<% tabs.forEach(function(t) { %>
+  <% if (!t.roles || !t.roles.includes(r)) return; %>
+  <% if (t.sep) { %><span class="tab-sep"></span><% return; } %>
+  <a href="<%= t.href %>" class="tab <%= active === t.id ? 'active' : '' %>" title="<%= t.label || t.id %>">
+    <%- ic[t.icon] || '' %>
+    <% if (t.label) { %><%= t.label %><% } %>
+  </a>
+<% }); %>
 </nav>
-
-<style>
-/* Dropdown container */
-.tab-dropdown { position: relative; }
-.tab-chev { display: inline-flex; }
-.tab-chev svg { width: 12px; height: 12px; transition: transform 0.2s; }
-.tab-dropdown.open .tab-chev svg { transform: rotate(180deg); }
-
-/* Dropdown menu */
-.tab-drop-menu {
-  display: none; position: absolute; top: 100%; left: 0; z-index: 50;
-  background: var(--bg-surface); border: 0.5px solid var(--border);
-  border-radius: var(--radius); padding: 4px 0; min-width: 180px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-  margin-top: 2px;
-}
-.tab-dropdown.open .tab-drop-menu { display: block; }
-
-.tab-drop-item {
-  display: flex; align-items: center; gap: 8px;
-  padding: 8px 14px; font-size: 13px;
-  color: var(--text-secondary); text-decoration: none;
-  transition: background 0.1s, color 0.1s;
-}
-.tab-drop-item:hover { background: var(--bg-tertiary); color: var(--text-primary); text-decoration: none; }
-.tab-drop-item.active { color: var(--accent); }
-.tab-drop-item svg { width: 14px; height: 14px; flex-shrink: 0; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-</style>
-
-<script>
-function toggleDrop(el) {
-  // Close all other dropdowns
-  document.querySelectorAll('.tab-dropdown.open').forEach(function(d) { if (d !== el) d.classList.remove('open'); });
-  el.classList.toggle('open');
-}
-// Close dropdowns when clicking outside
-document.addEventListener('click', function(e) {
-  if (!e.target.closest('.tab-dropdown')) {
-    document.querySelectorAll('.tab-dropdown.open').forEach(function(d) { d.classList.remove('open'); });
-  }
-});
-</script>
