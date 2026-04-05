@@ -1672,6 +1672,17 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
+  // Get active screen pops
+  router.get('/crm/screenpops', requireRole('admin', 'supervisor'), (req, res) => {
+    try {
+      if (callHandler.screenPopHandler) {
+        res.json(callHandler.screenPopHandler.getActiveScreenPops());
+      } else {
+        res.json([]);
+      }
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
   // ── OAuth 2.0 Endpoints ──
   const oauthManager = require('../services/crm/oauth');
 

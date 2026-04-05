@@ -2,5 +2,14 @@
   </div>
   <% if (typeof extraScripts !== 'undefined') { %><%- extraScripts %><% } %>
   <script src="/js/app.js"></script>
+  <% if (typeof user !== 'undefined' && user) { %>
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    window.__spbxUser = '<%= typeof user !== "undefined" ? user : "" %>';
+    window.__spbxExt = '<%= typeof userExt !== "undefined" ? userExt : "" %>';
+    window.__spbxRole = '<%= typeof role !== "undefined" ? role : "" %>';
+  </script>
+  <script src="/js/screenpop.js"></script>
+  <% } %>
 </body>
 </html>

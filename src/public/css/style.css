@@ -375,3 +375,129 @@ a:hover { text-decoration: underline; }
   .tabs { gap: 0; }
   .tab { padding: 8px 10px; font-size: 12px; }
 }
+
+/* ── CRM Screen Pop Overlay ── */
+.sp-container {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  width: 320px;
+  background: #1a1d23;
+  border: 1px solid #2d3139;
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04);
+  z-index: 10000;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  transition: transform 0.3s ease, opacity 0.3s ease;
+  overflow: hidden;
+}
+.sp-container.sp-hidden {
+  transform: translateX(360px);
+  opacity: 0;
+  pointer-events: none;
+}
+.sp-container.sp-visible {
+  transform: translateX(0);
+  opacity: 1;
+}
+.sp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid #2d3139;
+}
+.sp-direction {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 3px 10px;
+  border-radius: 4px;
+}
+.sp-dir-in { background: #1a3a2a; color: #4ade80; }
+.sp-dir-out { background: #1a2a3a; color: #60a5fa; }
+.sp-dir-connected { background: #2a3a1a; color: #a3e635; }
+.sp-dir-ended { background: #2d2d2d; color: #888; }
+.sp-close {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  cursor: pointer;
+  color: #666;
+  font-size: 18px;
+  transition: background 0.15s, color 0.15s;
+}
+.sp-close:hover { background: #333; color: #fff; }
+.sp-body, .sp-unknown {
+  padding: 14px;
+}
+.sp-name {
+  font-size: 17px;
+  font-weight: 600;
+  color: #f0f0f0;
+  margin-bottom: 2px;
+}
+.sp-company {
+  font-size: 13px;
+  color: #60a5fa;
+  margin-bottom: 10px;
+}
+.sp-detail {
+  font-size: 12px;
+  color: #a0a0a0;
+  line-height: 1.6;
+}
+.sp-detail:empty { display: none; }
+.sp-meta {
+  font-size: 11px;
+  color: #666;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #2d3139;
+}
+.sp-meta:empty { display: none; }
+.sp-actions {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.sp-btn {
+  display: inline-block;
+  padding: 5px 12px;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+  border: none;
+  transition: background 0.15s;
+}
+.sp-btn-crm { background: #2563eb; color: #fff; }
+.sp-btn-crm:hover { background: #1d4ed8; }
+.sp-btn-create { background: #16a34a; color: #fff; }
+.sp-btn-create:hover { background: #15803d; }
+.sp-multi {
+  font-size: 11px;
+  color: #888;
+}
+.sp-unknown-text {
+  font-size: 15px;
+  font-weight: 600;
+  color: #f0f0f0;
+  margin-bottom: 4px;
+}
+.sp-unknown-phone {
+  font-size: 14px;
+  color: #a0a0a0;
+  font-family: 'SF Mono', 'Menlo', monospace;
+  margin-bottom: 10px;
+}
+@media (max-width: 600px) {
+  .sp-container { width: calc(100vw - 20px); right: 10px; top: 10px; }
+}

@@ -289,6 +289,16 @@ class CallHandler {
       // BLF: target extension is ringing
       this._emitPresence(target, 'ringing', { callId, remoteParty: callerID, direction: 'recipient' });
 
+      // CRM: screen pop — fire-and-forget, don't block call setup
+      if (this.crmManager) {
+        try {
+          this.crmManager.emit('call.ringing', {
+            callId, callerPhone: callerID, targetExtension: target,
+            direction: 'inbound', callerName: req.callingName || '',
+          });
+        } catch (e) {}
+      }
+
       const contact = this._getLatestContact(contacts);
       const targetUri = `sip:${target}@${contact.ip}:${contact.port}`;
       logger.info(`INBOUND: dialing ${target} at ${contact.ip}:${contact.port}`);
@@ -358,6 +368,18 @@ class CallHandler {
       // BLF: all ring group members ringing
       if (ringGroup.members) {
         ringGroup.members.forEach(m => this._emitPresence(m, 'ringing', { callId, remoteParty: callerID, direction: 'recipient' }));
+      }
+
+      // CRM: screen pop for all ring group members
+      if (this.crmManager && ringGroup.members) {
+        try {
+          ringGroup.members.forEach(m => {
+            this.crmManager.emit('call.ringing', {
+              callId, callerPhone: callerID, targetExtension: m,
+              direction: 'inbound', callerName: req.callingName || '',
+            });
+          });
+        } catch (e) {}
       }
 
       try {

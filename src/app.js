@@ -375,9 +375,17 @@ async function main() {
   const { ChatMessage } = require('./models');
   const socketUsers = new Map(); // username -> Set<socketId>
 
+  // CRM Screen Pop handler — needs io + socketUsers + crmManager + callHandler
+  const ScreenPopHandler = require('./services/crm/screen-pop');
+  const screenPopHandler = new ScreenPopHandler(crmManager, io, socketUsers, callHandler);
+  callHandler.screenPopHandler = screenPopHandler;
+
   io.on('connection', (socket) => {
     logger.debug(`GUI: socket connected ${socket.id}`);
     emitDashboardState(socket);
+
+    // Register screen pop + click-to-call Socket.IO events
+    screenPopHandler.registerSocket(socket);
 
     // Chat: user registers their username
     socket.on('chat:register', (username) => {
