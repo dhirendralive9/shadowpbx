@@ -1538,7 +1538,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   const FieldMapper = require('../services/crm/field-mapper');
 
   // List all CRM connections
-  router.get('/crm', requireRole('admin'), async (req, res) => {
+  router.get('/crm', async (req, res) => {
     try {
       const configs = await CrmConfig.find().sort({ createdAt: -1 });
       // Strip encrypted credentials for the response
@@ -1553,14 +1553,14 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   });
 
   // Get CRM adapter statuses (live from manager)
-  router.get('/crm/status', requireRole('admin'), async (req, res) => {
+  router.get('/crm/status', async (req, res) => {
     try {
       res.json(crmManager.getStatus());
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
   // Get available providers and default field mappings
-  router.get('/crm/providers', requireRole('admin'), (req, res) => {
+  router.get('/crm/providers', (req, res) => {
     const providers = FieldMapper.getProviders().map(p => ({
       id: p,
       name: p.charAt(0).toUpperCase() + p.slice(1),
@@ -1570,7 +1570,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   });
 
   // Add new CRM connection
-  router.post('/crm', requireRole('admin'), async (req, res) => {
+  router.post('/crm', async (req, res) => {
     try {
       const { provider, name, authType, credentials, instanceUrl, webhookUrl,
               fieldMapping, syncOptions, scope } = req.body;
@@ -1611,7 +1611,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   });
 
   // Update CRM connection
-  router.put('/crm/:id', requireRole('admin'), async (req, res) => {
+  router.put('/crm/:id', async (req, res) => {
     try {
       const config = await CrmConfig.findById(req.params.id);
       if (!config) return res.status(404).json({ error: 'CRM config not found' });
@@ -1652,7 +1652,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   });
 
   // Delete CRM connection
-  router.delete('/crm/:id', requireRole('admin'), async (req, res) => {
+  router.delete('/crm/:id', async (req, res) => {
     try {
       await crmManager.removeConnection(req.params.id);
       await CrmConfig.findByIdAndDelete(req.params.id);
@@ -1661,7 +1661,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   });
 
   // Test CRM connection
-  router.post('/crm/:id/test', requireRole('admin'), async (req, res) => {
+  router.post('/crm/:id/test', async (req, res) => {
     try {
       const entry = crmManager.adapters.get(req.params.id);
       if (!entry) {
@@ -1673,7 +1673,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   });
 
   // Search contact across all CRMs (for testing / manual screen pop)
-  router.get('/crm/search/:phone', requireRole('admin', 'supervisor'), async (req, res) => {
+  router.get('/crm/search/:phone', async (req, res) => {
     try {
       const results = await crmManager.searchContactAll(req.params.phone);
       res.json(results);
@@ -1681,7 +1681,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   });
 
   // Get active screen pops
-  router.get('/crm/screenpops', requireRole('admin', 'supervisor'), (req, res) => {
+  router.get('/crm/screenpops', (req, res) => {
     try {
       if (callHandler.screenPopHandler) {
         res.json(callHandler.screenPopHandler.getActiveScreenPops());
@@ -1695,7 +1695,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   const oauthManager = require('../services/crm/oauth');
 
   // Generate OAuth authorize URL (admin clicks "Connect [CRM]")
-  router.post('/crm/:id/oauth/authorize', requireRole('admin'), async (req, res) => {
+  router.post('/crm/:id/oauth/authorize', async (req, res) => {
     try {
       const config = await CrmConfig.findById(req.params.id);
       if (!config) return res.status(404).json({ error: 'CRM config not found' });
@@ -1720,7 +1720,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   });
 
   // Get OAuth token status for a CRM connection
-  router.get('/crm/:id/oauth/status', requireRole('admin'), async (req, res) => {
+  router.get('/crm/:id/oauth/status', async (req, res) => {
     try {
       const status = await oauthManager.getTokenStatus(req.params.id);
       res.json(status);
@@ -1728,7 +1728,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   });
 
   // Force token refresh
-  router.post('/crm/:id/oauth/refresh', requireRole('admin'), async (req, res) => {
+  router.post('/crm/:id/oauth/refresh', async (req, res) => {
     try {
       await oauthManager.refreshToken(req.params.id);
       res.json({ success: true, message: 'Token refreshed successfully' });
@@ -1736,7 +1736,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   });
 
   // Revoke OAuth tokens (disconnect)
-  router.post('/crm/:id/oauth/revoke', requireRole('admin'), async (req, res) => {
+  router.post('/crm/:id/oauth/revoke', async (req, res) => {
     try {
       await oauthManager.revokeTokens(req.params.id);
 
@@ -1748,7 +1748,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   });
 
   // Get OAuth provider configs (for admin UI dropdown)
-  router.get('/crm/oauth/providers', requireRole('admin'), (req, res) => {
+  router.get('/crm/oauth/providers', (req, res) => {
     const providers = oauthManager.getOAuthProviders().map(p => ({
       id: p,
       name: p.charAt(0).toUpperCase() + p.slice(1),
