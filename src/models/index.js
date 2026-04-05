@@ -266,6 +266,11 @@ const cdrSchema = new mongoose.Schema({
   campaignId: String,
   leadId: String,
   amdResult: { type: String, enum: ['', 'human', 'machine', 'notsure', 'fax'], default: '' },
+  // CRM integration fields
+  crmActivityIds: { type: mongoose.Schema.Types.Mixed, default: {} },  // { provider: activityId }
+  crmContactId: { type: String, default: '' },                         // matched CRM contact ID
+  crmContactName: { type: String, default: '' },                       // matched contact name
+  crmProvider: { type: String, default: '' },                          // which CRM matched
 });
 
 cdrSchema.index({ startTime: -1 });

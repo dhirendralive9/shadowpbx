@@ -115,6 +115,16 @@ class ScreenPopHandler {
 
       if (screenPopData.matched) {
         logger.info(`ScreenPop: ${callerPhone} → ${screenPopData.contacts[0].name} (${screenPopData.contacts[0].provider}) → ext ${targetExtension}`);
+
+        // Link CRM contact to CDR for auto call logging
+        if (this.callHandler && this.callHandler.dispositionSync) {
+          this.callHandler.dispositionSync.linkContactToCdr(callId, {
+            id: results[0].contact.id,
+            name: results[0].contact.name,
+            provider: results[0].provider,
+            configId: results[0].configId,
+          }).catch(() => {});
+        }
       } else {
         logger.debug(`ScreenPop: ${callerPhone} → no match → ext ${targetExtension}`);
       }

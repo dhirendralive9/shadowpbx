@@ -188,6 +188,11 @@ async function main() {
     logger.warn(`CRM Manager init: ${err.message}`);
   });
 
+  // Initialize CRM disposition sync (auto call logging + disposition push)
+  const DispositionSync = require('./services/crm/disposition-sync');
+  const dispositionSync = new DispositionSync(crmManager);
+  callHandler.dispositionSync = dispositionSync;
+
   // 5. Initialize trunks (register with providers)
   try {
     await trunkManager.initialize();

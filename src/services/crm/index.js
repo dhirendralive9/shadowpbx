@@ -9,6 +9,8 @@ const BaseCrmAdapter = require('./base-adapter');
 const FieldMapper = require('./field-mapper');
 const crypto = require('./crypto');
 const oauth = require('./oauth');
+const DispositionSync = require('./disposition-sync');
+const ScreenPopHandler = require('./screen-pop');
 
 // Adapter classes — lazy-loaded to avoid errors if not yet implemented
 const adapters = {};
@@ -24,5 +26,7 @@ module.exports = {
   FieldMapper,
   crypto,
   oauth,
+  DispositionSync,
+  ScreenPopHandler,
   getAdapter,
 };

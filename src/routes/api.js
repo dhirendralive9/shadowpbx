@@ -960,6 +960,14 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
       if (!cdr) return res.status(404).json({ success: false, error: 'Call not found' });
       cdr.disposition = disposition || '';
       await cdr.save();
+
+      // Sync disposition to CRM adapters
+      if (callHandler.dispositionSync && disposition) {
+        callHandler.dispositionSync.syncDisposition(
+          req.params.callId, disposition, req.body.extra || {}
+        ).catch(err => logger.debug(`CRM disposition sync error: ${err.message}`));
+      }
+
       res.json({ success: true, disposition: cdr.disposition });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
