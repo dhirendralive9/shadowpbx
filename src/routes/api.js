@@ -1672,6 +1672,72 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
     } catch (err) { res.status(500).json({ error: err.message }); }
   });
 
+  // ── OAuth 2.0 Endpoints ──
+  const oauthManager = require('../services/crm/oauth');
+
+  // Generate OAuth authorize URL (admin clicks "Connect [CRM]")
+  router.post('/crm/:id/oauth/authorize', requireRole('admin'), async (req, res) => {
+    try {
+      const config = await CrmConfig.findById(req.params.id);
+      if (!config) return res.status(404).json({ error: 'CRM config not found' });
+
+      if (config.authType !== 'oauth2') {
+        return res.status(400).json({ error: 'This CRM does not use OAuth 2.0' });
+      }
+
+      // Decrypt credentials to get clientId
+      let credentials = {};
+      if (config.credentials) {
+        credentials = crmCrypto.decryptObject(config.credentials);
+      }
+
+      const options = req.body || {};  // { scopes, zohoRegion }
+      const authorizeUrl = oauthManager.generateAuthorizeUrl(
+        config._id.toString(), config.provider, credentials, options
+      );
+
+      res.json({ success: true, authorizeUrl });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // Get OAuth token status for a CRM connection
+  router.get('/crm/:id/oauth/status', requireRole('admin'), async (req, res) => {
+    try {
+      const status = await oauthManager.getTokenStatus(req.params.id);
+      res.json(status);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // Force token refresh
+  router.post('/crm/:id/oauth/refresh', requireRole('admin'), async (req, res) => {
+    try {
+      await oauthManager.refreshToken(req.params.id);
+      res.json({ success: true, message: 'Token refreshed successfully' });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // Revoke OAuth tokens (disconnect)
+  router.post('/crm/:id/oauth/revoke', requireRole('admin'), async (req, res) => {
+    try {
+      await oauthManager.revokeTokens(req.params.id);
+
+      // Disconnect the adapter
+      await crmManager.removeConnection(req.params.id);
+
+      res.json({ success: true, message: 'OAuth tokens revoked' });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // Get OAuth provider configs (for admin UI dropdown)
+  router.get('/crm/oauth/providers', requireRole('admin'), (req, res) => {
+    const providers = oauthManager.getOAuthProviders().map(p => ({
+      id: p,
+      name: p.charAt(0).toUpperCase() + p.slice(1),
+      config: oauthManager.getProviderConfig(p),
+    }));
+    res.json(providers);
+  });
+
   // ============================================================
   // Settings, Backup & Maintenance routes
   // ============================================================

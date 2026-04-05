@@ -224,6 +224,46 @@ function createWebRouter(apiKey) {
     res.redirect('/settings#users');
   });
 
+  // ─── OAuth 2.0 Callback (CRM Integration) ───
+  // CRM redirects here after admin grants access.
+  // No API key auth — this is a browser redirect, session-based.
+  router.get('/settings/crm/oauth/callback', authMiddleware, adminOnly, async (req, res) => {
+    const { code, state, error, error_description } = req.query;
+
+    if (error) {
+      logger.warn(`OAuth callback error: ${error} — ${error_description || ''}`);
+      return res.redirect(`/settings?tab=crm&oauth=error&message=${encodeURIComponent(error_description || error)}`);
+    }
+
+    if (!code || !state) {
+      return res.redirect('/settings?tab=crm&oauth=error&message=Missing+code+or+state');
+    }
+
+    try {
+      const oauthManager = require('../services/crm/oauth');
+      const result = await oauthManager.handleCallback(code, state);
+
+      if (result.success) {
+        logger.info(`OAuth: ${result.provider} connected for config ${result.configId}`);
+
+        // Reload the CRM adapter with fresh tokens
+        const crmManager = require('../services/crm-manager');
+        try {
+          await crmManager.reloadConnection(result.configId);
+        } catch (e) {
+          logger.warn(`OAuth: adapter reload after connect: ${e.message}`);
+        }
+
+        return res.redirect(`/settings?tab=crm&oauth=success&provider=${result.provider}`);
+      } else {
+        return res.redirect(`/settings?tab=crm&oauth=error&message=${encodeURIComponent(result.error || 'Unknown error')}`);
+      }
+    } catch (err) {
+      logger.error(`OAuth callback exception: ${err.message}`);
+      return res.redirect(`/settings?tab=crm&oauth=error&message=${encodeURIComponent(err.message)}`);
+    }
+  });
+
   return router;
 }
 
