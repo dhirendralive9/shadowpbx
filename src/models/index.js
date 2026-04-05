@@ -536,6 +536,66 @@ const systemSettingsSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now }
 }, { collection: 'systemsettings' });
 
+// ============================================================
+// CRM Configuration (one document per CRM connection)
+// ============================================================
+const crmConfigSchema = new mongoose.Schema({
+  provider: {
+    type: String,
+    enum: ['salesforce', 'hubspot', 'zoho', 'freshsales', 'pipedrive', 'webhook'],
+    required: true
+  },
+  name: { type: String, required: true },                // friendly name, e.g. "Production Salesforce"
+  enabled: { type: Boolean, default: true },
+  authType: {
+    type: String,
+    enum: ['oauth2', 'apikey', 'bearer'],
+    required: true
+  },
+  credentials: { type: String, default: '' },            // AES-256-GCM encrypted JSON blob
+  instanceUrl: { type: String, default: '' },            // CRM instance URL (e.g. SF org URL)
+  webhookUrl: { type: String, default: '' },             // for webhook adapter: target URL
+
+  // OAuth 2.0 token state (encrypted)
+  oauthTokens: { type: String, default: '' },            // AES-256-GCM encrypted JSON: { accessToken, refreshToken, expiresAt }
+
+  // Field mapping overrides (PBX field → CRM field)
+  fieldMapping: {
+    contact: { type: mongoose.Schema.Types.Mixed, default: {} },
+    call:    { type: mongoose.Schema.Types.Mixed, default: {} },
+    lead:    { type: mongoose.Schema.Types.Mixed, default: {} },
+    directionValues: { type: mongoose.Schema.Types.Mixed, default: {} },
+  },
+
+  // Sync options — what to sync
+  syncOptions: {
+    calls:        { type: Boolean, default: true },
+    contacts:     { type: Boolean, default: true },
+    leads:        { type: Boolean, default: false },
+    dispositions: { type: Boolean, default: true },
+  },
+
+  // Scope — which extensions/groups use this CRM
+  scope: {
+    allExtensions: { type: Boolean, default: true },     // true = all agents use this CRM
+    extensions:    [{ type: String }],                    // if not all: specific extension numbers
+    ringGroups:    [{ type: String }],                    // ring group numbers
+    queues:        [{ type: String }],                    // queue numbers
+  },
+
+  // Status tracking
+  lastSync: Date,
+  lastError: { type: String, default: '' },
+  errorCount: { type: Number, default: 0 },
+  connectedAt: Date,
+
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+});
+
+crmConfigSchema.index({ provider: 1 });
+crmConfigSchema.index({ enabled: 1 });
+
 const Extension = mongoose.model('Extension', extensionSchema);
 const RingGroup = mongoose.model('RingGroup', ringGroupSchema);
 const Trunk = mongoose.model('Trunk', trunkSchema);
@@ -557,5 +617,6 @@ const SIPDomain = mongoose.model('SIPDomain', sipDomainSchema);
 const Campaign = mongoose.model('Campaign', campaignSchema);
 const Lead = mongoose.model('Lead', leadSchema);
 const DNC = mongoose.model('DNC', dncSchema);
+const CrmConfig = mongoose.model('CrmConfig', crmConfigSchema);
 
-module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, IVR, TimeCondition, Queue, User, ChatMessage, BlockedNumber, CDR, VoicemailMessage, ActiveCall, SystemSettings, Appointment, AppointmentMessage, SIPDomain, Campaign, Lead, DNC };
+module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, IVR, TimeCondition, Queue, User, ChatMessage, BlockedNumber, CDR, VoicemailMessage, ActiveCall, SystemSettings, Appointment, AppointmentMessage, SIPDomain, Campaign, Lead, DNC, CrmConfig };

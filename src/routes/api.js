@@ -1522,6 +1522,157 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   });
 
   // ============================================================
+  // CRM Integration API
+  // ============================================================
+  const { CrmConfig } = require('../models');
+  const crmManager = require('../services/crm-manager');
+  const crmCrypto = require('../services/crm/crypto');
+  const FieldMapper = require('../services/crm/field-mapper');
+
+  // List all CRM connections
+  router.get('/crm', requireRole('admin'), async (req, res) => {
+    try {
+      const configs = await CrmConfig.find().sort({ createdAt: -1 });
+      // Strip encrypted credentials for the response
+      const safe = configs.map(c => {
+        const obj = c.toObject();
+        obj.credentials = c.credentials ? '(encrypted)' : '';
+        obj.oauthTokens = c.oauthTokens ? '(encrypted)' : '';
+        return obj;
+      });
+      res.json(safe);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // Get CRM adapter statuses (live from manager)
+  router.get('/crm/status', requireRole('admin'), async (req, res) => {
+    try {
+      res.json(crmManager.getStatus());
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // Get available providers and default field mappings
+  router.get('/crm/providers', requireRole('admin'), (req, res) => {
+    const providers = FieldMapper.getProviders().map(p => ({
+      id: p,
+      name: p.charAt(0).toUpperCase() + p.slice(1),
+      defaultMapping: FieldMapper.getDefaults(p),
+    }));
+    res.json(providers);
+  });
+
+  // Add new CRM connection
+  router.post('/crm', requireRole('admin'), async (req, res) => {
+    try {
+      const { provider, name, authType, credentials, instanceUrl, webhookUrl,
+              fieldMapping, syncOptions, scope } = req.body;
+
+      if (!provider || !name || !authType) {
+        return res.status(400).json({ error: 'provider, name, and authType are required' });
+      }
+
+      // Encrypt credentials
+      let encryptedCreds = '';
+      if (credentials && typeof credentials === 'object' && Object.keys(credentials).length > 0) {
+        encryptedCreds = crmCrypto.encryptObject(credentials);
+      }
+
+      const config = new CrmConfig({
+        provider, name, authType,
+        credentials: encryptedCreds,
+        instanceUrl: instanceUrl || '',
+        webhookUrl: webhookUrl || '',
+        fieldMapping: fieldMapping || {},
+        syncOptions: syncOptions || {},
+        scope: scope || { allExtensions: true },
+      });
+
+      await config.save();
+
+      // Load the adapter immediately if enabled
+      if (config.enabled) {
+        try {
+          await crmManager.addConnection(config._id.toString());
+        } catch (e) {
+          logger.warn(`CRM add: adapter load failed: ${e.message}`);
+        }
+      }
+
+      res.json({ success: true, id: config._id });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // Update CRM connection
+  router.put('/crm/:id', requireRole('admin'), async (req, res) => {
+    try {
+      const config = await CrmConfig.findById(req.params.id);
+      if (!config) return res.status(404).json({ error: 'CRM config not found' });
+
+      const { name, enabled, authType, credentials, instanceUrl, webhookUrl,
+              fieldMapping, syncOptions, scope } = req.body;
+
+      if (name !== undefined) config.name = name;
+      if (enabled !== undefined) config.enabled = enabled;
+      if (authType !== undefined) config.authType = authType;
+      if (instanceUrl !== undefined) config.instanceUrl = instanceUrl;
+      if (webhookUrl !== undefined) config.webhookUrl = webhookUrl;
+      if (fieldMapping !== undefined) config.fieldMapping = fieldMapping;
+      if (syncOptions !== undefined) config.syncOptions = syncOptions;
+      if (scope !== undefined) config.scope = scope;
+
+      // Re-encrypt credentials if provided
+      if (credentials && typeof credentials === 'object' && Object.keys(credentials).length > 0) {
+        config.credentials = crmCrypto.encryptObject(credentials);
+      }
+
+      config.updatedAt = new Date();
+      await config.save();
+
+      // Reload the adapter
+      try {
+        if (config.enabled) {
+          await crmManager.reloadConnection(config._id.toString());
+        } else {
+          await crmManager.removeConnection(config._id.toString());
+        }
+      } catch (e) {
+        logger.warn(`CRM update: adapter reload failed: ${e.message}`);
+      }
+
+      res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // Delete CRM connection
+  router.delete('/crm/:id', requireRole('admin'), async (req, res) => {
+    try {
+      await crmManager.removeConnection(req.params.id);
+      await CrmConfig.findByIdAndDelete(req.params.id);
+      res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // Test CRM connection
+  router.post('/crm/:id/test', requireRole('admin'), async (req, res) => {
+    try {
+      const entry = crmManager.adapters.get(req.params.id);
+      if (!entry) {
+        return res.status(400).json({ ok: false, message: 'Adapter not loaded — enable the connection first' });
+      }
+      const result = await entry.adapter.testConnection();
+      res.json(result);
+    } catch (err) { res.status(500).json({ ok: false, message: err.message }); }
+  });
+
+  // Search contact across all CRMs (for testing / manual screen pop)
+  router.get('/crm/search/:phone', requireRole('admin', 'supervisor'), async (req, res) => {
+    try {
+      const results = await crmManager.searchContactAll(req.params.phone);
+      res.json(results);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+  });
+
+  // ============================================================
   // Settings, Backup & Maintenance routes
   // ============================================================
   const registerSettingsRoutes = require('./settings-api');

@@ -32,6 +32,7 @@ const PresenceHandler = require('./services/presence-handler');
 const QueueHandler = require('./services/queue-handler');
 const AppointmentHandler = require('./services/appointment-handler');
 const DialerEngine = require('./services/dialer-engine');
+const crmManager = require('./services/crm-manager');
 const createApiRouter = require('./routes/api');
 const { startBackgroundSync } = require('./utils/converter');
 
@@ -180,6 +181,12 @@ async function main() {
 
   const dialerEngine = new DialerEngine(srf, rtpengine, registrar, trunkManager, callHandler);
   callHandler.dialerEngine = dialerEngine;
+
+  // Initialize CRM integrations
+  callHandler.crmManager = crmManager;
+  crmManager.initialize().catch(err => {
+    logger.warn(`CRM Manager init: ${err.message}`);
+  });
 
   // 5. Initialize trunks (register with providers)
   try {
@@ -619,7 +626,13 @@ async function main() {
       else logger.info('Shutdown: all calls completed');
     }
 
-    // Step 3: Close Socket.IO connections
+    // Step 3: Disconnect CRM integrations
+    try {
+      await crmManager.shutdown();
+      logger.info('Shutdown: CRM integrations disconnected');
+    } catch (e) { logger.warn(`Shutdown: CRM error: ${e.message}`); }
+
+    // Step 4: Close Socket.IO connections
     try {
       io.disconnectSockets(true);
       logger.info('Shutdown: Socket.IO connections closed');

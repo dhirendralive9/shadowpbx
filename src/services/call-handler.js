@@ -742,6 +742,29 @@ class CallHandler {
     // BLF: both parties go idle
     this._emitPresence(cdr.from, 'idle');
     this._emitPresence(cdr.to, 'idle');
+
+    // CRM: emit call.ended event for auto-logging
+    if (this.crmManager) {
+      try {
+        this.crmManager.emit('call.ended', {
+          callId: cdr.callId,
+          from: cdr.from,
+          to: cdr.to,
+          direction: cdr.direction,
+          duration: cdr.duration,
+          talkTime: cdr.talkTime,
+          disposition: cdr.disposition || '',
+          notes: '',
+          recordingUrl: cdr.recordingPath || '',
+          agent: cdr.direction === 'outbound' ? cdr.from : cdr.to,
+          startTime: cdr.startTime,
+          endTime: cdr.endTime,
+          extension: cdr.direction === 'outbound' ? cdr.from : cdr.to,
+        });
+      } catch (e) {
+        logger.debug(`CRM event emit error: ${e.message}`);
+      }
+    }
   }
 
   async _failCall(cdr, err, from, to) {
