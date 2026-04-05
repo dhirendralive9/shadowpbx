@@ -9,6 +9,7 @@
   <a href="#users" class="sub-tab" data-tab="users" onclick="switchTab('users')">Users</a>
   <a href="#maintenance" class="sub-tab" data-tab="maintenance" onclick="switchTab('maintenance')">Maintenance</a>
   <a href="#backup" class="sub-tab" data-tab="backup" onclick="switchTab('backup')">Backup</a>
+  <a href="#crm" class="sub-tab" data-tab="crm" onclick="switchTab('crm')">CRM</a>
   <a href="#system" class="sub-tab" data-tab="system" onclick="switchTab('system')">System</a>
 </div>
 
@@ -354,6 +355,110 @@
   </div>
 </div>
 
+<!-- ═══════════════════ CRM INTEGRATIONS ═══════════════════ -->
+<div id="panel-crm" class="settings-panel">
+  <div class="sec-head">
+    <span class="sec-title">CRM Integrations</span>
+    <div style="display:flex;align-items:center;gap:10px">
+      <span class="muted" style="font-size:11px" id="crm-summary"></span>
+      <button class="btn btn-sm btn-primary" onclick="showCrmAdd()">+ Add CRM</button>
+    </div>
+  </div>
+
+  <!-- OAuth success/error flash -->
+  <div id="crm-oauth-flash" style="display:none;margin-bottom:14px" class="card"></div>
+
+  <!-- Add CRM form -->
+  <div id="crm-add-form" style="display:none;margin-bottom:16px" class="card">
+    <form onsubmit="saveCrm(event)">
+      <input type="hidden" id="crm-edit-id" value="">
+      <div class="grid-3" style="margin-bottom:12px">
+        <div class="form-group">
+          <label class="form-label">Provider</label>
+          <select class="form-select" id="crm-provider" onchange="crmProviderChanged()">
+            <option value="">Select CRM...</option>
+            <option value="salesforce">Salesforce</option>
+            <option value="hubspot">HubSpot</option>
+            <option value="zoho">Zoho CRM</option>
+            <option value="freshsales">Freshsales</option>
+            <option value="pipedrive">Pipedrive</option>
+            <option value="webhook">Webhook / REST</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Friendly name</label>
+          <input class="form-input" id="crm-name" placeholder="e.g. Production Salesforce" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Auth type</label>
+          <select class="form-select" id="crm-authtype">
+            <option value="oauth2">OAuth 2.0</option>
+            <option value="apikey">API Key</option>
+            <option value="bearer">Bearer Token</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- OAuth credentials -->
+      <div id="crm-creds-oauth" style="margin-bottom:12px">
+        <div class="grid-2">
+          <div class="form-group"><label class="form-label">Client ID</label><input class="form-input" id="crm-client-id" placeholder="Connected App client_id"></div>
+          <div class="form-group"><label class="form-label">Client Secret</label><input class="form-input" id="crm-client-secret" type="password" placeholder="client_secret"></div>
+        </div>
+      </div>
+
+      <!-- API key credentials -->
+      <div id="crm-creds-apikey" style="display:none;margin-bottom:12px">
+        <div class="grid-2">
+          <div class="form-group"><label class="form-label">API Key / Token</label><input class="form-input" id="crm-api-key" placeholder="API key or token"></div>
+          <div class="form-group"><label class="form-label">Domain / Instance URL</label><input class="form-input" id="crm-domain" placeholder="mycompany.freshsales.io"></div>
+        </div>
+      </div>
+
+      <!-- Webhook URL -->
+      <div id="crm-creds-webhook" style="display:none;margin-bottom:12px">
+        <div class="grid-2">
+          <div class="form-group"><label class="form-label">Webhook URL</label><input class="form-input" id="crm-webhook-url" placeholder="https://hooks.example.com/calls"></div>
+          <div class="form-group"><label class="form-label">Auth Header (optional)</label><input class="form-input" id="crm-webhook-auth" placeholder="Bearer token_xxx"></div>
+        </div>
+      </div>
+
+      <!-- Zoho region -->
+      <div id="crm-zoho-region" style="display:none;margin-bottom:12px">
+        <div class="form-group" style="max-width:200px">
+          <label class="form-label">Zoho Region</label>
+          <select class="form-select" id="crm-zoho-reg">
+            <option value="us">US (.com)</option>
+            <option value="eu">EU (.eu)</option>
+            <option value="in">India (.in)</option>
+            <option value="au">Australia (.com.au)</option>
+            <option value="jp">Japan (.jp)</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Sync options -->
+      <div style="margin-bottom:12px">
+        <label class="form-label" style="margin-bottom:6px">Sync options</label>
+        <div style="display:flex;gap:16px;flex-wrap:wrap">
+          <label style="font-size:12px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="crm-sync-calls" checked> Log calls</label>
+          <label style="font-size:12px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="crm-sync-contacts" checked> Screen pop</label>
+          <label style="font-size:12px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="crm-sync-dispositions" checked> Sync dispositions</label>
+          <label style="font-size:12px;display:flex;align-items:center;gap:4px"><input type="checkbox" id="crm-sync-leads"> Lead sync</label>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:8px">
+        <button type="submit" class="btn btn-primary btn-sm">Save</button>
+        <button type="button" class="btn btn-sm" onclick="document.getElementById('crm-add-form').style.display='none'">Cancel</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- CRM connections list -->
+  <div id="crm-list"><div class="empty">Loading...</div></div>
+</div>
+
 <script>
 var API = '/api', KEY = '<%= apiKey %>', H = { 'X-API-Key': KEY };
 var J = { 'X-API-Key': KEY, 'Content-Type': 'application/json' };
@@ -387,6 +492,237 @@ function switchTab(tab) {
   if (tab === 'maintenance') { loadSettings(); loadStorage(); }
   if (tab === 'backup') { loadDbStats(); loadBackups(); loadSettings(); }
   if (tab === 'system') loadSystem();
+  if (tab === 'crm') loadCrmConnections();
+}
+
+// ═══════════════════ CRM INTEGRATIONS ═══════════════════
+
+function showCrmAdd() {
+  document.getElementById('crm-edit-id').value = '';
+  document.getElementById('crm-provider').value = '';
+  document.getElementById('crm-name').value = '';
+  document.getElementById('crm-authtype').value = 'oauth2';
+  document.getElementById('crm-client-id').value = '';
+  document.getElementById('crm-client-secret').value = '';
+  document.getElementById('crm-api-key').value = '';
+  document.getElementById('crm-domain').value = '';
+  document.getElementById('crm-webhook-url').value = '';
+  document.getElementById('crm-webhook-auth').value = '';
+  document.getElementById('crm-sync-calls').checked = true;
+  document.getElementById('crm-sync-contacts').checked = true;
+  document.getElementById('crm-sync-dispositions').checked = true;
+  document.getElementById('crm-sync-leads').checked = false;
+  crmProviderChanged();
+  document.getElementById('crm-add-form').style.display = 'block';
+}
+
+function crmProviderChanged() {
+  var p = document.getElementById('crm-provider').value;
+  var authEl = document.getElementById('crm-authtype');
+
+  // Show/hide credential sections
+  document.getElementById('crm-creds-oauth').style.display = 'none';
+  document.getElementById('crm-creds-apikey').style.display = 'none';
+  document.getElementById('crm-creds-webhook').style.display = 'none';
+  document.getElementById('crm-zoho-region').style.display = 'none';
+
+  if (p === 'salesforce' || p === 'hubspot' || p === 'pipedrive') {
+    authEl.value = 'oauth2';
+    document.getElementById('crm-creds-oauth').style.display = 'block';
+  } else if (p === 'zoho') {
+    authEl.value = 'oauth2';
+    document.getElementById('crm-creds-oauth').style.display = 'block';
+    document.getElementById('crm-zoho-region').style.display = 'block';
+  } else if (p === 'freshsales') {
+    authEl.value = 'apikey';
+    document.getElementById('crm-creds-apikey').style.display = 'block';
+  } else if (p === 'webhook') {
+    authEl.value = 'bearer';
+    document.getElementById('crm-creds-webhook').style.display = 'block';
+  }
+
+  // Auto-fill name
+  var nameEl = document.getElementById('crm-name');
+  if (!nameEl.value) {
+    var names = { salesforce: 'Salesforce', hubspot: 'HubSpot', zoho: 'Zoho CRM', freshsales: 'Freshsales', pipedrive: 'Pipedrive', webhook: 'Webhook' };
+    nameEl.value = names[p] || '';
+  }
+}
+
+async function saveCrm(e) {
+  e.preventDefault();
+  var editId = document.getElementById('crm-edit-id').value;
+  var provider = document.getElementById('crm-provider').value;
+  var name = document.getElementById('crm-name').value;
+  var authType = document.getElementById('crm-authtype').value;
+
+  if (!provider || !name) { showToast('Provider and name required', true); return; }
+
+  var credentials = {};
+  var webhookUrl = '';
+
+  if (authType === 'oauth2') {
+    var cid = document.getElementById('crm-client-id').value.trim();
+    var csec = document.getElementById('crm-client-secret').value.trim();
+    if (cid) credentials.clientId = cid;
+    if (csec) credentials.clientSecret = csec;
+    if (provider === 'zoho') credentials.zohoRegion = document.getElementById('crm-zoho-reg').value;
+  } else if (authType === 'apikey' || authType === 'bearer') {
+    var key = document.getElementById('crm-api-key').value.trim();
+    var domain = document.getElementById('crm-domain').value.trim();
+    if (key) { credentials.apiKey = key; credentials.apiToken = key; }
+    if (domain) credentials.domain = domain;
+  }
+
+  if (provider === 'webhook') {
+    webhookUrl = document.getElementById('crm-webhook-url').value.trim();
+    var auth = document.getElementById('crm-webhook-auth').value.trim();
+    if (auth) credentials.authHeader = auth;
+  }
+
+  var syncOptions = {
+    calls: document.getElementById('crm-sync-calls').checked,
+    contacts: document.getElementById('crm-sync-contacts').checked,
+    dispositions: document.getElementById('crm-sync-dispositions').checked,
+    leads: document.getElementById('crm-sync-leads').checked,
+  };
+
+  var body = { provider: provider, name: name, authType: authType, credentials: credentials, webhookUrl: webhookUrl, syncOptions: syncOptions };
+
+  var url = editId ? API + '/crm/' + editId : API + '/crm';
+  var method = editId ? 'PUT' : 'POST';
+
+  var d = await (await fetch(url, { method: method, headers: J, body: JSON.stringify(body) })).json();
+  if (d.success || d.id) {
+    showToast(editId ? 'CRM updated' : 'CRM added');
+    document.getElementById('crm-add-form').style.display = 'none';
+    loadCrmConnections();
+  } else {
+    showToast(d.error || 'Failed', true);
+  }
+}
+
+async function loadCrmConnections() {
+  var list = document.getElementById('crm-list');
+  try {
+    var configs = await (await fetch(API + '/crm', { headers: H })).json();
+    var statuses = await (await fetch(API + '/crm/status', { headers: H })).json();
+
+    var statusMap = {};
+    if (Array.isArray(statuses)) statuses.forEach(function(s) { statusMap[s.configId] = s; });
+
+    document.getElementById('crm-summary').textContent = configs.length + ' connection' + (configs.length !== 1 ? 's' : '');
+
+    if (!Array.isArray(configs) || configs.length === 0) {
+      list.innerHTML = '<div class="card"><div class="empty">No CRM integrations configured</div></div>';
+      return;
+    }
+
+    var html = '';
+    configs.forEach(function(c) {
+      var st = statusMap[c._id] || {};
+      var connected = st.connected || false;
+      var pill = connected ? '<span class="pill p-ok">connected</span>' : (c.enabled ? '<span class="pill p-ring">disconnected</span>' : '<span class="pill p-gray">disabled</span>');
+      var provName = { salesforce: 'Salesforce', hubspot: 'HubSpot', zoho: 'Zoho CRM', freshsales: 'Freshsales', pipedrive: 'Pipedrive', webhook: 'Webhook' };
+
+      html += '<div class="card" style="margin-bottom:10px;padding:14px">';
+      html += '<div style="display:flex;justify-content:space-between;align-items:flex-start">';
+      html += '<div>';
+      html += '<div style="font-weight:600;font-size:14px;margin-bottom:2px">' + esc(c.name) + '</div>';
+      html += '<div style="font-size:12px;color:var(--text-tertiary)">' + esc(provName[c.provider] || c.provider) + ' · ' + esc(c.authType) + ' ' + pill + '</div>';
+
+      // Sync options pills
+      var so = c.syncOptions || {};
+      html += '<div style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap">';
+      if (so.calls) html += '<span class="pill p-gray" style="font-size:9px">calls</span>';
+      if (so.contacts) html += '<span class="pill p-gray" style="font-size:9px">screen pop</span>';
+      if (so.dispositions) html += '<span class="pill p-gray" style="font-size:9px">dispositions</span>';
+      if (so.leads) html += '<span class="pill p-gray" style="font-size:9px">leads</span>';
+      html += '</div>';
+
+      // Status details
+      if (c.lastError) html += '<div style="margin-top:4px;font-size:11px;color:var(--color-error)">Error: ' + esc(c.lastError) + '</div>';
+      if (st.lastApiCall) html += '<div style="margin-top:2px;font-size:10px;color:var(--text-tertiary)">Last API call: ' + fmtTime(st.lastApiCall) + '</div>';
+      if (c.lastSync) html += '<div style="font-size:10px;color:var(--text-tertiary)">Last sync: ' + fmtTime(c.lastSync) + '</div>';
+
+      html += '</div>';
+      html += '<div style="display:flex;gap:6px;flex-wrap:wrap">';
+
+      // OAuth connect/reconnect button
+      if (c.authType === 'oauth2') {
+        html += '<button class="btn btn-sm btn-primary" onclick="crmOAuthConnect(\'' + c._id + '\')">Connect</button>';
+      }
+
+      html += '<button class="btn btn-sm" onclick="crmTest(\'' + c._id + '\')">Test</button>';
+      html += '<button class="btn btn-sm" onclick="crmToggle(\'' + c._id + '\',' + !c.enabled + ')">' + (c.enabled ? 'Disable' : 'Enable') + '</button>';
+      html += '<button class="btn btn-sm btn-danger" onclick="crmDelete(\'' + c._id + '\')">Delete</button>';
+      html += '</div></div></div>';
+    });
+
+    list.innerHTML = html;
+  } catch (err) {
+    list.innerHTML = '<div class="card"><div class="empty">Failed to load: ' + esc(err.message) + '</div></div>';
+  }
+
+  // Check for OAuth callback flash
+  crmCheckOAuthFlash();
+}
+
+async function crmOAuthConnect(configId) {
+  try {
+    var d = await (await fetch(API + '/crm/' + configId + '/oauth/authorize', { method: 'POST', headers: J, body: '{}' })).json();
+    if (d.authorizeUrl) {
+      window.location.href = d.authorizeUrl;
+    } else {
+      showToast(d.error || 'Failed to generate OAuth URL', true);
+    }
+  } catch (err) { showToast('OAuth error: ' + err.message, true); }
+}
+
+async function crmTest(configId) {
+  showToast('Testing connection...');
+  try {
+    var d = await (await fetch(API + '/crm/' + configId + '/test', { method: 'POST', headers: J })).json();
+    if (d.ok) {
+      showToast(d.message || 'Connection OK');
+    } else {
+      showToast(d.message || 'Test failed', true);
+    }
+  } catch (err) { showToast('Test error: ' + err.message, true); }
+}
+
+async function crmToggle(configId, enabled) {
+  await fetch(API + '/crm/' + configId, { method: 'PUT', headers: J, body: JSON.stringify({ enabled: enabled }) });
+  showToast(enabled ? 'CRM enabled' : 'CRM disabled');
+  loadCrmConnections();
+}
+
+async function crmDelete(configId) {
+  if (!confirm('Delete this CRM connection? This cannot be undone.')) return;
+  await fetch(API + '/crm/' + configId, { method: 'DELETE', headers: H });
+  showToast('CRM deleted');
+  loadCrmConnections();
+}
+
+function crmCheckOAuthFlash() {
+  var params = new URLSearchParams(window.location.search);
+  var oauth = params.get('oauth');
+  if (!oauth) return;
+
+  var flash = document.getElementById('crm-oauth-flash');
+  if (oauth === 'success') {
+    var prov = params.get('provider') || 'CRM';
+    flash.innerHTML = '<div style="padding:10px;background:#1a3a2a;border-radius:var(--radius);color:#4ade80;font-size:13px">&#10003; ' + esc(prov) + ' connected successfully. You can now test the connection.</div>';
+    flash.style.display = 'block';
+  } else if (oauth === 'error') {
+    var msg = params.get('message') || 'Unknown error';
+    flash.innerHTML = '<div style="padding:10px;background:#3a1a1a;border-radius:var(--radius);color:#f87171;font-size:13px">&#10007; OAuth failed: ' + esc(msg) + '</div>';
+    flash.style.display = 'block';
+  }
+
+  // Clean URL
+  window.history.replaceState({}, '', window.location.pathname + '#crm');
+  setTimeout(function() { flash.style.display = 'none'; }, 10000);
 }
 
 // ═══════════════════ BLOCKLIST ═══════════════════
@@ -873,7 +1209,10 @@ async function importDnc(e) {
 
 // ─── Init ───
 var initTab = window.location.hash.replace('#', '') || 'blocklist';
-if (['blocklist', 'audio', 'sipdomains', 'dnc', 'users', 'maintenance', 'backup', 'system'].indexOf(initTab) === -1) initTab = 'blocklist';
+// Handle OAuth redirect: ?tab=crm
+var urlParams = new URLSearchParams(window.location.search);
+if (urlParams.get('tab') === 'crm') initTab = 'crm';
+if (['blocklist', 'audio', 'sipdomains', 'dnc', 'users', 'maintenance', 'backup', 'crm', 'system'].indexOf(initTab) === -1) initTab = 'blocklist';
 switchTab(initTab);
 </script>
 <%- include('../partials/foot') %>
