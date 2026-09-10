@@ -58,7 +58,7 @@ class TrunkManager {
   }
 
   // Send outbound call through a trunk with auth
-  async sendOutbound(req, res, trunk, dialedNumber, callerId, sdpCallbacks) {
+  async sendOutbound(req, res, trunk, dialedNumber, callerId, rtpSdp) {
     const trunkConfig = typeof trunk === 'string' ? this.trunkEndpoints.get(trunk) : trunk;
     if (!trunkConfig) {
       throw new Error('Trunk not configured');
@@ -73,7 +73,8 @@ class TrunkManager {
 
     logger.info(`Outbound via ${trunkConfig.name || 'trunk'}: ${callerId} -> ${dialedNumber} @ ${host}`);
 
-    const opts = {
+    return this.srf.createB2BUA(req, res, targetUri, {
+      localSdpB: rtpSdp || req.body,
       headers: {
         'From': `<sip:${username}@${host}>`,
         'P-Asserted-Identity': `<sip:${callerId}@${host}>`
@@ -82,19 +83,7 @@ class TrunkManager {
         username: username,
         password: password
       }
-    };
-
-    // Use SDP callbacks for RTPEngine recording if provided
-    if (sdpCallbacks && sdpCallbacks.localSdpB) {
-      opts.localSdpB = sdpCallbacks.localSdpB;
-    } else {
-      opts.localSdpB = req.body;
-    }
-    if (sdpCallbacks && sdpCallbacks.localSdpA) {
-      opts.localSdpA = sdpCallbacks.localSdpA;
-    }
-
-    return this.srf.createB2BUA(req, res, targetUri, opts);
+    });
   }
 
   async isFromTrunk(req) {
