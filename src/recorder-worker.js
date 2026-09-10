@@ -182,11 +182,11 @@ function convertPcap(pcapFileName) {
     const rawPath = path.join(TMP_DIR, `${baseName}.raw`);
 
     const script = `
-      SSRCS=$(tshark -n -r "${pcapPath}" -o rtp.heuristic_rtp:TRUE -Y rtp -T fields -e rtp.ssrc 2>/dev/null | sort -u)
+      SSRCS=$(tshark -n -r "${pcapPath}" -o rtp.heuristic_rtp:TRUE -Y rtp -T fields -e rtp.ssrc 2>/dev/null | sort | uniq -c | sort -rn | awk '{print $2}')
       SSRC_COUNT=$(echo "$SSRCS" | grep -c .)
       if [ "$SSRC_COUNT" -ge 2 ]; then
         SSRC1=$(echo "$SSRCS" | head -1)
-        SSRC2=$(echo "$SSRCS" | tail -1)
+        SSRC2=$(echo "$SSRCS" | head -2 | tail -1)
         tshark -n -r "${pcapPath}" -o rtp.heuristic_rtp:TRUE -Y "rtp.ssrc==$SSRC1" -T fields -e rtp.payload 2>/dev/null | tr -d '\\n' | xxd -r -p > "${raw1}"
         tshark -n -r "${pcapPath}" -o rtp.heuristic_rtp:TRUE -Y "rtp.ssrc==$SSRC2" -T fields -e rtp.payload 2>/dev/null | tr -d '\\n' | xxd -r -p > "${raw2}"
         sox -t raw -r 8000 -e mu-law -b 8 -c 1 "${raw1}" "${wav1}" 2>/dev/null
