@@ -46,9 +46,19 @@
   <thead><tr><th></th><th>From</th><th>To</th><th>Duration</th><th>Talk</th><th>Status</th><th>Disposition</th><th>Recording</th><th>Notes</th><th>Time</th></tr></thead>
   <tbody id="cdr-body"><tr><td colspan="10" class="empty">Loading...</td></tr></tbody>
 </table>
-<div style="display:flex;justify-content:space-between;margin-top:12px;font-size:12px;color:var(--text-tertiary)">
+<div style="display:flex;justify-content:space-between;margin-top:12px;font-size:12px;color:var(--text-tertiary);align-items:center">
   <span id="cdr-info">-</span>
-  <div><button class="btn btn-sm" id="prev-btn" onclick="prevPage()" disabled>Prev</button> <button class="btn btn-sm" id="next-btn" onclick="nextPage()" disabled>Next</button></div>
+  <div style="display:flex;align-items:center;gap:10px">
+    <span style="font-size:11px">Per page:</span>
+    <select class="form-select" style="width:70px;padding:4px 6px;font-size:11px" id="per-page" onchange="limit=parseInt(this.value);page=1;loadCDR()">
+      <option value="20">20</option>
+      <option value="50">50</option>
+      <option value="100">100</option>
+      <option value="200">200</option>
+    </select>
+    <button class="btn btn-sm" id="prev-btn" onclick="prevPage()" disabled>Prev</button>
+    <button class="btn btn-sm" id="next-btn" onclick="nextPage()" disabled>Next</button>
+  </div>
 </div>
 
 <!-- Notes modal -->
@@ -244,25 +254,67 @@ async function loadCDR() {
   }
 }
 
-// ─── CSV export ───
-function exportCSV() {
-  if (!lastResults.length) { alert('No records to export. Run a search first.'); return; }
-  var csv = 'Direction,From,To,Duration,Talk Time,Status,Disposition,Recorded,Time\n';
-  lastResults.forEach(function(c) {
-    csv += '"' + (c.direction || '') + '","' + (c.from || '') + '","' + (c.to || '') + '","' +
-      dur(c.duration) + '","' + dur(c.talkTime) + '","' + (c.status || '') + '","' +
-      (c.disposition || '') + '","' + (c.recordingPath ? 'Yes' : 'No') + '","' +
-      (c.startTime ? new Date(c.startTime).toLocaleString() : '') + '"\n';
-  });
-  var blob = new Blob([csv], { type: 'text/csv' });
-  var url = URL.createObjectURL(blob);
-  var a = document.createElement('a');
-  a.href = url;
-  a.download = 'shadowpbx-cdr-' + (dateFrom || 'all') + '.csv';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+// ─── CSV export (fetches ALL records for the date range) ───
+async function exportCSV() {
+  var exportBtn = document.querySelector('[onclick="exportCSV()"]');
+  var origText = exportBtn ? exportBtn.innerHTML : '';
+  if (exportBtn) exportBtn.innerHTML = 'Exporting...';
+
+  try {
+    // Build the same filter URL but with no page limit
+    var url = API + '/cdr?limit=10000&page=1';
+    var search = document.getElementById('search').value.trim();
+    var status = document.getElementById('filter-status').value;
+    var dir = document.getElementById('filter-dir').value;
+    if (search) url += '&search=' + encodeURIComponent(search);
+    if (status) url += '&status=' + status;
+    if (dir) url += '&direction=' + dir;
+    if (dateFrom) url += '&from=' + dateFrom;
+    if (dateTo) url += '&to=' + dateTo;
+
+    var d = await (await fetch(url, { headers: H })).json();
+    if (!d.success || !d.cdrs || !d.cdrs.length) {
+      alert('No records to export for the selected period.');
+      return;
+    }
+
+    var allRecords = d.cdrs;
+    var csv = 'Call ID,Direction,From,To,DID,Duration (s),Talk Time (s),Status,Disposition,Trunk,Recorded,Hangup By,Hangup Cause,Start Time\n';
+    allRecords.forEach(function(c) {
+      csv += '"' + (c.callId || '') + '",' +
+        '"' + (c.direction || '') + '",' +
+        '"' + (c.from || '') + '",' +
+        '"' + (c.to || '') + '",' +
+        '"' + (c.didNumber || '') + '",' +
+        (c.duration || 0) + ',' +
+        (c.talkTime || 0) + ',' +
+        '"' + (c.status || '') + '",' +
+        '"' + (c.disposition || '') + '",' +
+        '"' + (c.trunkUsed || '') + '",' +
+        '"' + (c.recordingPath ? 'Yes' : 'No') + '",' +
+        '"' + (c.hangupBy || '') + '",' +
+        '"' + (c.hangupCause || '') + '",' +
+        '"' + (c.startTime ? new Date(c.startTime).toISOString() : '') + '"\n';
+    });
+
+    var blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    var url2 = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url2;
+    var fname = 'shadowpbx-cdr';
+    if (dateFrom) fname += '-' + dateFrom;
+    if (dateTo) fname += '-to-' + dateTo;
+    a.download = fname + '.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url2);
+    showToast('Exported ' + allRecords.length + ' records');
+  } catch (e) {
+    alert('Export failed: ' + e.message);
+  } finally {
+    if (exportBtn) exportBtn.innerHTML = origText;
+  }
 }
 
 // ─── Audio play/pause ───
