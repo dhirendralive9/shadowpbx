@@ -200,11 +200,34 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
 
-  router.delete('/trunks/:name', async (req, res) => {
+  router.delete('/trunks/:id', async (req, res) => {
     try {
-      const trunk = await Trunk.findOneAndDelete({ name: req.params.name });
-      if (!trunk) return res.status(404).json({ success: false, error: 'Not found' });
-      res.json({ success: true, message: `Trunk ${req.params.name} deleted` });
+      const identifier = req.params.id;
+
+      // Find the trunk first (by name or _id)
+      let trunk = await Trunk.findOne({ name: identifier });
+      if (!trunk && identifier.match(/^[0-9a-f]{24}$/i)) {
+        trunk = await Trunk.findById(identifier);
+      }
+      if (!trunk) return res.status(404).json({ success: false, error: 'Trunk not found' });
+
+      // Check if any inbound or outbound route uses this trunk
+      const inboundUsing = await InboundRoute.find({ trunk: trunk.name });
+      const outboundUsing = await OutboundRoute.find({ trunk: trunk.name });
+      const routes = [];
+      inboundUsing.forEach(r => routes.push(`Inbound: ${r.name}`));
+      outboundUsing.forEach(r => routes.push(`Outbound: ${r.name}`));
+
+      if (routes.length > 0) {
+        return res.status(409).json({
+          success: false,
+          error: `Cannot delete trunk "${trunk.name}" — used by ${routes.length} route(s): ${routes.join(', ')}. Remove the route assignments first.`
+        });
+      }
+
+      await Trunk.findByIdAndDelete(trunk._id);
+      logger.info(`Trunk deleted: ${trunk.name}`);
+      res.json({ success: true, message: `Trunk ${trunk.name} deleted` });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
 
