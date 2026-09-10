@@ -748,7 +748,10 @@ class CallHandler {
 
     // Attach hold (re-INVITE) handlers if hold handler is available
     if (this.holdHandler) {
-      this.holdHandler.attachHoldHandlers(callId, uas, uac, cdr);
+      this.holdHandler.attachHoldHandlers(callId, uas, uac, cdr, {
+        rtpengine: this.rtpengine,
+        fromTag: fromTag
+      });
     }
 
     const onDestroy = async (hangupBy) => {

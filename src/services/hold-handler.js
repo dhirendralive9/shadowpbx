@@ -60,7 +60,13 @@ class HoldHandler {
   // We intercept it to detect hold/resume SDP direction changes
   // and forward the re-INVITE to the other leg.
   // ============================================================
-  attachHoldHandlers(callId, uas, uac, cdr) {
+  attachHoldHandlers(callId, uas, uac, cdr, rtpContext) {
+    // Store RTPEngine context for this call
+    if (rtpContext && rtpContext.fromTag) {
+      if (!this.rtpContexts) this.rtpContexts = new Map();
+      this.rtpContexts.set(callId, rtpContext);
+    }
+
     // Caller side (UAS) sends re-INVITE (hold or resume)
     uas.on('modify', async (req, res) => {
       logger.info(`RE-INVITE from caller leg [${callId}]`);
@@ -105,8 +111,25 @@ class HoldHandler {
 
     try {
       // Forward re-INVITE to the other leg
+      // If RTPEngine is in the media path, route the SDP through it
+      let forwardSdp = sdp;
+      const rtpCtx = this.rtpContexts ? this.rtpContexts.get(callId) : null;
+
+      if (rtpCtx && rtpCtx.rtpengine && rtpCtx.fromTag) {
+        try {
+          const rtpHelper = require('../utils/rtp-helper');
+          const result = await rtpHelper.offer(rtpCtx.rtpengine, callId, rtpCtx.fromTag, sdp, { 'record call': 'yes' });
+          if (result && result.sdp) {
+            forwardSdp = result.sdp;
+            logger.debug(`RE-INVITE SDP routed through RTPEngine [${callId}]`);
+          }
+        } catch (rtpErr) {
+          logger.warn(`RE-INVITE RTPEngine offer failed [${callId}]: ${rtpErr.message} — using raw SDP`);
+        }
+      }
+
       try {
-        await otherDialog.modify(sdp);
+        await otherDialog.modify(forwardSdp);
       } catch (modErr) {
         logger.warn(`RE-INVITE forward failed [${callId}]: ${modErr.message}`);
         try { res.send(200, { body: originatorDialog.local.sdp }); } catch(e) {}
@@ -114,8 +137,26 @@ class HoldHandler {
       }
       logger.debug(`RE-INVITE forwarded to other leg [${callId}]`);
 
-      // Respond to originator with 200 OK using other leg's SDP
-      const responseSdp = otherDialog.remote.sdp;
+      // Respond to originator with 200 OK
+      let responseSdp = otherDialog.remote.sdp;
+
+      // Route the answer SDP through RTPEngine too
+      if (rtpCtx && rtpCtx.rtpengine && rtpCtx.fromTag && responseSdp) {
+        try {
+          const rtpHelper = require('../utils/rtp-helper');
+          const toHdr = otherDialog.remote.headers && otherDialog.remote.headers.To;
+          const toTag = toHdr ? (toHdr.match(/tag=([^;>]+)/) || [])[1] : null;
+          if (toTag) {
+            const result = await rtpHelper.answer(rtpCtx.rtpengine, callId, rtpCtx.fromTag, toTag, responseSdp, { 'record call': 'yes' });
+            if (result && result.sdp) {
+              responseSdp = result.sdp;
+              logger.debug(`RE-INVITE answer SDP routed through RTPEngine [${callId}]`);
+            }
+          }
+        } catch (rtpErr) {
+          logger.warn(`RE-INVITE RTPEngine answer failed [${callId}]: ${rtpErr.message}`);
+        }
+      }
       res.send(200, {
         body: responseSdp,
         headers: {
@@ -431,6 +472,7 @@ class HoldHandler {
   // Cleanup when a call ends
   cleanup(callId) {
     this.holdState.delete(callId);
+    if (this.rtpContexts) this.rtpContexts.delete(callId);
   }
 }
 
