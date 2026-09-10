@@ -688,13 +688,37 @@ class CallHandler {
 
     const cdr = await this._createCDR(fromExt, dialedNumber, 'outbound', callId, req.source_address);
     cdr.trunkUsed = route.trunk;
+    cdr.didNumber = callerId;
     await cdr.save();
 
     // BLF: caller is ringing outbound
     this._emitPresence(fromExt, 'ringing', { callId, remoteParty: dialedNumber, direction: 'initiator' });
 
+    // Extract the From tag for RTPEngine recording
+    const from = req.getParsedHeader('From');
+    const fromTag = from.params.tag;
+
     try {
-      const { uas, uac } = await this.trunkManager.sendOutbound(req, res, trunk, processedNumber, callerId);
+      // Route media through RTPEngine for recording
+      const rtpOffer = await this._rtpengineOffer(callId, fromTag, req.body);
+      if (rtpOffer && rtpOffer.sdp) {
+        cdr.recorded = true;
+        cdr.rtpengineCallId = callId;
+        await cdr.save();
+      }
+
+      const { uas, uac } = await this.trunkManager.sendOutbound(req, res, trunk, processedNumber, callerId, rtpOffer ? rtpOffer.sdp : null);
+
+      // RTPEngine answer — process the far-end SDP for recording
+      if (uac && uac.remote && uac.remote.sdp && fromTag) {
+        const toTag = uac.remote.headers && uac.remote.headers.To
+          ? (uac.remote.headers.To.match(/tag=([^;]+)/) || [])[1]
+          : null;
+        if (toTag) {
+          await this._rtpengineAnswer(callId, fromTag, toTag, uac.remote.sdp);
+        }
+      }
+
       cdr.status = 'answered';
       cdr.answerTime = new Date();
       await cdr.save();
@@ -703,8 +727,10 @@ class CallHandler {
       // BLF: caller is in call
       this._emitPresence(fromExt, 'confirmed', { callId, remoteParty: dialedNumber, direction: 'initiator' });
 
-      this._trackCall(callId, uas, uac, cdr, fromExt, dialedNumber, null);
+      this._trackCall(callId, uas, uac, cdr, fromExt, dialedNumber, fromTag);
     } catch (err) {
+      // Clean up RTPEngine on failure
+      if (fromTag) this._rtpengineDelete(callId, fromTag).catch(() => {});
       // BLF: caller goes idle on failure
       this._emitPresence(fromExt, 'idle');
       await this._failCall(cdr, err, fromExt, dialedNumber);

@@ -58,7 +58,7 @@ class TrunkManager {
   }
 
   // Send outbound call through a trunk with auth
-  async sendOutbound(req, res, trunk, dialedNumber, callerId) {
+  async sendOutbound(req, res, trunk, dialedNumber, callerId, rtpSdp) {
     const trunkConfig = typeof trunk === 'string' ? this.trunkEndpoints.get(trunk) : trunk;
     if (!trunkConfig) {
       throw new Error('Trunk not configured');
@@ -74,7 +74,7 @@ class TrunkManager {
     logger.info(`Outbound via ${trunkConfig.name || 'trunk'}: ${callerId} -> ${dialedNumber} @ ${host}`);
 
     return this.srf.createB2BUA(req, res, targetUri, {
-      localSdpB: req.body,
+      localSdpB: rtpSdp || req.body,  // Use RTPEngine SDP if available, otherwise pass-through
       headers: {
         'From': `<sip:${username}@${host}>`,
         'P-Asserted-Identity': `<sip:${callerId}@${host}>`
