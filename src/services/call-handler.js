@@ -694,30 +694,42 @@ class CallHandler {
     // BLF: caller is ringing outbound
     this._emitPresence(fromExt, 'ringing', { callId, remoteParty: dialedNumber, direction: 'initiator' });
 
-    // Extract the From tag for RTPEngine recording
+    // Extract the From tag for RTPEngine
     const from = req.getParsedHeader('From');
     const fromTag = from.params.tag;
+    const rtpengine = this.rtpengine;
+    const rtpHelper = require('../utils/rtp-helper');
+    let toTag = null;
 
     try {
-      // Route media through RTPEngine for recording
-      const rtpOffer = await this._rtpengineOffer(callId, fromTag, req.body);
-      if (rtpOffer && rtpOffer.sdp) {
-        cdr.recorded = true;
-        cdr.rtpengineCallId = callId;
-        await cdr.save();
-      }
-
-      const { uas, uac } = await this.trunkManager.sendOutbound(req, res, trunk, processedNumber, callerId, rtpOffer ? rtpOffer.sdp : null);
-
-      // RTPEngine answer — process the far-end SDP for recording
-      if (uac && uac.remote && uac.remote.sdp && fromTag) {
-        const toTag = uac.remote.headers && uac.remote.headers.To
-          ? (uac.remote.headers.To.match(/tag=([^;]+)/) || [])[1]
-          : null;
-        if (toTag) {
-          await this._rtpengineAnswer(callId, fromTag, toTag, uac.remote.sdp);
+      const { uas, uac } = await this.trunkManager.sendOutbound(req, res, trunk, processedNumber, callerId, {
+        // SDP callback: caller's SDP -> RTPEngine offer -> send to trunk
+        localSdpB: async (sdp) => {
+          try {
+            const result = await rtpHelper.offer(rtpengine, callId, fromTag, sdp, { 'record call': 'yes' });
+            if (result && result.sdp) {
+              cdr.recorded = true;
+              cdr.rtpengineCallId = callId;
+              await cdr.save();
+              return result.sdp;
+            }
+          } catch (e) { logger.warn(`OUTBOUND RTPEngine offer failed: ${e.message}`); }
+          return sdp; // fallback to original SDP if RTPEngine fails
+        },
+        // SDP callback: trunk's answer SDP -> RTPEngine answer -> send back to caller
+        localSdpA: async (sdp, res2) => {
+          try {
+            // Extract To tag from the trunk's response
+            const toHdr = res2.getParsedHeader('To');
+            toTag = toHdr && toHdr.params ? toHdr.params.tag : null;
+            if (toTag) {
+              const result = await rtpHelper.answer(rtpengine, callId, fromTag, toTag, sdp, { 'record call': 'yes' });
+              if (result && result.sdp) return result.sdp;
+            }
+          } catch (e) { logger.warn(`OUTBOUND RTPEngine answer failed: ${e.message}`); }
+          return sdp;
         }
-      }
+      });
 
       cdr.status = 'answered';
       cdr.answerTime = new Date();
