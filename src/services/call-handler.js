@@ -696,43 +696,24 @@ class CallHandler {
     const from = req.getParsedHeader('From');
     const fromTag = from.params.tag;
 
-    // Step 1: RTPEngine offer BEFORE creating B2BUA
-    let rtpSdp = null;
     try {
+      // Step 1: RTPEngine offer (same as internal calls line 144)
       const rtpOffer = await this._rtpengineOffer(callId, fromTag, req.body);
-      if (rtpOffer && rtpOffer.sdp) {
-        rtpSdp = rtpOffer.sdp;
-        cdr.recorded = true;
-        cdr.rtpengineCallId = callId;
-        await cdr.save();
-        logger.debug(`OUTBOUND RTPEngine offer OK for ${callId}`);
-      }
-    } catch (e) {
-      logger.warn(`OUTBOUND RTPEngine offer failed: ${e.message} — recording disabled`);
-    }
 
-    try {
-      // Step 2: Create B2BUA with RTPEngine SDP (or raw SDP as fallback)
-      const { uas, uac } = await this.trunkManager.sendOutbound(req, res, trunk, processedNumber, callerId, rtpSdp);
-
-      // Step 3: RTPEngine answer AFTER call connects — extract toTag from dialog
-      if (rtpSdp && uac) {
-        try {
-          const toTag = uac.sip ? uac.sip.remoteTag : null;
-          const remoteSdp = uac.remote ? uac.remote.sdp : null;
-          if (toTag && remoteSdp) {
-            await this._rtpengineAnswer(callId, fromTag, toTag, remoteSdp);
-            logger.debug(`OUTBOUND RTPEngine answer OK for ${callId} (toTag=${toTag})`);
-          } else {
-            logger.warn(`OUTBOUND RTPEngine answer skipped: toTag=${toTag ? 'yes' : 'no'} remoteSdp=${remoteSdp ? 'yes' : 'no'}`);
-          }
-        } catch (e) {
-          logger.warn(`OUTBOUND RTPEngine answer failed: ${e.message}`);
+      // Step 2: createB2BUA with exact same pattern as internal calls (lines 150-156)
+      const { uas, uac } = await this.trunkManager.sendOutboundWithRtp(req, res, trunk, processedNumber, callerId, {
+        localSdpB: rtpOffer ? rtpOffer.sdp : req.body,
+        localSdpA: async (sdp, res2) => {
+          const toTag = res2.getParsedHeader('To').params.tag;
+          const rtpAnswer = await this._rtpengineAnswer(callId, fromTag, toTag, sdp);
+          return rtpAnswer ? rtpAnswer.sdp : sdp;
         }
-      }
+      });
 
       cdr.status = 'answered';
       cdr.answerTime = new Date();
+      cdr.recorded = !!rtpOffer;
+      cdr.rtpengineCallId = callId;
       await cdr.save();
       logger.info(`OUTBOUND ANSWERED: ${fromExt} -> ${processedNumber} via ${route.trunk} [${callId}]`);
 

@@ -86,6 +86,36 @@ class TrunkManager {
     });
   }
 
+  // Outbound with full RTPEngine SDP control (offer + answer callbacks)
+  async sendOutboundWithRtp(req, res, trunk, dialedNumber, callerId, sdpOpts) {
+    const trunkConfig = typeof trunk === 'string' ? this.trunkEndpoints.get(trunk) : trunk;
+    if (!trunkConfig) {
+      throw new Error('Trunk not configured');
+    }
+
+    const host = trunkConfig.host || trunk.host;
+    const port = trunkConfig.port || 5060;
+    const username = trunkConfig.username || trunk.username;
+    const password = trunkConfig.password || trunk.password;
+
+    const targetUri = `sip:${dialedNumber}@${host}:${port}`;
+
+    logger.info(`Outbound via ${trunkConfig.name || 'trunk'}: ${callerId} -> ${dialedNumber} @ ${host} [RTP-bridged]`);
+
+    return this.srf.createB2BUA(req, res, targetUri, {
+      localSdpB: sdpOpts.localSdpB,
+      localSdpA: sdpOpts.localSdpA,
+      headers: {
+        'From': `<sip:${username}@${host}>`,
+        'P-Asserted-Identity': `<sip:${callerId}@${host}>`
+      },
+      auth: {
+        username: username,
+        password: password
+      }
+    });
+  }
+
   async isFromTrunk(req) {
     const fromUri = req.getParsedHeader('From').uri;
     const toUri = req.getParsedHeader('To').uri;
