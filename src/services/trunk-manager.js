@@ -87,7 +87,7 @@ class TrunkManager {
   }
 
   // Outbound with full RTPEngine SDP control (offer + answer callbacks)
-  async sendOutboundWithRtp(req, res, trunk, dialedNumber, callerId, sdpOpts) {
+  async sendOutboundWithRtp(req, res, trunk, dialedNumber, callerId, sdpOpts, ringTimeout) {
     const trunkConfig = typeof trunk === 'string' ? this.trunkEndpoints.get(trunk) : trunk;
     if (!trunkConfig) {
       throw new Error('Trunk not configured');
@@ -99,8 +99,9 @@ class TrunkManager {
     const password = trunkConfig.password || trunk.password;
 
     const targetUri = `sip:${dialedNumber}@${host}:${port}`;
+    const timeout = (ringTimeout || 60) * 1000;
 
-    logger.info(`Outbound via ${trunkConfig.name || 'trunk'}: ${callerId} -> ${dialedNumber} @ ${host} [RTP-bridged]`);
+    logger.info(`Outbound via ${trunkConfig.name || 'trunk'}: ${callerId} -> ${dialedNumber} @ ${host} [RTP-bridged, ring=${ringTimeout || 60}s]`);
 
     return this.srf.createB2BUA(req, res, targetUri, {
       localSdpB: sdpOpts.localSdpB,
@@ -112,7 +113,8 @@ class TrunkManager {
       auth: {
         username: username,
         password: password
-      }
+      },
+      timeout
     });
   }
 

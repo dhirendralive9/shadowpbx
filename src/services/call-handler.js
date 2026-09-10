@@ -700,7 +700,8 @@ class CallHandler {
       // Step 1: RTPEngine offer (same as internal calls line 144)
       const rtpOffer = await this._rtpengineOffer(callId, fromTag, req.body);
 
-      // Step 2: createB2BUA with exact same pattern as internal calls (lines 150-156)
+      // Step 2: createB2BUA with ring timeout from outbound route
+      const ringTimeout = route.ringTimeout || 60;
       const { uas, uac } = await this.trunkManager.sendOutboundWithRtp(req, res, trunk, processedNumber, callerId, {
         localSdpB: rtpOffer ? rtpOffer.sdp : req.body,
         localSdpA: async (sdp, res2) => {
@@ -708,14 +709,14 @@ class CallHandler {
           const rtpAnswer = await this._rtpengineAnswer(callId, fromTag, toTag, sdp);
           return rtpAnswer ? rtpAnswer.sdp : sdp;
         }
-      });
+      }, ringTimeout);
 
       cdr.status = 'answered';
       cdr.answerTime = new Date();
       cdr.recorded = !!rtpOffer;
       cdr.rtpengineCallId = callId;
       await cdr.save();
-      logger.info(`OUTBOUND ANSWERED: ${fromExt} -> ${processedNumber} via ${route.trunk} [${callId}]`);
+      logger.info(`OUTBOUND ANSWERED: ${fromExt} -> ${processedNumber} via ${route.trunk} [${callId}] (ringTimeout=${ringTimeout}s)`);
 
       this._emitPresence(fromExt, 'confirmed', { callId, remoteParty: dialedNumber, direction: 'initiator' });
       this._trackCall(callId, uas, uac, cdr, fromExt, dialedNumber, fromTag);

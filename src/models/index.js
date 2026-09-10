@@ -185,6 +185,8 @@ const outboundRouteSchema = new mongoose.Schema({
   callerIdNumber: { type: String },
   allowedExtensions: [{ type: String }],  // empty = all allowed
   allowDialer: { type: Boolean, default: false },  // allow use in dialer campaigns
+  ringTimeout: { type: Number, default: 60 },      // seconds to ring before giving up (default 60s)
+  minCallDuration: { type: Number, default: 0 },    // minimum seconds to count as answered (0 = disabled)
   enabled: { type: Boolean, default: true },
   priority: { type: Number, default: 10 },
   createdAt: { type: Date, default: Date.now }
