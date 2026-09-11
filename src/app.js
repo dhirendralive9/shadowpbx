@@ -474,7 +474,7 @@ async function main() {
         Extension.find({}).lean(),
         Trunk.find({}, '-password').lean(),
         Promise.resolve(callHandler.getActiveCalls()),
-        CDR.find({}).sort({ startTime: -1 }).limit(50).lean(),
+        CDR.find({}).sort({ startTime: -1 }).limit(20).lean(),
         VoicemailMessage.countDocuments({ read: false }),
         CDR.countDocuments({ startTime: { $gte: todayStart }, direction: 'inbound' }),
         CDR.countDocuments({ startTime: { $gte: todayStart }, direction: 'outbound' })

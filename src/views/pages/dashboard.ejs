@@ -64,6 +64,7 @@
 <div class="section">
   <div class="sec-head">
     <span class="sec-title">Recent calls</span>
+    <a href="/cdr" style="font-size:12px;color:var(--accent);text-decoration:none">View all →</a>
     <a href="/cdr" class="sec-link">view all</a>
   </div>
   <table class="tbl">
@@ -196,12 +197,13 @@ socket.on('dashboard', function(data) {
     }
   }
 
-  // Recent CDR — agents see only their calls
+  // Recent CDR — agents see only their calls, limit to 20
   var cdrBody = document.getElementById('recent-cdr-body');
   var cdrs = data.recentCDR || [];
   if (myRole === 'agent' && myExt) {
     cdrs = cdrs.filter(function(c) { return c.from === myExt || c.to === myExt; });
   }
+  cdrs = cdrs.slice(0, 20);
   if (cdrs.length > 0) {
     var html = '';
     for (var i = 0; i < cdrs.length; i++) {
