@@ -469,12 +469,15 @@ async function main() {
     try {
       const { Extension, Trunk, CDR, VoicemailMessage } = require('./models');
 
-      const [extensions, trunks, activeCalls, recentCDR, unreadVM] = await Promise.all([
+      const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+      const [extensions, trunks, activeCalls, recentCDR, unreadVM, todayInbound, todayOutbound] = await Promise.all([
         Extension.find({}).lean(),
         Trunk.find({}, '-password').lean(),
         Promise.resolve(callHandler.getActiveCalls()),
         CDR.find({}).sort({ startTime: -1 }).limit(50).lean(),
-        VoicemailMessage.countDocuments({ read: false })
+        VoicemailMessage.countDocuments({ read: false }),
+        CDR.countDocuments({ startTime: { $gte: todayStart }, direction: 'inbound' }),
+        CDR.countDocuments({ startTime: { $gte: todayStart }, direction: 'outbound' })
       ]);
 
       // Enrich extensions with registration data and BLF state
@@ -490,6 +493,9 @@ async function main() {
         trunks,
         recentCDR,
         unreadVM,
+        todayInbound: todayInbound || 0,
+        todayOutbound: todayOutbound || 0,
+        todayTotal: (todayInbound || 0) + (todayOutbound || 0),
         serverTime: new Date().toISOString(),
         presenceStats: presenceHandler ? { subscriptions: presenceHandler.subscriptions.size } : null
       };

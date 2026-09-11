@@ -117,22 +117,12 @@ socket.on('dashboard', function(data) {
   document.getElementById('kpi-online').textContent = onlineCount + '/' + exts.length;
   document.getElementById('kpi-online-sub').textContent = 'extensions';
 
-  // Calculate "today" calls using browser's local timezone
-  var cdrs = data.recentCDR || [];
-  var todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
-  var todayCalls = 0;
-  for (var i = 0; i < cdrs.length; i++) {
-    var t = new Date(cdrs[i].startTime);
-    if (t >= todayStart) {
-      if (myRole === 'agent' && myExt) {
-        if (cdrs[i].from === myExt || cdrs[i].to === myExt) todayCalls++;
-      } else {
-        todayCalls++;
-      }
-    }
-  }
-  document.getElementById('kpi-today').textContent = todayCalls;
-  document.getElementById('kpi-today-sub').textContent = 'calls';
+  // Today's calls — use server-side count (accurate, not limited by recentCDR)
+  var todayTotal = data.todayTotal || 0;
+  var todayIn = data.todayInbound || 0;
+  var todayOut = data.todayOutbound || 0;
+  document.getElementById('kpi-today').textContent = todayTotal;
+  document.getElementById('kpi-today-sub').textContent = todayIn + ' in / ' + todayOut + ' out';
   document.getElementById('kpi-vm').textContent = data.unreadVM || 0;
   document.getElementById('kpi-vm-sub').textContent = 'unread';
 
