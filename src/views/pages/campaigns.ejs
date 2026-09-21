@@ -207,7 +207,7 @@ async function loadCampaigns(){
       if(isAdmin){
         if(cp.status==='draft'||cp.status==='paused'||cp.status==='stopped'||cp.status==='completed')ctrl+='<button class="btn btn-sm" style="background:var(--color-ok);color:#fff;border-color:var(--color-ok)" onclick="startCamp(\''+cp._id+'\')">Start</button> ';
         if(cp.status==='running'){ctrl+='<button class="btn btn-sm" onclick="pauseCamp(\''+cp._id+'\')">Pause</button> ';ctrl+='<button class="btn btn-sm btn-danger" onclick="stopCamp(\''+cp._id+'\')">Stop</button> '}
-        if(cp.status==='running')ctrl+='<button class="btn btn-sm" onclick="openLive(\''+cp._id+'\',\''+esc(cp.name)+'\')">Live</button> ';
+        if(cp.status==='running')ctrl+='<button class="btn btn-sm" onclick="openLive(\''+cp._id+'\',\''+esc(cp.name)+'\')">Monitor</button> ';
         ctrl+='<button class="btn btn-sm" onclick="showImport(\''+cp._id+'\',\''+esc(cp.name)+'\')">Import</button> ';
         ctrl+='<button class="btn btn-sm" onclick="showLeads(\''+cp._id+'\',\''+esc(cp.name)+'\')">Leads</button> ';
         if(cp.status!=='running'){ctrl+='<button class="btn btn-sm" onclick=\'showEdit('+JSON.stringify(cp).replace(/'/g,"&#39;")+')\'> Edit</button> ';ctrl+='<button class="btn btn-sm btn-danger" onclick="delCamp(\''+cp._id+'\',\''+esc(cp.name)+'\')">Delete</button>'}
@@ -215,7 +215,7 @@ async function loadCampaigns(){
       // Supervisor: start/pause, live, view leads — no create/edit/delete/import/DNC
       if(isSupervisor){
         if(cp.status==='draft'||cp.status==='paused'||cp.status==='stopped'||cp.status==='completed')ctrl+='<button class="btn btn-sm" style="background:var(--color-ok);color:#fff;border-color:var(--color-ok)" onclick="startCamp(\''+cp._id+'\')">Start</button> ';
-        if(cp.status==='running'){ctrl+='<button class="btn btn-sm" onclick="pauseCamp(\''+cp._id+'\')">Pause</button> ';ctrl+='<button class="btn btn-sm" onclick="openLive(\''+cp._id+'\',\''+esc(cp.name)+'\')">Live</button> '}
+        if(cp.status==='running'){ctrl+='<button class="btn btn-sm" onclick="pauseCamp(\''+cp._id+'\')">Pause</button> ';ctrl+='<button class="btn btn-sm" onclick="openLive(\''+cp._id+'\',\''+esc(cp.name)+'\')">Monitor</button> '}
         ctrl+='<button class="btn btn-sm" onclick="showLeads(\''+cp._id+'\',\''+esc(cp.name)+'\')">Leads</button> ';
       }
       return '<div class="card" style="margin-bottom:12px"><div class="card-head"><div style="display:flex;align-items:center;gap:10px"><span class="card-title">'+esc(cp.name)+'</span>'+statusPill(cp.status)+' '+stratBadge(cp.strategy)+(cp.amd?' <span class="pill p-info" style="font-size:9px">AMD</span>':'')+'</div><div style="display:flex;gap:6px;flex-wrap:wrap">'+ctrl+'</div></div>'+

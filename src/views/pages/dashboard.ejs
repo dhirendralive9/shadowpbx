@@ -23,11 +23,10 @@
   </div>
 </div>
 
-<% if (role === 'admin' || role === 'supervisor') { %>
 <div class="section">
   <div class="sec-head">
     <span class="sec-title">Active calls</span>
-    <a href="/calls" class="sec-link">manage all</a>
+    <% if (role === 'admin' || role === 'supervisor') { %><a href="/calls" class="sec-link">manage all</a><% } %>
   </div>
   <table class="tbl">
     <thead><tr><th>Status</th><th>From</th><th>To</th><th>Duration</th><th></th></tr></thead>
@@ -36,7 +35,6 @@
     </tbody>
   </table>
 </div>
-<% } %>
 
 <div class="<%= role === 'admin' ? 'grid-3' : (role === 'supervisor' ? 'grid-2' : '') %>" style="<%= role === 'agent' ? 'display:none' : '' %>">
   <% if (role === 'admin' || role === 'supervisor') { %>
@@ -104,9 +102,12 @@ function pillCls(s) {
 socket.on('dashboard', function(data) {
   var ac = data.activeCalls || [];
 
-  // Agent: filter to only their calls
+  // Agent: filter to only their calls (handle dialer format "phone -> ext")
   if (myRole === 'agent' && myExt) {
-    ac = ac.filter(function(c) { return c.from === myExt || c.to === myExt; });
+    ac = ac.filter(function(c) {
+      var to = String(c.to || '');
+      return c.from === myExt || to === myExt || to.indexOf('-> ' + myExt) >= 0 || to.indexOf('> ' + myExt) >= 0 || c.agentExt === myExt;
+    });
   }
 
   document.getElementById('kpi-active').textContent = ac.length;
@@ -201,7 +202,10 @@ socket.on('dashboard', function(data) {
   var cdrBody = document.getElementById('recent-cdr-body');
   var cdrs = data.recentCDR || [];
   if (myRole === 'agent' && myExt) {
-    cdrs = cdrs.filter(function(c) { return c.from === myExt || c.to === myExt; });
+    cdrs = cdrs.filter(function(c) {
+      var to = String(c.to || '');
+      return c.from === myExt || to === myExt || to.indexOf('-> ' + myExt) >= 0 || to.indexOf('> ' + myExt) >= 0;
+    });
   }
   cdrs = cdrs.slice(0, 20);
   if (cdrs.length > 0) {
