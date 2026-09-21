@@ -828,7 +828,13 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
         ];
       }
       if (req.query.extension) {
-        filter.$or = [{ from: req.query.extension }, { to: req.query.extension }];
+        const ext = req.query.extension;
+        // Match exact from/to OR dialer format "phone -> ext"
+        filter.$or = [
+          { from: ext },
+          { to: ext },
+          { to: { $regex: '-> ' + ext + '$|> ' + ext + '$| ' + ext + '$', $options: '' } }
+        ];
       }
       if (req.query.status) filter.status = req.query.status;
       if (req.query.direction) filter.direction = req.query.direction;
