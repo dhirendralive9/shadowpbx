@@ -135,6 +135,42 @@
   <div id="user-list"></div>
 </div>
 
+<!-- Edit User Modal -->
+<div id="eu-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:100;align-items:center;justify-content:center" onclick="if(event.target===this)this.style.display='none'">
+  <div class="card" style="max-width:450px;width:90%;padding:20px">
+    <div class="card-head"><span class="card-title">Edit user — <span id="eu-label"></span></span></div>
+    <form onsubmit="saveEditUser(event)">
+      <input type="hidden" id="eu-username">
+      <div class="form-group" style="margin-bottom:10px">
+        <label class="form-label">Name</label>
+        <input class="form-input" id="eu-name" placeholder="Display name">
+      </div>
+      <div class="form-group" style="margin-bottom:10px">
+        <label class="form-label">New password <span class="muted" style="font-size:10px">(leave blank to keep current)</span></label>
+        <input class="form-input" id="eu-password" type="password" placeholder="Enter new password">
+      </div>
+      <div style="display:flex;gap:10px;margin-bottom:10px">
+        <div class="form-group" style="flex:1">
+          <label class="form-label">Role</label>
+          <select class="form-select" id="eu-role">
+            <option value="admin">Admin</option>
+            <option value="supervisor">Supervisor</option>
+            <option value="agent">Agent</option>
+          </select>
+        </div>
+        <div class="form-group" style="flex:1">
+          <label class="form-label">Extension</label>
+          <input class="form-input" id="eu-ext" placeholder="2001">
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:14px">
+        <button type="submit" class="btn btn-primary btn-sm">Save changes</button>
+        <button type="button" class="btn btn-sm" onclick="document.getElementById('eu-modal').style.display='none'">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <!-- ═══════════════════ DNC (DO NOT CALL) ═══════════════════ -->
 <div id="panel-dnc" class="settings-panel">
   <div class="sec-head">
@@ -1073,6 +1109,7 @@ async function loadUsers() {
     c.innerHTML = '<table class="tbl"><thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Extension</th><th>Status</th><th></th></tr></thead><tbody>' +
       d.users.map(function(u) {
         var rolePill = u.role === 'admin' ? 'p-err' : u.role === 'supervisor' ? 'p-warn' : 'p-info';
+        var uJson = JSON.stringify({username:u.username,name:u.name||'',role:u.role,extension:u.extension||'',enabled:u.enabled!==false}).replace(/'/g,"&#39;");
         return '<tr>' +
           '<td class="mono" style="font-weight:600">' + esc(u.username) + '</td>' +
           '<td>' + esc(u.name || '—') + '</td>' +
@@ -1080,6 +1117,7 @@ async function loadUsers() {
           '<td class="mono">' + esc(u.extension || '—') + '</td>' +
           '<td>' + (u.enabled !== false ? '<span class="pill p-ok" style="font-size:10px">active</span>' : '<span class="pill p-gray" style="font-size:10px">disabled</span>') + '</td>' +
           '<td style="white-space:nowrap">' +
+            '<button class="btn btn-sm" onclick=\'showEditUser(' + uJson + ')\'>Edit</button> ' +
             (u.username === 'admin' ? '<span class="muted" style="font-size:11px">protected</span>' :
             '<button class="btn btn-sm" onclick="toggleUser(\'' + esc(u.username) + '\',' + !(u.enabled !== false) + ')">' + (u.enabled !== false ? 'Disable' : 'Enable') + '</button> ' +
             '<button class="btn btn-sm btn-danger" onclick="deleteUser(\'' + esc(u.username) + '\')">Delete</button>') +
@@ -1119,6 +1157,40 @@ async function deleteUser(username) {
   await fetch(API + '/users/' + encodeURIComponent(username), { method: 'DELETE', headers: H });
   showToast('User deleted');
   loadUsers();
+}
+
+function showEditUser(u) {
+  document.getElementById('eu-username').value = u.username;
+  document.getElementById('eu-label').textContent = u.username;
+  document.getElementById('eu-name').value = u.name || '';
+  document.getElementById('eu-password').value = '';
+  document.getElementById('eu-role').value = u.role || 'agent';
+  document.getElementById('eu-ext').value = u.extension || '';
+  // Admin can change password but not role
+  document.getElementById('eu-role').disabled = (u.username === 'admin');
+  document.getElementById('eu-modal').style.display = 'flex';
+}
+
+async function saveEditUser(e) {
+  e.preventDefault();
+  var username = document.getElementById('eu-username').value;
+  var body = {};
+  var name = document.getElementById('eu-name').value.trim();
+  var password = document.getElementById('eu-password').value;
+  var role = document.getElementById('eu-role').value;
+  var ext = document.getElementById('eu-ext').value.trim();
+  if (name) body.name = name;
+  if (password) body.password = password;
+  if (role && username !== 'admin') body.role = role;
+  if (ext !== undefined) body.extension = ext;
+  var d = await (await fetch(API + '/users/' + encodeURIComponent(username), {
+    method: 'PUT', headers: J, body: JSON.stringify(body)
+  })).json();
+  if (d.success) {
+    showToast('User updated' + (password ? ' (password changed)' : ''));
+    document.getElementById('eu-modal').style.display = 'none';
+    loadUsers();
+  } else { showToast(d.error || 'Update failed', true); }
 }
 
 // ═══════════════════ DNC Management ═══════════════════
