@@ -969,11 +969,9 @@ class DialerEngine {
   // routes both legs through RTPEngine for recording.
   // ============================================================
   async _bridgeToAgent(callId, campaignId, leadUac, lead, agentExt, config, cdr) {
-    // Get agent's registered contact
     const agentContacts = await this.registrar.getContacts(agentExt);
     if (agentContacts.length === 0) {
-      logger.warn(`DIALER BRIDGE: agent ${agentExt} not registered, can't bridge`);
-      // Agent went offline — hang up lead, put lead back
+      logger.warn(`DIALER BRIDGE: agent ${agentExt} not registered`);
       try { leadUac.destroy(); } catch (e) {}
       await this._callFailed(callId, campaignId, lead, agentExt, 'no-answer', config, cdr);
       return;
@@ -985,159 +983,124 @@ class DialerEngine {
     )[0];
 
     const agentUri = `sip:${agentExt}@${contact.ip}:${contact.port}`;
-    const sipDomain = process.env.SIP_DOMAIN || 'shadowpbx';
     const externalIp = process.env.EXTERNAL_IP || '127.0.0.1';
+    const rtpHelper = require('../utils/rtp-helper');
+    const bridgeTag = `dialer-${callId}`;
 
-    logger.info(`DIALER BRIDGE: connecting ${lead.phone} -> agent ${agentExt} at ${agentUri} [${callId}]`);
+    logger.info(`DIALER BRIDGE: ${lead.phone} -> agent ${agentExt} at ${agentUri} [${callId}]`);
 
     try {
-      // Set up RTPEngine for the lead leg
-      const rtpHelper = require('../utils/rtp-helper');
-      const leadFromTag = leadUac.sip ? leadUac.sip.remoteTag : `lead-${callId}`;
+      // Get lead's SDP
       const leadSdp = leadUac.remote ? leadUac.remote.sdp : '';
-
-      let rtpOffer = null;
-      if (leadSdp && this.rtpengine) {
-        rtpOffer = await rtpHelper.offer(this.rtpengine, callId, leadFromTag, leadSdp, { 'record call': 'yes' });
+      if (!leadSdp) {
+        logger.error(`DIALER BRIDGE: no SDP from lead ${lead.phone}`);
+        try { leadUac.destroy(); } catch (e) {}
+        await this._callFailed(callId, campaignId, lead, agentExt, 'error', config, cdr);
+        return;
       }
 
-      // Call the agent
+      // RTPEngine offer with lead's SDP
+      let rtpOfferSdp = leadSdp;
+      if (this.rtpengine) {
+        try {
+          const rtpOffer = await rtpHelper.offer(this.rtpengine, callId, bridgeTag, leadSdp, { 'record call': 'yes' });
+          if (rtpOffer && rtpOffer.sdp) { rtpOfferSdp = rtpOffer.sdp; logger.debug(`DIALER BRIDGE: RTPEngine offer OK [${callId}]`); }
+        } catch (e) { logger.warn(`DIALER BRIDGE: RTPEngine offer failed: ${e.message}`); }
+      }
+
+      // Call the agent with RTPEngine SDP
       const agentUac = await this.srf.createUAC(agentUri, {
-        localSdp: rtpOffer ? rtpOffer.sdp : leadSdp,
+        localSdp: rtpOfferSdp,
         headers: {
-          'From': `<sip:${lead.phone}@${sipDomain}>`,
-          'To': `<sip:${agentExt}@${sipDomain}>`,
-          'Contact': `<sip:${lead.phone}@${externalIp}>`,
-          'X-Campaign': config.name || '',
-          'X-Lead-Name': lead.name || '',
-          'X-Lead-Phone': lead.phone || ''
+          'From': `<sip:${lead.phone}@${externalIp}>`,
+          'To': `<sip:${agentExt}@${externalIp}>`,
+          'Contact': `<sip:${lead.phone}@${externalIp}>`
         },
         callingNumber: lead.phone
       });
 
-      logger.info(`DIALER BRIDGED: ${lead.phone} <-> agent ${agentExt} [${callId}]`);
+      logger.info(`DIALER BRIDGED: ${lead.phone} <-> ${agentExt} [${callId}]`);
 
-      // Complete RTPEngine answer with agent's SDP
-      if (rtpOffer && agentUac.remote && this.rtpengine) {
-        const agentToTag = agentUac.sip ? agentUac.sip.remoteTag : '';
-        if (agentToTag) {
-          await rtpHelper.answer(this.rtpengine, callId, leadFromTag, agentToTag, agentUac.remote.sdp, { 'record call': 'yes' });
-        }
-        // Re-INVITE the lead with RTPEngine's answer SDP
-        try { await leadUac.modify(rtpOffer.sdp); } catch (e) {}
+      // RTPEngine answer with agent's SDP
+      let rtpAnswerSdp = null;
+      if (this.rtpengine && agentUac.remote && agentUac.remote.sdp) {
+        try {
+          const agentTag = agentUac.sip ? agentUac.sip.localTag : `at-${callId}`;
+          const rtpAnswer = await rtpHelper.answer(this.rtpengine, callId, bridgeTag, agentTag, agentUac.remote.sdp, { 'record call': 'yes' });
+          if (rtpAnswer && rtpAnswer.sdp) { rtpAnswerSdp = rtpAnswer.sdp; logger.debug(`DIALER BRIDGE: RTPEngine answer OK [${callId}]`); }
+        } catch (e) { logger.warn(`DIALER BRIDGE: RTPEngine answer failed: ${e.message}`); }
+      }
+
+      // Re-INVITE the lead so it sends media to RTPEngine
+      if (rtpAnswerSdp) {
+        try { await leadUac.modify(rtpAnswerSdp); logger.debug(`DIALER BRIDGE: lead re-INVITE OK [${callId}]`); }
+        catch (e) { logger.warn(`DIALER BRIDGE: lead re-INVITE failed: ${e.message}`); }
       }
 
       // Update tracking
       const activeCall = this.activeCalls.get(callId);
-      if (activeCall) {
-        activeCall.uas = agentUac; // agent leg
-        activeCall.status = 'connected'; activeCall.connectedAt = Date.now();
-      }
+      if (activeCall) { activeCall.uas = agentUac; activeCall.status = 'connected'; activeCall.connectedAt = Date.now(); }
 
-      // Update agent state
       this.setAgentState(campaignId, agentExt, 'on-call');
       const agentState = this.agentStates.get(campaignId);
-      if (agentState) {
-        const as = agentState.get(agentExt);
-        if (as) as.currentCallId = callId;
-      }
+      if (agentState) { const as = agentState.get(agentExt); if (as) as.currentCallId = callId; }
 
-      // Update CDR
+      cdr.status = 'answered';
+      cdr.answerTime = new Date();
       cdr.to = `${lead.phone} -> ${agentExt}`;
-      cdr.recorded = !!rtpOffer;
+      cdr.recorded = !!rtpAnswerSdp;
       cdr.rtpengineCallId = callId;
       await cdr.save();
 
-      // Emit BLF presence
-      if (this.callHandler.presenceHandler) {
+      if (this.callHandler && this.callHandler._emitPresence) {
         this.callHandler._emitPresence(agentExt, 'confirmed', { callId, remoteParty: lead.phone, direction: 'recipient' });
       }
 
-      // Socket.IO: push screen pop to agent
-      // (Phase 5 will add proper screen pop UI — for now just log)
-      logger.info(`DIALER SCREEN-POP: agent ${agentExt} — ${lead.name || 'Unknown'} (${lead.phone}) ${lead.company || ''}`);
+      logger.info(`DIALER SCREEN-POP: agent ${agentExt} | ${lead.name || 'Unknown'} (${lead.phone}) ${lead.company || ''}`);
 
-      // Handle hangup from either side
+      // Hangup handlers
       let callEnded = false;
       const onCallEnd = async (hangupBy) => {
         if (callEnded) return;
         callEnded = true;
-
         const endTime = new Date();
         const talkTime = cdr.answerTime ? Math.round((endTime - cdr.answerTime) / 1000) : 0;
-
-        // Destroy the other leg
         try { if (hangupBy === 'lead') agentUac.destroy(); else leadUac.destroy(); } catch (e) {}
+        if (this.rtpengine) { try { await rtpHelper.del(this.rtpengine, callId, bridgeTag); } catch (e) {} }
 
-        // Clean up RTPEngine
-        if (this.rtpengine) {
-          await rtpHelper.del(this.rtpengine, callId, leadFromTag);
-        }
-
-        // Update CDR
-        cdr.status = 'completed';
-        cdr.endTime = endTime;
+        cdr.status = 'completed'; cdr.endTime = endTime;
         cdr.duration = Math.round((endTime - cdr.startTime) / 1000);
-        cdr.talkTime = talkTime;
-        cdr.hangupBy = hangupBy === 'lead' ? 'caller' : 'callee';
-        cdr.hangupCause = 'normal_clearing';
-        await cdr.save();
+        cdr.talkTime = talkTime; cdr.hangupBy = hangupBy === 'lead' ? 'caller' : 'callee';
+        cdr.hangupCause = 'normal_clearing'; await cdr.save();
 
-        // Update lead
         const { Lead: LeadModel } = require('../models');
         await LeadModel.findByIdAndUpdate(lead._id, {
-          status: 'completed',
-          outcome: 'answered',
-          assignedAgent: agentExt,
-          duration: talkTime,
-          $push: { callIds: callId }
+          status: 'completed', outcome: 'answered', assignedAgent: agentExt,
+          duration: talkTime, $push: { callIds: callId }
         });
 
-        // Update stats
         this._incrementStat(campaignId, 'totalTalkTime', talkTime);
+        if (this.callHandler && this.callHandler._emitPresence) { this.callHandler._emitPresence(agentExt, 'idle'); }
 
-        // BLF idle
-        if (this.callHandler.presenceHandler) {
-          this.callHandler._emitPresence(agentExt, 'idle');
-        }
-
-        // Agent → wrap-up
         this.setAgentState(campaignId, agentExt, 'wrap-up');
         const wrapUpMs = (config.wrapUpTime || 10) * 1000;
         setTimeout(() => {
           const stateMap = this.agentStates.get(campaignId);
-          if (stateMap) {
-            const as = stateMap.get(agentExt);
-            if (as && as.state === 'wrap-up') {
-              as.state = 'idle';
-              as.since = Date.now();
-              as.callCount = (as.callCount || 0) + 1;
-              as.lastCallEnd = Date.now();
-              as.currentCallId = null;
-              logger.debug(`DIALER: agent ${agentExt} wrap-up done, now idle`);
-            }
-          }
+          if (stateMap) { const as = stateMap.get(agentExt); if (as && as.state === 'wrap-up') as.state = 'idle'; }
         }, wrapUpMs);
 
-        // Remove from active calls
         this.activeCalls.delete(callId);
-
         logger.info(`DIALER CALL ENDED: ${lead.phone} <-> ${agentExt} talk=${talkTime}s hangup=${hangupBy} [${callId}]`);
-
-        // Check if campaign is done
-        this._checkCampaignComplete(campaignId);
       };
 
       leadUac.on('destroy', () => onCallEnd('lead'));
       agentUac.on('destroy', () => onCallEnd('agent'));
 
     } catch (err) {
-      logger.error(`DIALER BRIDGE FAILED: agent ${agentExt} error=${err.message} [${callId}]`);
-      // Can't reach agent — hang up lead, mark as abandoned
+      logger.error(`DIALER BRIDGE FAILED: ${lead.phone} -> ${agentExt}: ${err.message} [${callId}]`);
       try { leadUac.destroy(); } catch (e) {}
-
-      this._incrementStat(campaignId, 'abandoned');
-      await this._callFailed(callId, campaignId, lead, agentExt, 'abandoned', config, cdr);
+      if (this.rtpengine) { try { await rtpHelper.del(this.rtpengine, callId, bridgeTag); } catch (e) {} }
+      await this._callFailed(callId, campaignId, lead, agentExt, 'bridge_failed', config, cdr);
     }
   }
 
