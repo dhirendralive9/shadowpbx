@@ -222,7 +222,7 @@ function togglePreConnect(){document.getElementById('preconnect-settings').style
 function togglePcMode(){document.getElementById('pc-press1-opts').style.display=document.getElementById('c-pc-mode').value==='press1'?'block':'none'}
 async function loadPcAudio(){
   try{
-    var d=await(await fetch(API+'/audio',{headers:H})).json();
+    var d=await(await fetch(API+'/audio/list',{headers:H})).json();
     if(!d.success||!d.files)return;
     var opts='<option value="">— none —</option>'+d.files.map(function(f){var n=f.name||f;return '<option value="'+esc(n)+'">'+esc(n)+'</option>'}).join('');
     ['c-pc-audio','c-pc-hold','c-pc-music','c-pc-patience','c-pc-optout-msg'].forEach(function(id){var el=document.getElementById(id);if(el)el.innerHTML=opts});

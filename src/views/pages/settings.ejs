@@ -843,7 +843,7 @@ async function loadAudioFiles() {
           '<td class="muted">' + Math.round(f.size / 1024) + ' KB</td>' +
           '<td class="muted" style="font-size:11px">' + fmtTime(f.modified) + '</td>' +
           '<td style="white-space:nowrap">' +
-            '<button class="act-btn" onclick="playAudio(\'' + esc(f.name) + '\',this)" title="Play"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg></button>' +
+            '<button class="act-btn" onclick="openAudioPlayer(\'' + esc(f.name) + '\')" title="Play"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg></button>' +
             '<button class="act-btn" onclick="renameAudio(\'' + esc(f.name) + '\')" title="Rename"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>' +
             '<button class="act-btn" onclick="deleteAudio(\'' + esc(f.name) + '\')" title="Delete"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg></button>' +
           '</td></tr>';
@@ -865,6 +865,32 @@ function playAudio(filename, btn) {
   a.onerror = function() { btn.innerHTML = ICON_PLAY; showToast('Could not play', true); currentAudio = null; currentBtn = null; };
   a.play(); btn.innerHTML = ICON_PAUSE; currentAudio = a; currentBtn = btn;
 }
+
+// ─── Audio Modal Player ───
+var audAudio = null, audFile = null;
+function audFmtTime(s) { if (isNaN(s) || !isFinite(s)) return '0:00'; var m = Math.floor(s/60), sec = Math.floor(s%60); return m + ':' + (sec < 10 ? '0' : '') + sec; }
+function openAudioPlayer(filename) {
+  audFile = filename;
+  document.getElementById('aud-title').textContent = filename;
+  if (audAudio) { audAudio.pause(); audAudio = null; }
+  audAudio = new Audio(API + '/audio/play/' + encodeURIComponent(filename));
+  document.getElementById('aud-cur').textContent = '0:00';
+  document.getElementById('aud-dur').textContent = '0:00';
+  document.getElementById('aud-progress').style.width = '0%';
+  document.getElementById('aud-play-btn').innerHTML = ICON_PLAY;
+  audAudio.onloadedmetadata = function() { document.getElementById('aud-dur').textContent = audFmtTime(audAudio.duration); };
+  audAudio.ontimeupdate = function() {
+    document.getElementById('aud-cur').textContent = audFmtTime(audAudio.currentTime);
+    document.getElementById('aud-progress').style.width = (audAudio.duration ? audAudio.currentTime/audAudio.duration*100 : 0) + '%';
+  };
+  audAudio.onended = function() { document.getElementById('aud-play-btn').innerHTML = ICON_PLAY; };
+  document.getElementById('aud-modal').style.display = 'flex';
+  audAudio.play().then(function() { document.getElementById('aud-play-btn').innerHTML = ICON_PAUSE; }).catch(function(){});
+}
+function audToggle() { if (!audAudio) return; if (audAudio.paused) { audAudio.play(); document.getElementById('aud-play-btn').innerHTML = ICON_PAUSE; } else { audAudio.pause(); document.getElementById('aud-play-btn').innerHTML = ICON_PLAY; } }
+function audSeek(e) { if (!audAudio || !audAudio.duration) return; var bar = document.getElementById('aud-bar'); var rect = bar.getBoundingClientRect(); audAudio.currentTime = (e.clientX - rect.left) / rect.width * audAudio.duration; }
+function audDownload() { if (!audFile) return; var a = document.createElement('a'); a.href = API + '/audio/play/' + encodeURIComponent(audFile); a.download = audFile; document.body.appendChild(a); a.click(); document.body.removeChild(a); }
+function closeAudModal() { if (audAudio) { audAudio.pause(); audAudio = null; } document.getElementById('aud-modal').style.display = 'none'; }
 async function renameAudio(oldName) {
   var baseName = oldName.replace(/\.[^.]+$/, '');
   var newName = prompt('Rename "' + oldName + '" to:', baseName);
@@ -1378,4 +1404,35 @@ if (urlParams.get('tab') === 'crm') initTab = 'crm';
 if (['blocklist', 'audio', 'sipdomains', 'dnc', 'security', 'users', 'maintenance', 'backup', 'crm', 'system'].indexOf(initTab) === -1) initTab = 'blocklist';
 switchTab(initTab);
 </script>
+
+<!-- Audio Player Modal -->
+<div id="aud-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:200;align-items:center;justify-content:center" onclick="if(event.target===this)closeAudModal()">
+  <div style="background:var(--bg-surface);border:0.5px solid var(--border);border-radius:16px;padding:24px;max-width:420px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,0.5)">
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:20px">
+      <div style="width:48px;height:48px;border-radius:12px;background:var(--accent);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="var(--bg-card)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+      </div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:16px;font-weight:700;color:var(--text-primary)">Audio File</div>
+        <div style="font-size:12px;color:var(--text-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" id="aud-title">—</div>
+      </div>
+      <button onclick="closeAudModal()" style="background:none;border:none;cursor:pointer;color:var(--text-tertiary);font-size:20px;padding:4px">&times;</button>
+    </div>
+    <div style="background:var(--bg-primary);border-radius:12px;padding:16px;margin-bottom:16px">
+      <div style="display:flex;align-items:center;gap:12px">
+        <button id="aud-play-btn" onclick="audToggle()" style="background:none;border:none;cursor:pointer;color:var(--text-primary);width:28px;height:28px;flex-shrink:0"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg></button>
+        <span id="aud-cur" style="font-size:12px;color:var(--text-secondary);font-family:var(--mono);min-width:34px">0:00</span>
+        <div id="aud-bar" onclick="audSeek(event)" style="flex:1;height:6px;background:var(--bg-tertiary);border-radius:3px;cursor:pointer">
+          <div id="aud-progress" style="height:100%;width:0%;background:var(--accent);border-radius:3px;transition:width 0.1s"></div>
+        </div>
+        <span id="aud-dur" style="font-size:12px;color:var(--text-secondary);font-family:var(--mono);min-width:34px">0:00</span>
+      </div>
+    </div>
+    <button onclick="audDownload()" class="btn btn-primary" style="width:100%;display:flex;align-items:center;justify-content:center;gap:8px;padding:12px;border-radius:10px;font-size:14px;font-weight:600">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Download
+    </button>
+  </div>
+</div>
+
 <%- include('../partials/foot') %>
