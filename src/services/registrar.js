@@ -14,6 +14,7 @@ class Registrar {
     // In-memory contact cache: extension -> [{ ip, port, userAgent, expires, registeredAt }]
     // This avoids hitting MongoDB on every INVITE for contact lookups
     this.contactCache = new Map();
+    this.securityTracker = null;  // set after construction
 
     // Clean expired nonces every 5 min
     setInterval(() => this._cleanNonces(), 300000);
@@ -69,6 +70,7 @@ class Registrar {
     const extension = await Extension.findOne({ extension: ext, enabled: true });
     if (!extension) {
       logger.warn(`REGISTER rejected: unknown extension ${ext}`);
+      if (this.securityTracker) this.securityTracker.record(req.source_address, 'REGISTER unknown extension', req.get('User-Agent'), ext);
       return res.send(403);
     }
 

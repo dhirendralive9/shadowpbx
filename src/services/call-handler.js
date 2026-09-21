@@ -18,6 +18,7 @@ class CallHandler {
     this.voicemailHandler = null; // set after construction
     this.ivrHandler = null;       // set after construction
     this.presenceHandler = null;  // set after construction (BLF/presence)
+    this.securityTracker = null;  // set after construction (attack tracking)
     this.rtpengineConfig = {
       host: process.env.RTPENGINE_HOST || '127.0.0.1',
       port: parseInt(process.env.RTPENGINE_PORT) || 22222
@@ -69,6 +70,7 @@ class CallHandler {
         if (handled) return;
       }
       logger.warn(`INVITE rejected: cannot parse extension from From-URI: ${fromUri}`);
+      if (this.securityTracker) this.securityTracker.record(req.source_address, 'INVITE cannot parse extension', req.get('User-Agent'), toExt || fromUri);
       return res.send(404);
     }
 
@@ -81,6 +83,7 @@ class CallHandler {
         if (handled) return;
       }
       logger.warn(`INVITE rejected: caller ${fromExt} not registered`);
+      if (this.securityTracker) this.securityTracker.record(req.source_address, 'INVITE caller not registered', req.get('User-Agent'), toExt || '');
       return res.send(403);
     }
 
@@ -545,6 +548,7 @@ class CallHandler {
     });
     if (!allowedEntry) {
       logger.info(`EXTERNAL SIP: ${callerDomain} (src=${sourceIp}) not in whitelist, rejecting`);
+      if (this.securityTracker) this.securityTracker.record(sourceIp, 'external SIP not whitelisted', req.get('User-Agent'), toExt || '');
       return false;
     }
 

@@ -2,7 +2,7 @@ const express = require('express');
 const { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, CDR } = require('../models');
 const logger = require('../utils/logger');
 
-function createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler, monitorHandler, timeConditionService, presenceHandler, queueHandler, appointmentHandler, dialerEngine) {
+function createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler, monitorHandler, timeConditionService, presenceHandler, queueHandler, appointmentHandler, dialerEngine, securityTracker) {
   const router = express.Router();
 
   // ============================================================
@@ -1785,6 +1785,39 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   // ============================================================
   const registerSettingsRoutes = require('./settings-api');
   registerSettingsRoutes(router);
+
+  // ============================================================
+  // Security — attack tracking and IP blocking
+  // ============================================================
+  router.get('/security/attackers', (req, res) => {
+    if (!securityTracker) return res.json({ success: true, attackers: [], stats: {} });
+    res.json({
+      success: true,
+      attackers: securityTracker.getAttackers(parseInt(req.query.limit) || 100),
+      stats: securityTracker.getStats()
+    });
+  });
+
+  router.post('/security/block', async (req, res) => {
+    if (!securityTracker) return res.status(503).json({ success: false, error: 'Security tracker not available' });
+    const { ip } = req.body;
+    if (!ip) return res.status(400).json({ success: false, error: 'IP required' });
+    const result = await securityTracker.blockIp(ip);
+    res.json(result);
+  });
+
+  router.post('/security/unblock', async (req, res) => {
+    if (!securityTracker) return res.status(503).json({ success: false, error: 'Security tracker not available' });
+    const { ip } = req.body;
+    if (!ip) return res.status(400).json({ success: false, error: 'IP required' });
+    const result = await securityTracker.unblockIp(ip);
+    res.json(result);
+  });
+
+  router.post('/security/clear', (req, res) => {
+    if (securityTracker) securityTracker.clearTracking();
+    res.json({ success: true, message: 'Tracking cleared' });
+  });
 
   return router;
 }

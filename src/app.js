@@ -152,6 +152,12 @@ async function main() {
   const timeConditionService = new TimeConditionService();
   const callRouter = new CallRouter(timeConditionService);
   const callHandler = new CallHandler(srf, registrar, rtpengine, ringGroupHandler, trunkManager, callRouter);
+
+  // Security tracker — monitors attacks, manages IP blocking
+  const SecurityTracker = require('./services/security-tracker');
+  const securityTracker = new SecurityTracker();
+  callHandler.securityTracker = securityTracker;
+  registrar.securityTracker = securityTracker;
   const transferHandler = new TransferHandler(srf, registrar, callHandler, trunkManager, callRouter);
   const holdHandler = new HoldHandler(srf, rtpengine, callHandler);
   const parkHandler = new ParkHandler(srf, registrar, callHandler, holdHandler);
@@ -295,7 +301,7 @@ async function main() {
     next();
   });
 
-  app.use('/api', createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler, monitorHandler, timeConditionService, presenceHandler, queueHandler, appointmentHandler, dialerEngine));
+  app.use('/api', createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler, monitorHandler, timeConditionService, presenceHandler, queueHandler, appointmentHandler, dialerEngine, securityTracker));
   // ─── Health & Monitoring Endpoint ───
   app.get('/health', async (req, res) => {
     const uptime = process.uptime();

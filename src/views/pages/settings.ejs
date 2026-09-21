@@ -6,6 +6,7 @@
   <a href="#audio" class="sub-tab" data-tab="audio" onclick="switchTab('audio')">Audio library</a>
   <a href="#sipdomains" class="sub-tab" data-tab="sipdomains" onclick="switchTab('sipdomains')">SIP Domains</a>
   <a href="#dnc" class="sub-tab" data-tab="dnc" onclick="switchTab('dnc')">DNC list</a>
+  <a href="#security" class="sub-tab" data-tab="security" onclick="switchTab('security')">Security</a>
   <a href="#users" class="sub-tab" data-tab="users" onclick="switchTab('users')">Users</a>
   <a href="#maintenance" class="sub-tab" data-tab="maintenance" onclick="switchTab('maintenance')">Maintenance</a>
   <a href="#backup" class="sub-tab" data-tab="backup" onclick="switchTab('backup')">Backup</a>
@@ -218,6 +219,34 @@
   </div>
 
   <div id="dnc-list"></div>
+</div>
+
+<!-- ═══════════════════ SECURITY ═══════════════════ -->
+<div id="panel-security" class="settings-panel">
+  <div class="sec-head">
+    <span class="sec-title">Security — attack monitor</span>
+    <div style="display:flex;align-items:center;gap:10px">
+      <span class="muted" style="font-size:11px" id="sec-summary"></span>
+      <button class="btn btn-sm" onclick="loadSecurity()">Refresh</button>
+      <button class="btn btn-sm" onclick="clearSecTracking()">Clear log</button>
+    </div>
+  </div>
+
+  <div style="margin-bottom:12px;padding:10px;background:var(--bg-surface);border-radius:var(--radius);font-size:12px;color:var(--text-secondary)">
+    Live view of IPs attempting unauthorized SIP access (fake extensions, toll-fraud INVITEs, scanners).
+    Click <b>Block</b> to add an IP to the firewall (iptables DROP). Blocked IPs are shown with a red badge.
+  </div>
+
+  <!-- Manual block -->
+  <div style="margin-bottom:12px;display:flex;gap:8px">
+    <input class="form-input" id="sec-manual-ip" placeholder="Block an IP manually (e.g. 1.2.3.4)" style="max-width:280px">
+    <button class="btn btn-sm btn-danger" onclick="blockManualIp()">Block IP</button>
+  </div>
+
+  <!-- Stat cards -->
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px" id="sec-stats"></div>
+
+  <div id="sec-list"></div>
 </div>
 
 <!-- ═══════════════════ MAINTENANCE ═══════════════════ -->
@@ -524,6 +553,7 @@ function switchTab(tab) {
   if (tab === 'audio') loadAudioFiles();
   if (tab === 'sipdomains') loadSipDomains();
   if (tab === 'dnc') loadDnc();
+  if (tab === 'security') loadSecurity();
   if (tab === 'users') loadUsers();
   if (tab === 'maintenance') { loadSettings(); loadStorage(); }
   if (tab === 'backup') { loadDbStats(); loadBackups(); loadSettings(); }
@@ -1193,6 +1223,67 @@ async function saveEditUser(e) {
   } else { showToast(d.error || 'Update failed', true); }
 }
 
+// ═══════════════════ Security / Attack Monitor ═══════════════════
+async function loadSecurity() {
+  try {
+    var d = await (await fetch(API + '/security/attackers?limit=100', { headers: H })).json();
+    if (!d.success) return;
+    var s = d.stats || {};
+    document.getElementById('sec-stats').innerHTML =
+      '<div style="background:var(--bg-surface);border:0.5px solid var(--border);border-radius:var(--radius);padding:12px 16px"><div style="font-size:22px;font-weight:700">' + (s.uniqueIps || 0) + '</div><div style="font-size:11px;color:var(--text-tertiary)">Unique attacker IPs</div></div>' +
+      '<div style="background:var(--bg-surface);border:0.5px solid var(--border);border-radius:var(--radius);padding:12px 16px"><div style="font-size:22px;font-weight:700;color:var(--color-warn)">' + (s.totalAttempts || 0) + '</div><div style="font-size:11px;color:var(--text-tertiary)">Total attempts</div></div>' +
+      '<div style="background:var(--bg-surface);border:0.5px solid var(--border);border-radius:var(--radius);padding:12px 16px"><div style="font-size:22px;font-weight:700;color:var(--color-error)">' + (s.blockedCount || 0) + '</div><div style="font-size:11px;color:var(--text-tertiary)">Blocked IPs</div></div>';
+
+    document.getElementById('sec-summary').textContent = (d.attackers || []).length + ' IP(s) tracked';
+
+    if (!d.attackers || !d.attackers.length) {
+      document.getElementById('sec-list').innerHTML = '<div class="card"><div class="empty">No attacks recorded yet</div></div>';
+      return;
+    }
+
+    document.getElementById('sec-list').innerHTML = '<table class="tbl"><thead><tr><th>IP Address</th><th>Attempts</th><th>Reasons</th><th>User-Agent</th><th>Targets</th><th>Last seen</th><th></th></tr></thead><tbody>' +
+      d.attackers.map(function(a) {
+        var timeSince = Math.round((Date.now() - a.lastSeen) / 1000);
+        var timeStr = timeSince < 60 ? timeSince + 's ago' : timeSince < 3600 ? Math.round(timeSince/60) + 'm ago' : Math.round(timeSince/3600) + 'h ago';
+        return '<tr' + (a.blocked ? ' style="opacity:0.5"' : '') + '>' +
+          '<td class="mono" style="font-weight:600">' + esc(a.ip) + (a.blocked ? ' <span class="pill p-err" style="font-size:9px">BLOCKED</span>' : '') + '</td>' +
+          '<td><span class="pill ' + (a.count > 20 ? 'p-err' : a.count > 5 ? 'p-warn' : 'p-gray') + '">' + a.count + '</span></td>' +
+          '<td style="font-size:11px">' + (a.reasons || []).map(esc).join(', ') + '</td>' +
+          '<td style="font-size:11px" class="muted">' + (a.userAgents || []).map(esc).join(', ').substring(0, 40) + '</td>' +
+          '<td style="font-size:11px" class="mono muted">' + (a.sampleTargets || []).slice(0,3).map(esc).join(', ') + '</td>' +
+          '<td style="font-size:11px" class="muted">' + timeStr + '</td>' +
+          '<td style="text-align:right">' + (a.blocked
+            ? '<button class="btn btn-sm" onclick="unblockIp(\'' + esc(a.ip) + '\')">Unblock</button>'
+            : '<button class="btn btn-sm btn-danger" onclick="blockIp(\'' + esc(a.ip) + '\')">Block</button>') +
+          '</td></tr>';
+      }).join('') + '</tbody></table>';
+  } catch (e) { console.error('security load', e); }
+}
+
+async function blockIp(ip) {
+  if (!confirm('Block ' + ip + ' via firewall? All traffic from this IP will be dropped.')) return;
+  var d = await (await fetch(API + '/security/block', { method: 'POST', headers: J, body: JSON.stringify({ ip: ip }) })).json();
+  if (d.success) { showToast('Blocked ' + ip); loadSecurity(); } else showToast(d.error || 'Block failed', true);
+}
+
+async function unblockIp(ip) {
+  var d = await (await fetch(API + '/security/unblock', { method: 'POST', headers: J, body: JSON.stringify({ ip: ip }) })).json();
+  if (d.success) { showToast('Unblocked ' + ip); loadSecurity(); } else showToast(d.error || 'Unblock failed', true);
+}
+
+async function blockManualIp() {
+  var ip = document.getElementById('sec-manual-ip').value.trim();
+  if (!ip) return;
+  var d = await (await fetch(API + '/security/block', { method: 'POST', headers: J, body: JSON.stringify({ ip: ip }) })).json();
+  if (d.success) { showToast('Blocked ' + ip); document.getElementById('sec-manual-ip').value = ''; loadSecurity(); } else showToast(d.error || 'Block failed', true);
+}
+
+async function clearSecTracking() {
+  if (!confirm('Clear the attack tracking log? (Blocked IPs stay blocked)')) return;
+  await fetch(API + '/security/clear', { method: 'POST', headers: H });
+  showToast('Tracking cleared'); loadSecurity();
+}
+
 // ═══════════════════ DNC Management ═══════════════════
 async function loadDnc() {
   try {
@@ -1284,7 +1375,7 @@ var initTab = window.location.hash.replace('#', '') || 'blocklist';
 // Handle OAuth redirect: ?tab=crm
 var urlParams = new URLSearchParams(window.location.search);
 if (urlParams.get('tab') === 'crm') initTab = 'crm';
-if (['blocklist', 'audio', 'sipdomains', 'dnc', 'users', 'maintenance', 'backup', 'crm', 'system'].indexOf(initTab) === -1) initTab = 'blocklist';
+if (['blocklist', 'audio', 'sipdomains', 'dnc', 'security', 'users', 'maintenance', 'backup', 'crm', 'system'].indexOf(initTab) === -1) initTab = 'blocklist';
 switchTab(initTab);
 </script>
 <%- include('../partials/foot') %>
