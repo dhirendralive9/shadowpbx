@@ -228,8 +228,7 @@ async function loadCDR() {
         '<td>' + dispPill(c.disposition) + '</td>' +
         '<td style="white-space:nowrap">' +
           (c.recordingPath
-            ? '<button class="act-btn" onclick="playRec(\'' + esc(c.callId) + '\',this)" title="Play"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg></button>' +
-              '<a class="act-btn" href="' + API + '/cdr/' + c.callId + '/recording" download title="Download"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></a>'
+            ? '<button class="act-btn" onclick="openRecPlayer(\'' + esc(c.callId) + '\',\'' + esc(c.from) + '\',\'' + esc(c.to) + '\')" title="Play recording"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg></button>'
             : '<span class="muted" style="font-size:10px">-</span>') +
         '</td>' +
         '<td>' +
@@ -321,6 +320,90 @@ async function exportCSV() {
 var ICON_PLAY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>';
 var ICON_PAUSE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>';
 
+// ─── Recording Player Modal ───
+var recAudio = null;
+var recCallId = null;
+
+function recFmtTime(s) {
+  if (isNaN(s) || !isFinite(s)) return '0:00';
+  var m = Math.floor(s / 60), sec = Math.floor(s % 60);
+  return m + ':' + (sec < 10 ? '0' : '') + sec;
+}
+
+function openRecPlayer(callId, from, to) {
+  recCallId = callId;
+  // Determine a friendly title from the "to" field (dialer format: "phone -> ext")
+  var num = to;
+  if (to && to.indexOf('->') >= 0) num = to.split('->')[0].trim();
+  else if (from && from.length > 6) num = from;
+  document.getElementById('rec-title-num').textContent = num || callId;
+
+  // Stop any existing
+  if (recAudio) { recAudio.pause(); recAudio = null; }
+  recAudio = new Audio(API + '/cdr/' + callId + '/recording');
+
+  document.getElementById('rec-cur').textContent = '0:00';
+  document.getElementById('rec-dur').textContent = '0:00';
+  document.getElementById('rec-progress').style.width = '0%';
+  document.getElementById('rec-play-btn').innerHTML = ICON_PLAY;
+
+  recAudio.onloadedmetadata = function() {
+    document.getElementById('rec-dur').textContent = recFmtTime(recAudio.duration);
+  };
+  recAudio.ontimeupdate = function() {
+    document.getElementById('rec-cur').textContent = recFmtTime(recAudio.currentTime);
+    var pct = recAudio.duration ? (recAudio.currentTime / recAudio.duration * 100) : 0;
+    document.getElementById('rec-progress').style.width = pct + '%';
+  };
+  recAudio.onended = function() {
+    document.getElementById('rec-play-btn').innerHTML = ICON_PLAY;
+  };
+  recAudio.onerror = function() {
+    document.getElementById('rec-title-num').textContent = 'Recording not available';
+  };
+
+  document.getElementById('rec-modal').style.display = 'flex';
+  // Auto-play
+  recAudio.play().then(function() {
+    document.getElementById('rec-play-btn').innerHTML = ICON_PAUSE;
+  }).catch(function() {});
+}
+
+function recTogglePlay() {
+  if (!recAudio) return;
+  if (recAudio.paused) {
+    recAudio.play();
+    document.getElementById('rec-play-btn').innerHTML = ICON_PAUSE;
+  } else {
+    recAudio.pause();
+    document.getElementById('rec-play-btn').innerHTML = ICON_PLAY;
+  }
+}
+
+function recSeek(e) {
+  if (!recAudio || !recAudio.duration) return;
+  var bar = document.getElementById('rec-bar');
+  var rect = bar.getBoundingClientRect();
+  var pct = (e.clientX - rect.left) / rect.width;
+  recAudio.currentTime = pct * recAudio.duration;
+}
+
+function recDownload() {
+  if (!recCallId) return;
+  var a = document.createElement('a');
+  a.href = API + '/cdr/' + recCallId + '/recording';
+  a.download = 'recording-' + recCallId + '.wav';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+function closeRecModal() {
+  if (recAudio) { recAudio.pause(); recAudio = null; }
+  document.getElementById('rec-modal').style.display = 'none';
+}
+
+// Legacy inline player (kept for compatibility)
 var currentAudio = null;
 var currentBtn = null;
 function playRec(callId, btn) {
@@ -440,4 +523,40 @@ function showToast(msg, isError) {
 // Init with today's calls
 setPreset('today');
 </script>
+
+<!-- Recording Player Modal -->
+<div id="rec-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:200;align-items:center;justify-content:center" onclick="if(event.target===this)closeRecModal()">
+  <div style="background:var(--bg-surface);border:0.5px solid var(--border);border-radius:16px;padding:24px;max-width:420px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,0.5)">
+    <!-- Header -->
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:20px">
+      <div style="width:48px;height:48px;border-radius:12px;background:var(--accent);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+      </div>
+      <div style="flex:1">
+        <div style="font-size:16px;font-weight:700;color:var(--text-primary)">Call Recording</div>
+        <div style="font-size:12px;color:var(--text-tertiary)" id="rec-title-num">—</div>
+      </div>
+      <button onclick="closeRecModal()" style="background:none;border:none;cursor:pointer;color:var(--text-tertiary);font-size:20px;padding:4px">&times;</button>
+    </div>
+
+    <!-- Player -->
+    <div style="background:var(--bg-primary);border-radius:12px;padding:16px;margin-bottom:16px">
+      <div style="display:flex;align-items:center;gap:12px">
+        <button id="rec-play-btn" onclick="recTogglePlay()" style="background:none;border:none;cursor:pointer;color:var(--text-primary);width:28px;height:28px;flex-shrink:0"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg></button>
+        <span id="rec-cur" style="font-size:12px;color:var(--text-secondary);font-family:var(--mono);min-width:34px">0:00</span>
+        <div id="rec-bar" onclick="recSeek(event)" style="flex:1;height:6px;background:var(--bg-tertiary);border-radius:3px;cursor:pointer;position:relative">
+          <div id="rec-progress" style="height:100%;width:0%;background:var(--accent);border-radius:3px;transition:width 0.1s"></div>
+        </div>
+        <span id="rec-dur" style="font-size:12px;color:var(--text-secondary);font-family:var(--mono);min-width:34px">0:00</span>
+      </div>
+    </div>
+
+    <!-- Download button -->
+    <button onclick="recDownload()" class="btn btn-primary" style="width:100%;display:flex;align-items:center;justify-content:center;gap:8px;padding:12px">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Download Recording
+    </button>
+  </div>
+</div>
+
 <%- include('../partials/foot') %>
