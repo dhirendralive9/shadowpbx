@@ -187,14 +187,15 @@ function convertPcap(pcapFileName) {
       if [ "$SSRC_COUNT" -ge 2 ]; then
         SSRC1=$(echo "$SSRCS" | head -1)
         SSRC2=$(echo "$SSRCS" | head -2 | tail -1)
-        tshark -n -r "${pcapPath}" -o rtp.heuristic_rtp:TRUE -Y "rtp.ssrc==$SSRC1" -T fields -e rtp.payload 2>/dev/null | tr -d '\\n' | xxd -r -p > "${raw1}"
-        tshark -n -r "${pcapPath}" -o rtp.heuristic_rtp:TRUE -Y "rtp.ssrc==$SSRC2" -T fields -e rtp.payload 2>/dev/null | tr -d '\\n' | xxd -r -p > "${raw2}"
+        # Extract payloads sorted by RTP sequence number (prevents crackling from out-of-order packets)
+        tshark -n -r "${pcapPath}" -o rtp.heuristic_rtp:TRUE -Y "rtp.ssrc==$SSRC1" -T fields -e rtp.seq -e rtp.payload 2>/dev/null | sort -n -k1 | awk '{print $2}' | tr -d '\\n' | xxd -r -p > "${raw1}"
+        tshark -n -r "${pcapPath}" -o rtp.heuristic_rtp:TRUE -Y "rtp.ssrc==$SSRC2" -T fields -e rtp.seq -e rtp.payload 2>/dev/null | sort -n -k1 | awk '{print $2}' | tr -d '\\n' | xxd -r -p > "${raw2}"
         sox -t raw -r 8000 -e mu-law -b 8 -c 1 "${raw1}" "${wav1}" 2>/dev/null
         sox -t raw -r 8000 -e mu-law -b 8 -c 1 "${raw2}" "${wav2}" 2>/dev/null
         sox -M "${wav1}" "${wav2}" "${wavPath}" 2>/dev/null
         rm -f "${raw1}" "${raw2}" "${wav1}" "${wav2}"
       else
-        tshark -n -r "${pcapPath}" -o rtp.heuristic_rtp:TRUE -Y rtp -T fields -e rtp.payload 2>/dev/null | tr -d '\\n' | xxd -r -p > "${rawPath}"
+        tshark -n -r "${pcapPath}" -o rtp.heuristic_rtp:TRUE -Y rtp -T fields -e rtp.seq -e rtp.payload 2>/dev/null | sort -n -k1 | awk '{print $2}' | tr -d '\\n' | xxd -r -p > "${rawPath}"
         if [ -s "${rawPath}" ]; then
           sox -t raw -r 8000 -e mu-law -b 8 -c 1 "${rawPath}" "${wavPath}" 2>/dev/null
         fi
