@@ -487,8 +487,27 @@ async function main() {
         return { ...e, registrations: contacts, online: contacts.length > 0, presence: presence.state };
       });
 
+      // Merge regular calls + dialer calls for dashboard
+      let allActiveCalls = activeCalls || [];
+      if (dialerEngine && dialerEngine.activeCalls) {
+        for (const [id, call] of dialerEngine.activeCalls) {
+          if (call.status === 'connected' || call.status === 'ringing') {
+            allActiveCalls.push({
+              callId: id,
+              from: call.lead ? call.lead.phone : 'dialer',
+              to: call.agentExt || '—',
+              duration: call.connectedAt ? Math.round((Date.now() - call.connectedAt) / 1000) : 0,
+              status: call.status === 'connected' ? 'answered' : call.status,
+              source: 'dialer',
+              leadName: call.lead ? call.lead.name : '',
+              company: call.lead ? call.lead.company : ''
+            });
+          }
+        }
+      }
+
       const state = {
-        activeCalls: activeCalls || [],
+        activeCalls: allActiveCalls,
         extensions: enrichedExts,
         trunks,
         recentCDR,
