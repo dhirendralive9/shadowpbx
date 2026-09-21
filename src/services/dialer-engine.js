@@ -63,12 +63,23 @@ class DialerEngine {
     if (!campaign.agents || campaign.agents.length === 0) throw new Error('No agents assigned');
     if (!campaign.trunk && !campaign.outboundRoute) throw new Error('No trunk or outbound route configured');
 
+    // If restarting a stopped/completed campaign, reset failed/no-answer leads back to pending
+    if (campaign.status === 'stopped' || campaign.status === 'completed') {
+      const resetResult = await Lead.updateMany(
+        { campaignId: campaign._id, status: { $in: ['failed', 'calling'] } },
+        { $set: { status: 'pending', nextAttempt: null } }
+      );
+      if (resetResult.modifiedCount > 0) {
+        logger.info(`DIALER: reset ${resetResult.modifiedCount} failed/stale leads to pending for campaign ${campaignId}`);
+      }
+    }
+
     // Count leads
     const pendingLeads = await Lead.countDocuments({
       campaignId: campaign._id,
       status: { $in: ['pending', 'scheduled'] }
     });
-    if (pendingLeads === 0) throw new Error('No pending leads in campaign');
+    if (pendingLeads === 0) throw new Error('No pending leads in campaign (all completed or DNC)');
 
     // Initialize agent states
     const stateMap = new Map();
@@ -176,7 +187,7 @@ class DialerEngine {
     await this._flushStats(campaignId);
 
     const campaign = await Campaign.findByIdAndUpdate(campaignId, {
-      status: 'completed', completedAt: new Date()
+      status: 'stopped', stoppedAt: new Date()
     }, { new: true });
 
     // Clean up agent states
