@@ -1034,7 +1034,7 @@ class DialerEngine {
         if (m) {
           const digit = m[1].trim();
           logger.info(`DIALER PRE-CONNECT: DTMF ${digit} via SIP INFO [${callId}]`);
-          this._handlePreConnectKey(digit, pc, lead, finish);
+          this._handlePreConnectKey(digit, pc, lead, finish, callId, fromTag);
         }
         try { infoRes.send(200); } catch (e) {}
       };
@@ -1044,7 +1044,7 @@ class DialerEngine {
       if (this.dtmfListener) {
         this.dtmfListener.register(callId, (digit) => {
           logger.info(`DIALER PRE-CONNECT: DTMF ${digit} via RTPEngine [${callId}]`);
-          this._handlePreConnectKey(digit, pc, lead, finish);
+          this._handlePreConnectKey(digit, pc, lead, finish, callId, fromTag);
         }, fromTag);
       }
 
@@ -1059,20 +1059,38 @@ class DialerEngine {
     });
   }
 
-  async _handlePreConnectKey(digit, pc, lead, finish) {
+  async _handlePreConnectKey(digit, pc, lead, finish, callId, fromTag) {
     if (digit === (pc.confirmKey || '1')) {
+      // Press 1 → play "please hold" message, then bridge
+      if (pc.holdMessage) {
+        try {
+          const holdPath = pc.holdMessage.startsWith('/audio/') ? pc.holdMessage : '/audio/' + pc.holdMessage;
+          await this.rtpengine.playMedia(this.rtpengineConfig, { 'call-id': callId, 'from-tag': fromTag, 'file': holdPath });
+          await this._sleep(2000);
+        } catch (e) {}
+      }
       finish(true); // bridge to agent
-    } else if (digit === (pc.optOutKey || '9')) {
-      // Add to DNC
-      try {
-        const { DNC } = require('../models');
-        await DNC.updateOne(
-          { phone: lead.phone },
-          { $set: { phone: lead.phone, reason: 'Opted out via pre-connect IVR', source: 'campaign', addedBy: 'system' } },
-          { upsert: true }
-        );
-        logger.info(`DIALER PRE-CONNECT: ${lead.phone} opted out, added to DNC`);
-      } catch (e) {}
+    } else if (digit === (pc.optOutKey || '2')) {
+      // Press 2 → play "thank you" message, then hang up
+      if (pc.optOutMessage) {
+        try {
+          const byePath = pc.optOutMessage.startsWith('/audio/') ? pc.optOutMessage : '/audio/' + pc.optOutMessage;
+          await this.rtpengine.playMedia(this.rtpengineConfig, { 'call-id': callId, 'from-tag': fromTag, 'file': byePath });
+          await this._sleep(2500);
+        } catch (e) {}
+      }
+      // Add to DNC if configured
+      if (pc.optOutAddDnc !== false) {
+        try {
+          const { DNC } = require('../models');
+          await DNC.updateOne(
+            { phone: lead.phone },
+            { $set: { phone: lead.phone, reason: 'Opted out via pre-connect IVR', source: 'campaign', addedBy: 'system' } },
+            { upsert: true }
+          );
+          logger.info(`DIALER PRE-CONNECT: ${lead.phone} opted out, added to DNC`);
+        } catch (e) {}
+      }
       finish(false); // hang up
     }
     // Other keys ignored — keep waiting
@@ -1107,6 +1125,24 @@ class DialerEngine {
 
     logger.info(`DIALER BRIDGE: ${lead.phone} -> agent ${agentExt} at ${agentUri} [${callId}]`);
 
+    // Play hold music to the lead while the agent's phone rings (if configured)
+    const pc = config.preConnect || {};
+    const leadHoldTag = leadUac.sip ? leadUac.sip.remoteTag : null;
+    let patienceTimer = null;
+    if (pc.enabled && pc.holdMusic) {
+      try {
+        const musicPath = pc.holdMusic.startsWith('/audio/') ? pc.holdMusic : '/audio/' + pc.holdMusic;
+        this.rtpengine.playMedia(this.rtpengineConfig, { 'call-id': callId, 'from-tag': leadHoldTag, 'file': musicPath }).catch(() => {});
+        // Schedule "thanks for your patience" message if wait is long
+        if (pc.patienceMessage) {
+          patienceTimer = setTimeout(() => {
+            const patiencePath = pc.patienceMessage.startsWith('/audio/') ? pc.patienceMessage : '/audio/' + pc.patienceMessage;
+            this.rtpengine.playMedia(this.rtpengineConfig, { 'call-id': callId, 'from-tag': leadHoldTag, 'file': patiencePath }).catch(() => {});
+          }, (pc.patienceAfter || 20) * 1000);
+        }
+      } catch (e) {}
+    }
+
     try {
       // Get lead's SDP
       const leadSdp = leadUac.remote ? leadUac.remote.sdp : '';
@@ -1138,6 +1174,12 @@ class DialerEngine {
       });
 
       logger.info(`DIALER BRIDGED: ${lead.phone} <-> ${agentExt} [${callId}]`);
+
+      // Agent connected — stop hold music and cancel patience message
+      if (patienceTimer) { clearTimeout(patienceTimer); patienceTimer = null; }
+      if (pc.enabled && pc.holdMusic && this.rtpengine) {
+        try { this.rtpengine.stopMedia && this.rtpengine.stopMedia(this.rtpengineConfig, { 'call-id': callId, 'from-tag': leadHoldTag }); } catch (e) {}
+      }
 
       // RTPEngine answer with agent's SDP
       let rtpAnswerSdp = null;
@@ -1216,6 +1258,7 @@ class DialerEngine {
 
     } catch (err) {
       logger.error(`DIALER BRIDGE FAILED: ${lead.phone} -> ${agentExt}: ${err.message} [${callId}]`);
+      if (patienceTimer) { clearTimeout(patienceTimer); }
       try { leadUac.destroy(); } catch (e) {}
       if (this.rtpengine) { try { await rtpHelper.del(this.rtpengine, callId, bridgeTag); } catch (e) {} }
       await this._callFailed(callId, campaignId, lead, agentExt, 'bridge_failed', config, cdr);

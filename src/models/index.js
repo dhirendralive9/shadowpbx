@@ -318,10 +318,18 @@ const campaignSchema = new mongoose.Schema({
   preConnect: {
     enabled: { type: Boolean, default: false },
     mode: { type: String, enum: ['press1', 'announce'], default: 'press1' }, // press1 = require key, announce = just play
-    audioFile: { type: String, default: '' },       // audio file name from library
-    confirmKey: { type: String, default: '1' },      // key that confirms interest (press1 mode)
-    optOutKey: { type: String, default: '9' },       // key that adds to DNC (press1 mode)
-    timeout: { type: Number, default: 8 }            // seconds to wait for keypress
+    audioFile: { type: String, default: '' },       // main intro message
+    confirmKey: { type: String, default: '1' },      // key that confirms interest
+    optOutKey: { type: String, default: '2' },       // key that opts out
+    timeout: { type: Number, default: 8 },           // seconds to wait for keypress
+    // Press-1 (confirm) action
+    holdMessage: { type: String, default: '' },      // "please hold" audio played after confirm
+    holdMusic: { type: String, default: '' },        // music while waiting for an agent
+    patienceMessage: { type: String, default: '' },  // "thanks for your patience" if wait is long
+    patienceAfter: { type: Number, default: 20 },    // seconds before playing patience message
+    // Press-2 (opt-out) action
+    optOutMessage: { type: String, default: '' },    // "thank you" audio played before hangup
+    optOutAddDnc: { type: Boolean, default: true }   // add to DNC on opt-out
   },
 
   // Schedule
