@@ -22,12 +22,13 @@ function normalizePhone(raw) {
 }
 
 class DialerEngine {
-  constructor(srf, rtpengine, registrar, trunkManager, callHandler) {
+  constructor(srf, rtpengine, registrar, trunkManager, callHandler, dtmfListener) {
     this.srf = srf;
     this.rtpengine = rtpengine;
     this.registrar = registrar;
     this.trunkManager = trunkManager;
     this.callHandler = callHandler;
+    this.dtmfListener = dtmfListener || null;
     this.rtpengineConfig = {
       host: process.env.RTPENGINE_HOST || '127.0.0.1',
       port: parseInt(process.env.RTPENGINE_PORT) || 22222
@@ -528,6 +529,20 @@ class DialerEngine {
       await cdr.save();
 
       this._incrementStat(campaignId, 'answered');
+
+      // ─── Pre-connect IVR / whisper message ───
+      if (config.preConnect && config.preConnect.enabled && config.preConnect.audioFile) {
+        const proceed = await this._playPreConnect(callId, uac, lead, campaignId, config);
+        if (!proceed) {
+          // Lead opted out or didn't press the key — hang up, don't bridge
+          logger.info(`DIALER PRE-CONNECT: ${lead.phone} did not confirm [${callId}]`);
+          try { uac.destroy(); } catch (e) {}
+          this.activeCalls.delete(callId);
+          return;
+        }
+        logger.info(`DIALER PRE-CONNECT: ${lead.phone} confirmed, bridging [${callId}]`);
+      }
+
       await this._bridgeToAgent(callId, campaignId, uac, lead, agentExt, config, cdr);
 
     } catch (err) {
@@ -972,6 +987,98 @@ class DialerEngine {
 
     logger.info('DIALER: webhook routes registered at /webhook/dialer/');
   }
+
+  // ============================================================
+  // PRE-CONNECT IVR — play a message to the lead, optionally require keypress
+  // Returns true if the lead should be bridged to an agent, false to hang up
+  // ============================================================
+  async _playPreConnect(callId, leadUac, lead, campaignId, config) {
+    const pc = config.preConnect;
+    const fromTag = leadUac.sip ? leadUac.sip.remoteTag : null;
+    const audioPath = pc.audioFile.startsWith('/audio/') ? pc.audioFile : '/audio/' + pc.audioFile;
+
+    // Play the audio message
+    try {
+      if (this.rtpengine && this.rtpengine.playMedia) {
+        await this.rtpengine.playMedia(this.rtpengineConfig, {
+          'call-id': callId,
+          'from-tag': fromTag,
+          'file': audioPath
+        });
+      }
+    } catch (e) {
+      logger.warn(`DIALER PRE-CONNECT: playMedia failed [${callId}]: ${e.message}`);
+    }
+
+    // Announce mode: just play the message, then bridge (no keypress needed)
+    if (pc.mode === 'announce') {
+      await this._sleep(2000); // let the message finish
+      return true;
+    }
+
+    // Press-1 mode: wait for the confirmation key
+    return await new Promise((resolve) => {
+      let resolved = false;
+      const finish = (result) => {
+        if (resolved) return;
+        resolved = true;
+        if (this.dtmfListener) this.dtmfListener.unregister(callId);
+        leadUac.removeListener('info', onInfo);
+        resolve(result);
+      };
+
+      // DTMF via SIP INFO
+      const onInfo = (infoReq, infoRes) => {
+        const body = infoReq.body || '';
+        const m = body.match(/Signal\s*=\s*(\S+)/i) || body.match(/^(\d|\*|#)/);
+        if (m) {
+          const digit = m[1].trim();
+          logger.info(`DIALER PRE-CONNECT: DTMF ${digit} via SIP INFO [${callId}]`);
+          this._handlePreConnectKey(digit, pc, lead, finish);
+        }
+        try { infoRes.send(200); } catch (e) {}
+      };
+      leadUac.on('info', onInfo);
+
+      // DTMF via RTPEngine (RFC 2833)
+      if (this.dtmfListener) {
+        this.dtmfListener.register(callId, (digit) => {
+          logger.info(`DIALER PRE-CONNECT: DTMF ${digit} via RTPEngine [${callId}]`);
+          this._handlePreConnectKey(digit, pc, lead, finish);
+        }, fromTag);
+      }
+
+      // Lead hung up during the message
+      leadUac.on('destroy', () => finish(false));
+
+      // Timeout — no keypress = don't bridge
+      setTimeout(() => {
+        logger.info(`DIALER PRE-CONNECT: timeout, no keypress [${callId}]`);
+        finish(false);
+      }, (pc.timeout || 8) * 1000);
+    });
+  }
+
+  async _handlePreConnectKey(digit, pc, lead, finish) {
+    if (digit === (pc.confirmKey || '1')) {
+      finish(true); // bridge to agent
+    } else if (digit === (pc.optOutKey || '9')) {
+      // Add to DNC
+      try {
+        const { DNC } = require('../models');
+        await DNC.updateOne(
+          { phone: lead.phone },
+          { $set: { phone: lead.phone, reason: 'Opted out via pre-connect IVR', source: 'campaign', addedBy: 'system' } },
+          { upsert: true }
+        );
+        logger.info(`DIALER PRE-CONNECT: ${lead.phone} opted out, added to DNC`);
+      } catch (e) {}
+      finish(false); // hang up
+    }
+    // Other keys ignored — keep waiting
+  }
+
+  _sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
   // ============================================================
   // BRIDGE TO AGENT — Connect answered lead to the reserved agent

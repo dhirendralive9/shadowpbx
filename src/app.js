@@ -185,7 +185,7 @@ async function main() {
   // Reload pending appointment messages from DB
   setTimeout(() => appointmentHandler.reloadPendingMessages(), 5000);
 
-  const dialerEngine = new DialerEngine(srf, rtpengine, registrar, trunkManager, callHandler);
+  const dialerEngine = new DialerEngine(srf, rtpengine, registrar, trunkManager, callHandler, dtmfListener);
   callHandler.dialerEngine = dialerEngine;
 
   // Initialize CRM integrations

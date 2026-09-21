@@ -314,6 +314,16 @@ const campaignSchema = new mongoose.Schema({
   amd: { type: Boolean, default: false },
   amdAction: { type: String, enum: ['hangup', 'leave-message'], default: 'hangup' },
 
+  // Pre-connect IVR / whisper message (played to lead before bridging to agent)
+  preConnect: {
+    enabled: { type: Boolean, default: false },
+    mode: { type: String, enum: ['press1', 'announce'], default: 'press1' }, // press1 = require key, announce = just play
+    audioFile: { type: String, default: '' },       // audio file name from library
+    confirmKey: { type: String, default: '1' },      // key that confirms interest (press1 mode)
+    optOutKey: { type: String, default: '9' },       // key that adds to DNC (press1 mode)
+    timeout: { type: Number, default: 8 }            // seconds to wait for keypress
+  },
+
   // Schedule
   schedule: {
     enabled: { type: Boolean, default: false },

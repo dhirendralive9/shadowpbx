@@ -43,13 +43,46 @@
       <div class="form-group" style="display:flex;align-items:flex-end;gap:12px;padding-bottom:14px">
         <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="c-amd" onchange="toggleAmd()"> AMD</label>
         <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="c-dnc" checked> DNC</label>
+        <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="c-preconnect" onchange="togglePreConnect()"> Pre-connect message</label>
       </div>
       <div class="form-group" id="amd-carrier-wrap" style="display:none"><label class="form-label">Carrier</label>
         <select class="form-select" id="c-carrier"><option value="telnyx">Telnyx</option><option value="signalwire">SignalWire</option><option value="twilio">Twilio</option></select></div>
       <div class="form-group" id="amd-action-wrap" style="display:none"><label class="form-label">On machine</label>
         <select class="form-select" id="c-amdaction"><option value="hangup">Hang up</option><option value="leave-message">Leave message</option></select></div>
     </div>
-    <div style="display:flex;gap:8px;margin-top:4px">
+
+    <!-- Pre-connect IVR settings -->
+    <div id="preconnect-settings" style="display:none;margin-top:8px;padding:12px;background:var(--bg-surface);border-radius:var(--radius);border:0.5px solid var(--border)">
+      <div style="font-size:12px;font-weight:600;margin-bottom:8px;color:var(--text-secondary)">Pre-connect message (played to the lead before bridging to an agent)</div>
+      <div class="grid-3" style="margin-bottom:0">
+        <div class="form-group"><label class="form-label">Mode</label>
+          <select class="form-select" id="c-pc-mode" onchange="togglePcMode()">
+            <option value="press1">Press-1 to continue</option>
+            <option value="announce">Announce &amp; connect</option>
+          </select>
+        </div>
+        <div class="form-group"><label class="form-label">Audio file</label>
+          <select class="form-select" id="c-pc-audio"></select>
+        </div>
+        <div class="form-group"><label class="form-label">Wait timeout (s)</label>
+          <input class="form-input" id="c-pc-timeout" type="number" value="8" min="3" max="30">
+        </div>
+      </div>
+      <div class="grid-3" style="margin-bottom:0" id="pc-keys">
+        <div class="form-group"><label class="form-label">Confirm key</label>
+          <input class="form-input" id="c-pc-confirm" value="1" maxlength="1" placeholder="1">
+        </div>
+        <div class="form-group"><label class="form-label">Opt-out key (adds to DNC)</label>
+          <input class="form-input" id="c-pc-optout" value="9" maxlength="1" placeholder="9">
+        </div>
+      </div>
+      <div class="muted" style="font-size:11px;margin-top:4px">
+        <b>Press-1</b>: lead must press the confirm key to reach an agent (filters voicemail/uninterested).
+        <b>Announce</b>: play the message then connect automatically.
+      </div>
+    </div>
+
+    <div style="display:flex;gap:8px;margin-top:8px">
       <button type="submit" class="btn btn-primary btn-sm" id="c-submit-btn">Create</button>
       <button type="button" class="btn btn-sm" onclick="hideAdd()">Cancel</button>
     </div>
@@ -153,6 +186,15 @@ function fmtSec(s){if(!s)return '0s';var m=Math.floor(s/60);return m>0?m+'m '+(s
 // ─── Form toggles ───
 if(document.getElementById('c-strategy'))document.getElementById('c-strategy').addEventListener('change',function(){document.getElementById('predictive-settings').style.display=this.value==='predictive'?'block':'none'});
 function toggleAmd(){var o=document.getElementById('c-amd').checked;document.getElementById('amd-carrier-wrap').style.display=o?'block':'none';document.getElementById('amd-action-wrap').style.display=o?'block':'none'}
+function togglePreConnect(){document.getElementById('preconnect-settings').style.display=document.getElementById('c-preconnect').checked?'block':'none';if(document.getElementById('c-preconnect').checked)loadPcAudio()}
+function togglePcMode(){document.getElementById('pc-keys').style.display=document.getElementById('c-pc-mode').value==='press1'?'grid':'none'}
+async function loadPcAudio(){
+  try{
+    var d=await(await fetch(API+'/audio',{headers:H})).json();
+    var s=document.getElementById('c-pc-audio');
+    if(d.success&&d.files){s.innerHTML='<option value="">— select audio —</option>'+d.files.map(function(f){var n=f.name||f;return '<option value="'+esc(n)+'">'+esc(n)+'</option>'}).join('')}
+  }catch(e){}
+}
 
 // ─── Form data ───
 async function loadFormData(){
@@ -173,6 +215,7 @@ function showAdd(){
   document.getElementById('c-wrapup').value='10';document.getElementById('c-retries').value='3';document.getElementById('c-retrydelay').value='30';
   document.getElementById('c-amd').checked=false;document.getElementById('c-dnc').checked=true;
   document.getElementById('c-carrier').value='telnyx';document.getElementById('c-amdaction').value='hangup';
+  document.getElementById('c-preconnect').checked=false;togglePreConnect();
   toggleAmd();document.getElementById('c-submit-btn').textContent='Create';
   document.getElementById('predictive-settings').style.display='none';setAgents([]);
   document.getElementById('add-form').style.display='block';
@@ -188,6 +231,10 @@ function showEdit(c){
   toggleAmd();document.getElementById('c-submit-btn').textContent='Update';
   document.getElementById('predictive-settings').style.display=c.strategy==='predictive'?'block':'none';
   if(c.strategy==='predictive'){document.getElementById('c-dialratio').value=c.dialRatio||1.2;document.getElementById('c-maxabandoned').value=c.maxAbandoned||3}
+  var pc=c.preConnect||{};document.getElementById('c-preconnect').checked=!!pc.enabled;togglePreConnect();
+  if(pc.enabled){document.getElementById('c-pc-mode').value=pc.mode||'press1';document.getElementById('c-pc-timeout').value=pc.timeout||8;
+    document.getElementById('c-pc-confirm').value=pc.confirmKey||'1';document.getElementById('c-pc-optout').value=pc.optOutKey||'9';togglePcMode();
+    setTimeout(function(){if(pc.audioFile)document.getElementById('c-pc-audio').value=pc.audioFile},300)}
   setAgents(c.agents||[]);document.getElementById('add-form').style.display='block';
 }
 function hideAdd(){document.getElementById('add-form').style.display='none'}
@@ -330,6 +377,11 @@ async function saveCampaign(e){
     amd:document.getElementById('c-amd').checked,amdAction:document.getElementById('c-amdaction').value,
     carrier:document.getElementById('c-amd').checked?document.getElementById('c-carrier').value:'',
     dncEnabled:document.getElementById('c-dnc').checked};
+  if(document.getElementById('c-preconnect').checked){
+    b.preConnect={enabled:true,mode:document.getElementById('c-pc-mode').value,audioFile:document.getElementById('c-pc-audio').value,
+      confirmKey:document.getElementById('c-pc-confirm').value||'1',optOutKey:document.getElementById('c-pc-optout').value||'9',
+      timeout:parseInt(document.getElementById('c-pc-timeout').value)||8};
+  }else{b.preConnect={enabled:false}}
   if(b.strategy==='predictive'){b.dialRatio=parseFloat(document.getElementById('c-dialratio').value)||1.2;b.maxAbandoned=parseInt(document.getElementById('c-maxabandoned').value)||3}
   if(!b.outboundRoute){showToast('Select an outbound route',true);return}if(b.agents.length===0){showToast('Select at least one agent',true);return}
   var d=await(await fetch(id?API+'/campaigns/'+id:API+'/campaigns',{method:id?'PUT':'POST',headers:J,body:JSON.stringify(b)})).json();
