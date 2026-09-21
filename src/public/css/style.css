@@ -304,8 +304,10 @@ a:hover { text-decoration: underline; }
 .btn-primary {
   background: var(--accent); color: var(--bg-card);
   border-color: var(--accent);
+  transition: opacity 0.15s, transform 0.05s;
 }
-.btn-primary:hover { opacity: 0.9; }
+.btn-primary:hover { opacity: 0.82; }
+.btn-primary:active { transform: translateY(1px); }
 .btn-danger { color: var(--red); border-color: var(--red); }
 .btn-danger:hover { background: var(--red-bg); }
 .btn-sm { padding: 5px 10px; font-size: 12px; }
