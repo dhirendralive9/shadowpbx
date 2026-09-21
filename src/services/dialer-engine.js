@@ -61,7 +61,7 @@ class DialerEngine {
     if (!campaign) throw new Error('Campaign not found');
     if (campaign.status === 'running') throw new Error('Campaign already running');
     if (!campaign.agents || campaign.agents.length === 0) throw new Error('No agents assigned');
-    if (!campaign.trunk) throw new Error('No trunk configured');
+    if (!campaign.trunk && !campaign.outboundRoute) throw new Error('No trunk or outbound route configured');
 
     // Count leads
     const pendingLeads = await Lead.countDocuments({
