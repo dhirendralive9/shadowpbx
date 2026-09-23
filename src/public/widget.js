@@ -228,6 +228,12 @@
   // ---------------------------------------------------------------
   // Placing the call
   // ---------------------------------------------------------------
+  // SIP headers are one line of ASCII — strip anything that could break or
+  // inject into the message.
+  function header(v) {
+    return String(v || '').replace(/[\r\n]/g, ' ').replace(/[^\x20-\x7E]/g, '').trim().slice(0, 120);
+  }
+
   function supported() {
     return !!(window.RTCPeerConnection && navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.WebSocket);
   }
@@ -290,7 +296,16 @@
       await ua.start();
 
       var target = SIPLIB.UserAgent.makeURI('sip:' + tok.callTarget + '@' + tok.sipDomain);
+      // Pre-call form data travels with the INVITE as well as on the token, so
+      // the PBX can put it in front of the agent before they answer (Phase 6).
+      var extraHeaders = [];
+      if (el.name.value.trim()) extraHeaders.push('X-Web-Name: ' + header(el.name.value));
+      if (el.num.value.trim()) extraHeaders.push('X-Web-Number: ' + header(el.num.value));
+      extraHeaders.push('X-Web-Page: ' + header(location.href.slice(0, 250)));
+      extraHeaders.push('X-Web-Widget: ' + header(WIDGET_ID));
+
       var inviter = new SIPLIB.Inviter(ua, target, {
+        extraHeaders: extraHeaders,
         sessionDescriptionHandlerOptions: { constraints: { audio: true, video: false } }
       });
       bind(inviter, SIPLIB);

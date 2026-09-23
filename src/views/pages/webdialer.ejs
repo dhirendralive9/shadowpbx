@@ -1,0 +1,353 @@
+<%- include('../partials/head', { title: 'Web Dialer', active: 'callflow' }) %>
+<%- include('../partials/callflow-tabs', { cfActive: 'webdialer' }) %>
+
+<div class="sec-head">
+  <span class="sec-title">Web dialer widgets</span>
+  <span>
+    <a class="btn btn-sm" href="/widget-demo.html" target="_blank">Demo page</a>
+    <button class="btn btn-sm" onclick="openEditor()">+ Add widget</button>
+  </span>
+</div>
+<p class="muted" style="font-size:12px;margin:-6px 0 12px">
+  A widget is a "Call us" button for a website. Visitors talk through the browser — no phone number,
+  nothing to install. Each widget reaches exactly one destination and nothing else.
+</p>
+
+<table class="tbl" style="margin-bottom:18px">
+  <thead><tr><th>Widget</th><th>Destination</th><th>Form</th><th>Sites</th><th>Max</th><th>Status</th><th>Actions</th></tr></thead>
+  <tbody id="w-body"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody>
+</table>
+
+<!-- ─── Editor ─── -->
+<div id="editor" class="section" style="display:none;margin-bottom:18px">
+  <div class="sec-head">
+    <span class="sec-title" id="ed-title">New widget</span>
+    <button class="btn btn-sm" onclick="closeEditor()">Close</button>
+  </div>
+  <div class="grid-2">
+    <div>
+      <div class="mini-card" style="margin-bottom:14px">
+        <div class="mc-title">Basics</div>
+        <div class="form-group"><label class="form-label">Name (internal)</label>
+          <input class="form-input" id="f-name" placeholder="Homepage sales button"></div>
+        <div style="display:flex;gap:8px">
+          <div class="form-group" style="flex:1"><label class="form-label">Destination type</label>
+            <select class="form-input" id="f-type" onchange="fillTargets()">
+              <option value="extension">Extension</option>
+              <option value="ringgroup">Ring group</option>
+              <option value="ivr">IVR</option>
+              <option value="queue">Queue</option>
+              <option value="timecondition">Time condition</option>
+            </select></div>
+          <div class="form-group" style="flex:1"><label class="form-label">Target</label>
+            <select class="form-input" id="f-target"></select></div>
+        </div>
+        <div class="form-group"><label class="form-label">Pre-call form</label>
+          <select class="form-input" id="f-collect" onchange="preview()">
+            <option value="none">Connect straight away</option>
+            <option value="name">Ask for a name</option>
+            <option value="name+number">Ask for a name and number</option>
+          </select></div>
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:6px">
+          <input type="checkbox" id="f-crm"> Create a CRM contact for unknown web callers
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px">
+          <input type="checkbox" id="f-enabled" checked> Widget enabled
+        </label>
+      </div>
+
+      <div class="mini-card" style="margin-bottom:14px">
+        <div class="mc-title">Access</div>
+        <div class="form-group"><label class="form-label">Allowed sites (comma separated)</label>
+          <input class="form-input" id="f-domains" placeholder="example.com, *.example.com">
+          <span class="muted" style="font-size:11px">Leave blank and any site can embed this widget. Set it before going live.</span></div>
+        <div style="display:flex;gap:8px">
+          <div class="form-group" style="flex:1"><label class="form-label">Max concurrent calls</label>
+            <input class="form-input" id="f-max" type="number" min="1" value="5"></div>
+          <div class="form-group" style="flex:1"><label class="form-label">Business hours</label>
+            <select class="form-input" id="f-hours">
+              <option value="">Always open</option>
+            </select>
+            <span class="muted" style="font-size:11px">Closed-hours calls follow that condition's own no-match destination.</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="mini-card" style="margin-bottom:14px">
+        <div class="mc-title">Appearance</div>
+        <div style="display:flex;gap:8px">
+          <div class="form-group" style="flex:2"><label class="form-label">Button label</label>
+            <input class="form-input" id="f-label" value="Call us" oninput="preview()"></div>
+          <div class="form-group" style="flex:1"><label class="form-label">Colour</label>
+            <input class="form-input" id="f-color" type="color" value="#2563eb" style="height:34px;padding:2px" oninput="preview()"></div>
+        </div>
+        <div class="form-group"><label class="form-label">Position</label>
+          <select class="form-input" id="f-position" onchange="preview()">
+            <option value="bottom-right">Bottom right</option>
+            <option value="bottom-left">Bottom left</option>
+            <option value="top-right">Top right</option>
+            <option value="top-left">Top left</option>
+          </select></div>
+        <div class="form-group"><label class="form-label">Greeting</label>
+          <input class="form-input" id="f-greeting" placeholder="Talk to us right from your browser." oninput="preview()"></div>
+      </div>
+
+      <div class="mini-card" style="margin-bottom:14px">
+        <div class="mc-title">Live preview</div>
+        <div id="pv-frame" style="position:relative;height:250px;border-radius:10px;background:#f6f7f9;border:1px solid var(--border, #e5e7eb);overflow:hidden">
+          <div id="pv-panel" style="position:absolute;width:250px;background:#fff;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.18);overflow:hidden;color:#111827;font-size:13px">
+            <div id="pv-head" style="padding:10px 12px;color:#fff;display:flex;justify-content:space-between;align-items:center">
+              <b id="pv-title">Call us</b><span style="opacity:.8">&times;</span>
+            </div>
+            <div style="padding:12px">
+              <div id="pv-greet" style="color:#4b5563;margin-bottom:10px">Talk to us right from your browser.</div>
+              <div id="pv-form" style="display:none">
+                <div style="font-size:11px;font-weight:600;color:#374151">Your name</div>
+                <div style="border:1px solid #d1d5db;border-radius:6px;height:28px;margin-bottom:8px"></div>
+                <div id="pv-num" style="display:none">
+                  <div style="font-size:11px;font-weight:600;color:#374151">Phone number</div>
+                  <div style="border:1px solid #d1d5db;border-radius:6px;height:28px;margin-bottom:8px"></div>
+                </div>
+              </div>
+              <div id="pv-btn" style="text-align:center;color:#fff;border-radius:999px;padding:8px;font-weight:600">Start call</div>
+            </div>
+          </div>
+          <div id="pv-launch" style="position:absolute;color:#fff;border-radius:999px;padding:9px 16px;font-weight:600;font-size:13px;box-shadow:0 4px 14px rgba(0,0,0,.2)">Call us</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div style="display:flex;gap:8px;align-items:center">
+    <button class="btn btn-primary btn-sm" id="save-btn" onclick="saveWidget()">Save widget</button>
+    <button class="btn btn-sm" onclick="closeEditor()">Cancel</button>
+    <span class="muted" id="ed-msg" style="font-size:12px"></span>
+  </div>
+</div>
+
+<!-- ─── Embed ─── -->
+<div class="mini-card" id="embed-box" style="display:none;margin-bottom:18px">
+  <div class="mc-title">Embed snippet — <span class="mono" id="embed-id"></span>
+    <button class="btn btn-sm" id="embed-copy" style="float:right" onclick="copyEmbed()">Copy</button></div>
+  <pre class="mono" id="embed-code" style="font-size:11px;white-space:pre-wrap;margin:0 0 8px"></pre>
+  <div class="muted" style="font-size:12px">Paste this onto any page of an allowed site. Test it first on
+    <a href="/widget-demo.html" target="_blank">/widget-demo.html</a>.</div>
+</div>
+
+<!-- ─── Guests ─── -->
+<div class="sec-head">
+  <span class="sec-title">Active web callers</span>
+  <button class="btn btn-sm" onclick="loadGuests()">Refresh</button>
+</div>
+<div id="g-summary" class="mini-card" style="margin-bottom:10px"><div class="mc-row"><span class="muted">Loading...</span></div></div>
+<table class="tbl">
+  <thead><tr><th>Guest</th><th>Widget</th><th>State</th><th>From</th><th>Age</th><th>Expires in</th><th></th></tr></thead>
+  <tbody id="g-body"><tr><td colspan="7" class="empty">No active web callers</td></tr></tbody>
+</table>
+
+<script>
+var DESTS = { extension: [], ringgroup: [], ivr: [], queue: [], timecondition: [] };
+var EDITING = null;
+
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+function row(n, v) { return '<div class="mc-row"><span class="mc-name">' + esc(n) + '</span>' + v + '</div>'; }
+function okPill(ok, y, n) { return '<span class="pill ' + (ok ? 'p-ok' : 'p-err') + '">' + esc(ok ? y : n) + '</span>'; }
+function val(id) { return document.getElementById(id).value; }
+function set(id, v) { document.getElementById(id).value = v; }
+
+async function api(path, opts) {
+  var r = await fetch(path, Object.assign({ credentials: 'same-origin', headers: { 'Content-Type': 'application/json' } }, opts || {}));
+  var d = await r.json();
+  if (!d.success) throw new Error(d.error || 'Request failed');
+  return d;
+}
+
+// ---------- widgets ----------
+async function loadWidgets() {
+  var body = document.getElementById('w-body');
+  try {
+    var d = await api('/webcall/api/widgets');
+    window.__widgets = d.widgets;
+    if (!d.widgets.length) { body.innerHTML = '<tr><td colspan="7" class="empty">No widgets yet — add one to get started</td></tr>'; return; }
+    body.innerHTML = d.widgets.map(function (w) {
+      var dest = w.destination || {};
+      return '<tr><td><b>' + esc(w.name) + '</b><br><span class="mono muted" style="font-size:11px">' + esc(w.widgetId) + '</span></td>' +
+        '<td>' + esc(dest.type || '-') + ' ' + esc(dest.target || '') + '</td>' +
+        '<td>' + esc(w.collectInfo === 'none' ? '—' : w.collectInfo) + '</td>' +
+        '<td class="muted" style="font-size:12px">' + esc((w.allowedDomains || []).join(', ') || 'any site') + '</td>' +
+        '<td>' + (w.maxConcurrent || 5) + '</td>' +
+        '<td>' + okPill(w.enabled, 'live', 'off') + '</td>' +
+        '<td><button class="btn btn-sm" onclick="openEditor(\'' + esc(w.widgetId) + '\')">Edit</button> ' +
+        '<button class="btn btn-sm" onclick="showEmbed(\'' + esc(w.widgetId) + '\')">Embed</button> ' +
+        '<button class="btn btn-sm btn-danger" onclick="removeWidget(\'' + esc(w.widgetId) + '\')">Delete</button></td></tr>';
+    }).join('');
+  } catch (e) {
+    body.innerHTML = '<tr><td colspan="7" class="empty">' + esc(e.message) + '</td></tr>';
+  }
+}
+
+async function loadDestinations() {
+  try {
+    var d = await api('/webcall/api/destinations');
+    DESTS = d.destinations;
+    var hours = document.getElementById('f-hours');
+    hours.innerHTML = '<option value="">Always open</option>' + (DESTS.timecondition || []).map(function (t) {
+      return '<option value="' + esc(t.number) + '">' + esc(t.number + ' — ' + t.name) + '</option>';
+    }).join('');
+    fillTargets();
+  } catch (e) { /* the selects stay empty; the server validates anyway */ }
+}
+
+function fillTargets(selected) {
+  var list = DESTS[val('f-type')] || [];
+  var sel = document.getElementById('f-target');
+  sel.innerHTML = list.length
+    ? list.map(function (t) { return '<option value="' + esc(t.number) + '">' + esc(t.number + ' — ' + t.name) + '</option>'; }).join('')
+    : '<option value="">none configured</option>';
+  if (selected) sel.value = selected;
+}
+
+function openEditor(widgetId) {
+  EDITING = widgetId || null;
+  document.getElementById('editor').style.display = 'block';
+  document.getElementById('ed-msg').textContent = '';
+  document.getElementById('ed-title').textContent = widgetId ? 'Edit widget' : 'New widget';
+
+  var w = widgetId && (window.__widgets || []).find(function (x) { return x.widgetId === widgetId; });
+  var b = (w && w.branding) || {};
+  set('f-name', w ? w.name : '');
+  set('f-type', w && w.destination ? w.destination.type : 'extension');
+  fillTargets(w && w.destination ? w.destination.target : null);
+  set('f-collect', w ? (w.collectInfo || 'none') : 'none');
+  set('f-domains', w ? (w.allowedDomains || []).join(', ') : '');
+  set('f-max', w ? (w.maxConcurrent || 5) : 5);
+  set('f-hours', w && w.businessHours && w.businessHours.enabled ? (w.businessHours.timeConditionNumber || '') : '');
+  set('f-label', b.label || 'Call us');
+  set('f-color', b.color || '#2563eb');
+  set('f-position', b.position || 'bottom-right');
+  set('f-greeting', b.greeting || '');
+  document.getElementById('f-enabled').checked = w ? w.enabled !== false : true;
+  document.getElementById('f-crm').checked = !!(w && w.crmCreateLead);
+  preview();
+  document.getElementById('editor').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function closeEditor() { document.getElementById('editor').style.display = 'none'; EDITING = null; }
+
+async function saveWidget() {
+  var btn = document.getElementById('save-btn');
+  var hours = val('f-hours');
+  var payload = {
+    name: val('f-name').trim(),
+    destination: { type: val('f-type'), target: val('f-target') },
+    collectInfo: val('f-collect'),
+    allowedDomains: val('f-domains').split(',').map(function (s) { return s.trim(); }).filter(Boolean),
+    maxConcurrent: parseInt(val('f-max')) || 5,
+    businessHours: { enabled: !!hours, timeConditionNumber: hours },
+    crmCreateLead: document.getElementById('f-crm').checked,
+    enabled: document.getElementById('f-enabled').checked,
+    branding: { label: val('f-label'), color: val('f-color'), position: val('f-position'), greeting: val('f-greeting') }
+  };
+  if (!payload.name) { document.getElementById('ed-msg').textContent = 'Give the widget a name'; return; }
+  if (!payload.destination.target) { document.getElementById('ed-msg').textContent = 'Pick a destination'; return; }
+
+  btn.disabled = true;
+  try {
+    var d = EDITING
+      ? await api('/webcall/api/widgets/' + encodeURIComponent(EDITING), { method: 'PUT', body: JSON.stringify(payload) })
+      : await api('/webcall/api/widgets', { method: 'POST', body: JSON.stringify(payload) });
+    closeEditor();
+    await loadWidgets();
+    showEmbed(d.widget.widgetId);
+  } catch (e) {
+    document.getElementById('ed-msg').textContent = e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function removeWidget(id) {
+  if (!confirm('Delete widget ' + id + '? Any page still embedding it stops working.')) return;
+  try { await api('/webcall/api/widgets/' + encodeURIComponent(id), { method: 'DELETE' }); loadWidgets(); }
+  catch (e) { alert(e.message); }
+}
+
+// ---------- preview ----------
+function preview() {
+  var color = val('f-color'), pos = val('f-position'), label = val('f-label') || 'Call us';
+  var panel = document.getElementById('pv-panel'), launch = document.getElementById('pv-launch');
+  ['top', 'bottom', 'left', 'right'].forEach(function (s) { panel.style[s] = ''; launch.style[s] = ''; });
+  var vert = pos.indexOf('top') === 0 ? 'top' : 'bottom';
+  var horiz = pos.indexOf('left') > -1 ? 'left' : 'right';
+  panel.style[vert] = '12px'; panel.style[horiz] = '12px';
+  launch.style[vert === 'top' ? 'bottom' : 'top'] = '12px'; launch.style[horiz] = '12px';
+  document.getElementById('pv-head').style.background = color;
+  document.getElementById('pv-btn').style.background = color;
+  launch.style.background = color;
+  launch.textContent = label;
+  document.getElementById('pv-title').textContent = label;
+  document.getElementById('pv-greet').textContent = val('f-greeting') || 'Talk to us right from your browser.';
+  var collect = val('f-collect');
+  document.getElementById('pv-form').style.display = collect === 'none' ? 'none' : 'block';
+  document.getElementById('pv-num').style.display = collect === 'name+number' ? 'block' : 'none';
+}
+
+// ---------- embed ----------
+function showEmbed(id) {
+  var w = (window.__widgets || []).find(function (x) { return x.widgetId === id; }) || {};
+  var b = w.branding || {};
+  document.getElementById('embed-id').textContent = id;
+  document.getElementById('embed-code').textContent =
+    '<!-- ShadowPBX Web Dialer -->\n<script src="' + location.origin + '/widget.js"\n' +
+    '        data-widget="' + id + '"\n' +
+    '        data-label="' + (b.label || 'Call us') + '"\n' +
+    '        data-color="' + (b.color || '#2563eb') + '"\n' +
+    '        data-position="' + (b.position || 'bottom-right') + '"\n        async><\/script>';
+  var box = document.getElementById('embed-box');
+  box.style.display = 'block';
+  box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function copyEmbed() {
+  navigator.clipboard.writeText(document.getElementById('embed-code').textContent).then(function () {
+    var b = document.getElementById('embed-copy');
+    b.textContent = 'Copied'; setTimeout(function () { b.textContent = 'Copy'; }, 1500);
+  }).catch(function () { alert('Copy failed — select the text manually'); });
+}
+
+// ---------- guests ----------
+async function loadGuests() {
+  try {
+    var d = await api('/webcall/api/guests');
+    var s = d.summary;
+    document.getElementById('g-summary').innerHTML =
+      row('Web calling', okPill(s.enabled, 'enabled', 'disabled')) +
+      row('Active now', '<span class="mono">' + s.active + ' (' + s.inCall + ' on a call)</span>') +
+      row('Tokens issued / calls placed', '<span class="mono">' + s.issued + ' / ' + s.calls + '</span>') +
+      row('Rejected / expired unused', '<span class="mono">' + s.rejected + ' / ' + s.expired + '</span>') +
+      row('Token life · call cap · rate', '<span class="mono">' + s.tokenTtlSeconds + 's · ' + s.maxCallMinutes + 'min · ' + esc(s.tokensPerIp) + '</span>');
+    var body = document.getElementById('g-body');
+    body.innerHTML = d.guests.length ? d.guests.map(function (g) {
+      return '<tr><td class="mono">' + esc(g.username) + '</td><td>' + esc(g.widgetName || g.widgetId) + '</td>' +
+        '<td><span class="pill ' + (g.state === 'in-call' ? 'p-ok' : 'p-ring') + '">' + esc(g.state) + '</span></td>' +
+        '<td class="muted" style="font-size:12px">' + esc(g.ip || '') + ' ' + esc(g.origin || '') + '</td>' +
+        '<td>' + g.ageSeconds + 's</td><td>' + g.expiresInSeconds + 's</td>' +
+        '<td><button class="btn btn-sm btn-danger" onclick="killGuest(\'' + esc(g.username) + '\')">End</button></td></tr>';
+    }).join('') : '<tr><td colspan="7" class="empty">No active web callers</td></tr>';
+  } catch (e) {
+    document.getElementById('g-summary').innerHTML = row('Web callers', '<span class="pill p-err">' + esc(e.message) + '</span>');
+  }
+}
+
+async function killGuest(u) {
+  try { await api('/webcall/api/guests/' + encodeURIComponent(u), { method: 'DELETE' }); loadGuests(); }
+  catch (e) { alert(e.message); }
+}
+
+loadDestinations();
+loadWidgets();
+loadGuests();
+setInterval(loadGuests, 10000);
+</script>
+<%- include('../partials/foot') %>

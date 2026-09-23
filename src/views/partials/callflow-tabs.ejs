@@ -7,6 +7,7 @@
 <% if (cfr === 'admin') { %>
   <a href="/ivr" class="sub-tab <%= cfActive === 'ivr' ? 'active' : '' %>">IVR</a>
   <a href="/time-conditions" class="sub-tab <%= cfActive === 'timeconditions' ? 'active' : '' %>">Time conditions</a>
+  <a href="/webdialer" class="sub-tab <%= cfActive === 'webdialer' ? 'active' : '' %>">Web dialer</a>
 <% } %>
 <% if (['admin','supervisor'].includes(cfr)) { %>
   <a href="/appointments" class="sub-tab <%= cfActive === 'appointments' ? 'active' : '' %>">Appointments</a>

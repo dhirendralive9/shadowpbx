@@ -22,6 +22,7 @@
     <option value="inbound">Inbound</option>
     <option value="outbound">Outbound</option>
     <option value="internal">Internal</option>
+    <option value="web-inbound">Web</option>
   </select>
   <button class="btn btn-primary btn-sm" onclick="page=1;loadCDR()">Search</button>
 </div>
@@ -214,11 +215,21 @@ async function loadCDR() {
   var b = document.getElementById('cdr-body');
   if (d.success && d.cdrs && d.cdrs.length) {
     lastResults = d.cdrs;
+    // Web dialer calls carry the widget and the page the visitor called from
+    function webBadge(c) {
+      if (c.direction !== 'web-inbound') return '';
+      var w = c.webSource || {};
+      var parts = [];
+      if (w.widgetName || w.widgetId) parts.push(w.widgetName || w.widgetId);
+      if (c.webCaller && c.webCaller.number) parts.push(c.webCaller.number);
+      if (w.page) parts.push(w.page);
+      return ' <span class="pill p-info" title="' + esc(parts.join(' · ')) + '">web</span>';
+    }
     b.innerHTML = d.cdrs.map(function(c) {
       var noteCount = (c.notes && c.notes.length) || 0;
       return '<tr>' +
-        '<td><span style="color:' + (c.direction === 'inbound' ? 'var(--green)' : c.direction === 'outbound' ? 'var(--blue)' : 'var(--text-secondary)') + '">' + (c.direction === 'inbound' ? '↓' : c.direction === 'outbound' ? '↑' : '↔') + '</span></td>' +
-        '<td>' + esc(c.from || '?') +
+        '<td><span style="color:' + (c.direction === 'inbound' || c.direction === 'web-inbound' ? 'var(--green)' : c.direction === 'outbound' ? 'var(--blue)' : 'var(--text-secondary)') + '" title="' + esc(c.direction || '') + '">' + (c.direction === 'web-inbound' ? '⌘' : c.direction === 'inbound' ? '↓' : c.direction === 'outbound' ? '↑' : '↔') + '</span></td>' +
+        '<td>' + esc(c.from || '?') + webBadge(c) +
           (currentRole === 'admin' && c.direction === 'inbound' && c.from ? ' <button class="act-btn" onclick="blockNum(\'' + esc(c.from) + '\')" title="Block this number" style="opacity:0.4"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:12px;height:12px"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg></button>' : '') +
         '</td>' +
         '<td>' + esc(c.to || '?') + '</td>' +

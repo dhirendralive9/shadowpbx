@@ -257,6 +257,17 @@ const cdrSchema = new mongoose.Schema({
   didNumber: String,
   transferredBy: String,
   transferredTo: String,
+  // Web dialer (Phase 6) — where a browser call came from and who was behind it
+  webSource: {
+    widgetId: String,
+    widgetName: String,
+    page: String,        // the page the visitor called from
+    origin: String       // the site's origin
+  },
+  webCaller: {
+    name: String,        // from the pre-call form
+    number: String
+  },
   transferType: { type: String, enum: ['blind', 'attended'] },
   transferTime: Date,
   parkedSlot: String,
@@ -654,6 +665,7 @@ const webCallWidgetSchema = new mongoose.Schema({
   },
   allowedDomains: [String],                        // empty = any site (tightened in Phase 5/7)
   maxConcurrent: { type: Number, default: 5 },
+  crmCreateLead: { type: Boolean, default: false },   // create a CRM contact for unknown web callers (Phase 6)
   enabled: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }

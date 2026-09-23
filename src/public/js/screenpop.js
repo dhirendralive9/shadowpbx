@@ -70,7 +70,7 @@
     currentCallId = data.callId;
     clearTimeout(autoHideTimer);
 
-    var dir = data.direction === 'outbound' ? 'Outbound' : 'Inbound';
+    var dir = data.direction === 'outbound' ? 'Outbound' : (data.direction === 'web-inbound' ? 'Web' : 'Inbound');
     var dirCls = data.direction === 'outbound' ? 'sp-dir-out' : 'sp-dir-in';
     document.getElementById('sp-direction').textContent = dir + ' Call';
     document.getElementById('sp-direction').className = 'sp-direction ' + dirCls;
@@ -101,6 +101,23 @@
 
       // Show matched view, hide unknown view
       showEl('sp-body'); hideEl('sp-unknown');
+    } else if (data.web) {
+      // Web caller with no CRM match — show what the visitor told us and
+      // which page they called from (Web Dialer Phase 6)
+      var w = data.web;
+      document.getElementById('sp-name').textContent = w.name || 'Web caller';
+      document.getElementById('sp-company').textContent = w.widgetName || w.widgetId || '';
+      document.getElementById('sp-phone').textContent = w.number || 'No number given';
+      document.getElementById('sp-email').textContent = '';
+      document.getElementById('sp-title').textContent = w.page ? shortUrl(w.page) : '';
+      document.getElementById('sp-meta').textContent = 'Browser call';
+
+      var webActions = '';
+      if (w.page) webActions += '<a href="' + escHtml(w.page) + '" target="_blank" rel="noopener" class="sp-btn sp-btn-crm">Open their page</a>';
+      if (w.number) webActions += '<button class="sp-btn sp-btn-create" onclick="spCreateContact(\'' + escHtml(w.number) + '\')">Create Contact</button>';
+      document.getElementById('sp-actions').innerHTML = webActions;
+
+      showEl('sp-body'); hideEl('sp-unknown');
     } else {
       // Unknown caller
       document.getElementById('sp-unknown-phone').textContent = data.callerPhone || 'Unknown number';
@@ -117,6 +134,15 @@
     container.classList.remove('sp-hidden');
     container.classList.add('sp-visible');
   });
+
+  // Shorten a URL for the one-line "called from" display
+  function shortUrl(u) {
+    try {
+      var p = new URL(u);
+      var path = p.pathname === '/' ? '' : p.pathname;
+      return (p.hostname + path).slice(0, 48);
+    } catch (e) { return String(u).slice(0, 48); }
+  }
 
   // ── Call answered — update indicator ──
   socket.on('crm:screenpop:answered', function(data) {

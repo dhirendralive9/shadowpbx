@@ -796,6 +796,7 @@ class CallHandler {
     // Web calls: the guest identity dies with the call (Phase 2/3)
     if (this.guestManager && cdr && cdr.direction === 'web-inbound' && cdr.sipCallId) {
       try { this.guestManager.endCall(cdr.sipCallId, `call ended (${hangupBy})`); } catch (e) {}
+      if (this.screenPopHandler) { try { this.screenPopHandler.onCallEnded(cdr.sipCallId); } catch (e) {} }
     }
     const endTime = new Date();
     cdr.status = 'completed';
@@ -937,6 +938,65 @@ class CallHandler {
   // stays DTLS-SRTP, everything inside the PBX stays plain RTP, and the
   // recorder sees an ordinary G.711 call.
   // ============================================================
+  // ============================================================
+  // Who is calling (Web Dialer — Phase 6)
+  //
+  // The widget sends the pre-call form both on the token and as SIP
+  // headers on the INVITE. Headers win (they belong to this call), the
+  // token record is the fallback. Values are treated as untrusted text
+  // from a public web form: trimmed, length-capped, never interpreted.
+  // ============================================================
+  _webCallerInfo(req, guest) {
+    const clean = (v, max) => String(v || '').replace(/[\r\n]/g, ' ').trim().slice(0, max || 80);
+    const h = (name) => { try { return req.get(name); } catch (e) { return null; } };
+    const name = clean(h('X-Web-Name') || guest.callerName, 80);
+    const number = clean(h('X-Web-Number') || guest.callerNumber, 40);
+    const page = clean(h('X-Web-Page') || guest.pageUrl, 250);
+    return {
+      name,
+      number,
+      page,
+      widgetId: guest.widgetId,
+      widgetName: guest.widgetName,
+      origin: guest.origin || '',
+      // What the agent sees in the CDR and on their phone
+      label: name || number || 'Web caller'
+    };
+  }
+
+  // Stamp the web details onto the CDR (fire-and-forget; never blocks the call)
+  _stampWebCdr(cdr, info) {
+    try {
+      cdr.webSource = { widgetId: info.widgetId, widgetName: info.widgetName, page: info.page, origin: info.origin };
+      cdr.webCaller = { name: info.name, number: info.number };
+      cdr.save().catch(() => {});
+    } catch (e) {}
+  }
+
+  // Screen pop for a web call — the same Socket.IO path a PSTN call uses,
+  // with the widget details attached so the agent knows where it came from.
+  _webScreenPop(extension, callId, info, guest) {
+    if (!this.crmManager || !extension) return;
+    try {
+      this.crmManager.emit('call.ringing', {
+        callId,
+        callerPhone: info.number || '',
+        callerName: info.name || '',
+        targetExtension: extension,
+        direction: 'web-inbound',
+        web: {
+          widgetId: info.widgetId,
+          widgetName: info.widgetName,
+          page: info.page,
+          origin: info.origin,
+          name: info.name,
+          number: info.number,
+          createLead: !!(guest && guest.crmCreateLead)
+        }
+      });
+    } catch (e) { /* screen pop must never break a call */ }
+  }
+
   async _routeGuestCall(req, res, guest, dest, callId) {
     // Widget business hours — closed hours follow the time condition's
     // own no-match destination (voicemail, another group, and so on).
@@ -971,7 +1031,8 @@ class CallHandler {
     const gm = this.guestManager;
     const from = req.getParsedHeader('From');
     const fromTag = from.params.tag;
-    const callerLabel = guest.callerName || guest.callerNumber || guest.username;
+    const web = this._webCallerInfo(req, guest);
+    const callerLabel = web.label;
 
     const finish = (reason) => { try { gm.endCall(callId, reason); } catch (e) {} };
 
@@ -980,7 +1041,13 @@ class CallHandler {
       const ringGroup = await this.ringGroupHandler.isRingGroup(dest.target);
       if (!ringGroup) { logger.warn(`WEBCALL: ring group ${dest.target} not found [${callId}]`); finish('destination missing'); return res.send(404); }
       const cdr = await this._createCDR(callerLabel, `RG:${ringGroup.number}`, 'web-inbound', callId, req.source_address);
-      if (ringGroup.members) ringGroup.members.forEach(m => this._emitPresence(m, 'ringing', { callId, remoteParty: callerLabel, direction: 'recipient' }));
+      this._stampWebCdr(cdr, web);
+      if (ringGroup.members) {
+        ringGroup.members.forEach(m => {
+          this._emitPresence(m, 'ringing', { callId, remoteParty: callerLabel, direction: 'recipient' });
+          this._webScreenPop(m, callId, web, guest);
+        });
+      }
       try {
         const result = await this.ringGroupHandler.ringGroup(req, res, ringGroup, cdr);
         if (result && result.uas && result.uac) {
@@ -989,6 +1056,7 @@ class CallHandler {
           if (result.answeredBy) cdr.to = result.answeredBy;
           await cdr.save();
           this._emitPresence(result.answeredBy, 'confirmed', { callId, remoteParty: callerLabel, direction: 'recipient' });
+          if (this.crmManager) { try { this.crmManager.emit('call.answered', { callId, targetExtension: result.answeredBy }); } catch (e) {} }
           if (ringGroup.members) ringGroup.members.forEach(m => { if (m !== result.answeredBy) this._emitPresence(m, 'idle'); });
 
           const onDestroy = async (hangupBy) => {
@@ -1020,7 +1088,9 @@ class CallHandler {
         return res.send(480);
       }
       const cdr = await this._createCDR(callerLabel, dest.target, 'web-inbound', callId, req.source_address);
+      this._stampWebCdr(cdr, web);
       this._emitPresence(dest.target, 'ringing', { callId, remoteParty: callerLabel, direction: 'recipient' });
+      this._webScreenPop(dest.target, callId, web, guest);
 
       try {
         const contact = this._getLatestContact(contacts);
@@ -1050,6 +1120,7 @@ class CallHandler {
         cdr.rtpengineCallId = callId;
         await cdr.save();
         this._emitPresence(dest.target, 'confirmed', { callId, remoteParty: callerLabel, direction: 'recipient' });
+        if (this.crmManager) { try { this.crmManager.emit('call.answered', { callId, targetExtension: dest.target }); } catch (e) {} }
         this._trackCall(callId, uas, uac, cdr, callerLabel, dest.target, fromTag);
         // _trackCall ends the CDR and releases media; we only need to drop the guest identity
         uas.on('destroy', () => { this._emitPresence(dest.target, 'idle'); finish('web caller hung up'); });
@@ -1067,6 +1138,7 @@ class CallHandler {
     // dialog from here, so the guest identity is reclaimed by the call-ended
     // reconciliation in the guest manager rather than a destroy handler.
     const cdr = await this._createCDR(callerLabel, `${dest.type}:${dest.target}`, 'web-inbound', callId, req.source_address);
+    this._stampWebCdr(cdr, web);
 
     try {
       if (dest.type === 'ivr') {

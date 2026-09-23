@@ -122,6 +122,7 @@ class WebCallGuestManager {
       destination: widget.destination || {},
       businessHours: widget.businessHours || { enabled: false },
       collectInfo: widget.collectInfo || 'none',
+      crmCreateLead: !!widget.crmCreateLead,
       state: 'issued',                       // issued -> registered -> in-call -> ended
       createdAt: now,
       expiresAt: now + TOKEN_TTL * 1000,     // only until a call starts

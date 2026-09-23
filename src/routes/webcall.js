@@ -1,7 +1,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const logger = require('../utils/logger');
-const { WebCallWidget, RingGroup, Extension, IVR, Queue } = require('../models');
+const { WebCallWidget, RingGroup, Extension, IVR, Queue, TimeCondition } = require('../models');
 const { clientConfig } = require('./webrtc');
 
 // ============================================================
@@ -179,6 +179,8 @@ function adminHandlers(deps) {
           branding: b.branding || {},
           allowedDomains: Array.isArray(b.allowedDomains) ? b.allowedDomains : [],
           maxConcurrent: b.maxConcurrent || 5,
+          businessHours: b.businessHours || { enabled: false },
+          crmCreateLead: !!b.crmCreateLead,
           enabled: b.enabled !== false
         });
         logger.info(`WEBCALL: widget created ${widget.widgetId} (${widget.name}) -> ${dest.type}:${dest.target}`);
@@ -198,7 +200,7 @@ function adminHandlers(deps) {
           if (bad) return res.status(400).json({ success: false, error: bad });
           update.destination = { type: b.destination.type, target: String(b.destination.target) };
         }
-        ['name', 'collectInfo', 'branding', 'allowedDomains', 'maxConcurrent', 'enabled'].forEach(k => {
+        ['name', 'collectInfo', 'branding', 'allowedDomains', 'maxConcurrent', 'enabled', 'businessHours', 'crmCreateLead'].forEach(k => {
           if (b[k] !== undefined) update[k] = b[k];
         });
         const widget = await WebCallWidget.findOneAndUpdate({ widgetId: req.params.widgetId }, update, { new: true });
@@ -219,6 +221,29 @@ function adminHandlers(deps) {
       } catch (err) { res.status(500).json({ success: false, error: err.message }); }
     },
 
+    // Everything a widget can point at — used by the Web Dialer editor (Phase 5)
+    listDestinations: async (req, res) => {
+      try {
+        const [exts, groups, ivrs, queues, conds] = await Promise.all([
+          Extension.find({ enabled: true }, 'extension name').sort({ extension: 1 }).lean(),
+          RingGroup.find({}, 'number name').sort({ number: 1 }).lean(),
+          IVR.find({ enabled: true }, 'number name').sort({ number: 1 }).lean(),
+          Queue.find({ enabled: true }, 'number name').sort({ number: 1 }).lean(),
+          TimeCondition.find({ enabled: true }, 'number name').sort({ number: 1 }).lean()
+        ]);
+        res.json({
+          success: true,
+          destinations: {
+            extension: exts.map(e => ({ number: e.extension, name: e.name || '' })),
+            ringgroup: groups.map(g => ({ number: g.number, name: g.name || '' })),
+            ivr: ivrs.map(i => ({ number: i.number, name: i.name || '' })),
+            queue: queues.map(q => ({ number: q.number, name: q.name || '' })),
+            timecondition: conds.map(t => ({ number: t.number, name: t.name || '' }))
+          }
+        });
+      } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+    },
+
     listGuests: (req, res) => {
       res.json({ success: true, summary: gm.summary(), guests: gm.list() });
     },
@@ -236,6 +261,7 @@ function mountAdmin(router, h, prefix, guards) {
   router.post(`${prefix}/widgets`, ...g, h.createWidget);
   router.put(`${prefix}/widgets/:widgetId`, ...g, h.updateWidget);
   router.delete(`${prefix}/widgets/:widgetId`, ...g, h.deleteWidget);
+  router.get(`${prefix}/destinations`, ...g, h.listDestinations);
   router.get(`${prefix}/guests`, ...g, h.listGuests);
   router.delete(`${prefix}/guests/:username`, ...g, h.killGuest);
   return router;
@@ -249,7 +275,21 @@ function createWebcallApiRouter(deps) {
 // ---------- session router (admin UI, mounted at /) ----------
 function createWebcallWebRouter(deps) {
   const web = require('./web');
-  return mountAdmin(express.Router(), adminHandlers(deps), '/webcall/api', [web.authMiddleware, web.adminOnly]);
+  const router = express.Router();
+
+  // Web Dialer admin page (Phase 5)
+  router.get('/webdialer', web.authMiddleware, web.adminOnly, (req, res) => {
+    res.render('pages/webdialer', {
+      apiKey: '',
+      role: req.session ? req.session.role : '',
+      user: req.session ? req.session.user : '',
+      userName: req.session ? req.session.name : '',
+      userExt: req.session ? req.session.extension : '',
+      userId: req.session ? req.session.userId : ''
+    });
+  });
+
+  return mountAdmin(router, adminHandlers(deps), '/webcall/api', [web.authMiddleware, web.adminOnly]);
 }
 
 module.exports = { createWebcallPublicRouter, createWebcallApiRouter, createWebcallWebRouter };

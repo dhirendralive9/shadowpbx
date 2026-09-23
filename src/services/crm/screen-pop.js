@@ -64,22 +64,28 @@ class ScreenPopHandler {
   // ──────────────────────────────────────────────────────────
 
   async _onCallRinging(data) {
-    const { callId, callerPhone, targetExtension, direction, callerName } = data;
+    const { callId, callerPhone, targetExtension, direction, callerName, web } = data;
 
-    if (!callerPhone || !targetExtension) return;
+    if (!targetExtension) return;
     if (direction === 'internal') return;  // no screen pop for internal calls
+    // Web callers (Web Dialer Phase 6) may have no number at all — the widget
+    // and the page they called from are what the agent needs to see, so they
+    // get a pop either way. Everyone else still needs a number to look up.
+    if (!callerPhone && !web) return;
 
     logger.debug(`ScreenPop: looking up ${callerPhone} for ext ${targetExtension}`);
 
     try {
-      // Search all scoped CRM adapters in parallel
-      const results = await this.crmManager.searchContactAll(callerPhone, targetExtension);
+      // Search all scoped CRM adapters in parallel (only if we have a number)
+      const results = callerPhone ? await this.crmManager.searchContactAll(callerPhone, targetExtension) : [];
 
       const screenPopData = {
         callId,
         callerPhone,
         callerName: callerName || '',
         direction: direction || 'inbound',
+        targetExtension,
+        web: web || null,
         timestamp: new Date().toISOString(),
         contacts: [],
         matched: false,
@@ -125,12 +131,44 @@ class ScreenPopHandler {
             configId: results[0].configId,
           }).catch(() => {});
         }
+      } else if (web) {
+        logger.info(`ScreenPop: web caller ${web.name || web.number || 'anonymous'} via widget ${web.widgetName || web.widgetId} → ext ${targetExtension}`);
+        // Optionally file the web caller as a new CRM contact
+        if (web.createLead && (web.number || web.name)) {
+          this._createWebLead(web, targetExtension).catch(() => {});
+        }
       } else {
         logger.debug(`ScreenPop: ${callerPhone} → no match → ext ${targetExtension}`);
       }
 
     } catch (err) {
       logger.debug(`ScreenPop: lookup error for ${callerPhone}: ${err.message}`);
+    }
+  }
+
+  // ──────────────────────────────────────────────────────────
+  // Web caller → new CRM contact (Web Dialer Phase 6)
+  //
+  // Only when the widget asks for it and the caller left details.
+  // Filed against the first CRM scoped to the agent taking the call.
+  // ──────────────────────────────────────────────────────────
+
+  async _createWebLead(web, extension) {
+    try {
+      const scoped = this.crmManager._getScopedAdapters(extension) || [];
+      if (scoped.length === 0) return;
+      const configId = scoped[0].config._id.toString();
+      const id = await this.crmManager.createContact(configId, {
+        name: web.name || `Web caller ${web.number || ''}`.trim(),
+        phone: web.number || '',
+        company: '',
+        email: '',
+        source: `Web dialer: ${web.widgetName || web.widgetId}`,
+        description: web.page ? `Called from ${web.page}` : ''
+      });
+      if (id) logger.info(`ScreenPop: created CRM contact ${id} for web caller via ${web.widgetName || web.widgetId}`);
+    } catch (err) {
+      logger.warn(`ScreenPop: could not create a CRM contact for the web caller: ${err.message}`);
     }
   }
 
