@@ -193,7 +193,7 @@ The installer prompts for:
 - Drachtio v0.8.25 (UDP :5060 + WS :5061)
 - RTPEngine with pcap recording to `/var/spool/rtpengine/`
 - Nginx reverse proxy (HTTPS if domain provided)
-- WSS proxy for WebRTC (`wss://domain/ws` → `ws://127.0.0.1:5061`)
+- WSS proxy for WebRTC (`wss://domain/ws` → Drachtio's wss listener on 127.0.0.1:5062)
 - Let's Encrypt SSL with RSA key (ECDSA not supported by Drachtio)
 - `shadowpbx.service` and `shadowpbx-recorder.service`
 - fail2ban, iptables firewall, UDP buffer tuning
@@ -400,8 +400,9 @@ proxies `/ws` to it.
 ## Self-tests
 
 ```bash
-node scripts/webrtc-selftest.js     # RTPEngine WebRTC bridge — 36 checks
-node scripts/webcall-selftest.js    # guest tokens, auth, lockdown, lifecycle
+node scripts/webrtc-selftest.js      # RTPEngine WebRTC bridge — 36 checks
+node scripts/webcall-selftest.js     # guest tokens, auth, lockdown, lifecycle
+node scripts/wss-register-probe.js   # browser signalling path: nginx -> Drachtio -> PBX
 ```
 
 ---

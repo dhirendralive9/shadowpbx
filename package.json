@@ -10,7 +10,8 @@
     "setup:webrtc": "bash scripts/setup-webrtc.sh",
     "setup:turn": "bash scripts/setup-turn.sh",
     "test:webrtc": "node scripts/webrtc-selftest.js",
-    "test:webcall": "node scripts/webcall-selftest.js"
+    "test:webcall": "node scripts/webcall-selftest.js",
+    "test:wss": "node scripts/wss-register-probe.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

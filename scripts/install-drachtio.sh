@@ -243,6 +243,8 @@ docker run -d \
 sleep 3
 if docker ps | grep -q drachtio; then
   log "Drachtio v0.8.25 running on UDP:5060 + WS:5061"
+  # A wss listener is added later, once a certificate exists (step 7b) —
+  # Drachtio will not start a wss transport without one.
 else
   err "Drachtio failed - check: docker logs drachtio"
 fi
@@ -530,9 +532,17 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
-    # SIP.js WebSocket -> Drachtio WS
+    # SIP.js WebSocket -> Drachtio WSS (5062)
+    #
+    # Browsers connect over wss://, so SIP.js writes "Via: SIP/2.0/WSS".
+    # Sofia-sip silently drops messages whose Via transport has no matching
+    # listener, so Drachtio needs a real wss listener and nginx must speak
+    # TLS to it. Proxying to the plain ws port (5061) makes REGISTER time out
+    # with no log anywhere.
     location /ws {
-        proxy_pass http://127.0.0.1:5061;
+        proxy_pass https://127.0.0.1:5062;
+        proxy_ssl_verify off;
+        proxy_ssl_server_name on;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -544,6 +554,49 @@ server {
 }
 NGINXEOF
       nginx -t && systemctl reload nginx
+
+      # ── Drachtio WSS listener (browser calling) ──
+      # Drachtio terminates TLS itself on the wss transport — it refuses to
+      # start one without a key file — so give it the certificate.
+      mkdir -p /etc/shadowpbx/tls
+      cp /etc/letsencrypt/live/${WEB_DOMAIN}/fullchain.pem /etc/shadowpbx/tls/
+      cp /etc/letsencrypt/live/${WEB_DOMAIN}/privkey.pem /etc/shadowpbx/tls/
+      chmod 600 /etc/shadowpbx/tls/*.pem
+
+      docker rm -f drachtio > /dev/null 2>&1 || true
+      docker run -d \
+        --name drachtio \
+        --restart unless-stopped \
+        --net host \
+        -v /etc/shadowpbx/tls:/etc/drachtio-tls:ro \
+        --entrypoint drachtio \
+        drachtio/drachtio-server:0.8.25 \
+          --contact "sip:${EXTERNAL_IP}:5060;transport=udp,tcp" \
+          --contact "sip:127.0.0.1:5061;transport=ws" \
+          --contact "sips:127.0.0.1:5062;transport=wss,tls-cert-file=/etc/drachtio-tls/fullchain.pem,tls-key-file=/etc/drachtio-tls/privkey.pem" \
+          --external-ip ${EXTERNAL_IP} \
+          --secret ${DRACHTIO_SECRET} \
+          --loglevel info
+      sleep 3
+      if ss -ltn 2>/dev/null | grep -q '127.0.0.1:5062'; then
+        log "Drachtio WSS listener ready on 127.0.0.1:5062 (browser calling)"
+      else
+        warn "Drachtio WSS listener did not start — check: docker logs drachtio"
+        warn "Browser calling will not work until it does. Re-run: scripts/setup-webrtc.sh --fix-drachtio"
+      fi
+
+      # Keep Drachtio's copy of the certificate fresh after renewal
+      mkdir -p /etc/letsencrypt/renewal-hooks/deploy
+      cat > /etc/letsencrypt/renewal-hooks/deploy/shadowpbx-drachtio.sh << 'HOOKEOF'
+#!/bin/bash
+DOMAIN=$(grep '^WEB_DOMAIN=' /opt/shadowpbx/.env | cut -d= -f2)
+[ -z "$DOMAIN" ] && exit 0
+cp /etc/letsencrypt/live/${DOMAIN}/fullchain.pem /etc/shadowpbx/tls/ 2>/dev/null
+cp /etc/letsencrypt/live/${DOMAIN}/privkey.pem  /etc/shadowpbx/tls/ 2>/dev/null
+chmod 600 /etc/shadowpbx/tls/*.pem 2>/dev/null
+docker restart drachtio > /dev/null 2>&1
+HOOKEOF
+      chmod +x /etc/letsencrypt/renewal-hooks/deploy/shadowpbx-drachtio.sh
 
       # Copy certs for reference
       mkdir -p ${CERTS_DIR}

@@ -8,8 +8,8 @@
 #   Browser <──DTLS-SRTP + ICE──> RTPEngine <──plain RTP──> phones / trunks
 #
 # What it does:
-#   1. Checks Drachtio still has its WS listener (setup-tls.sh used to drop it)
-#   2. Checks nginx proxies /ws to Drachtio and completes a real WSS handshake
+#   1. Checks Drachtio has a wss listener for browsers (and a ws one)
+#   2. Checks nginx proxies /ws to it and completes a real WSS handshake
 #   3. Checks the TLS certificate on the web domain
 #   4. Checks RTPEngine advertises the public IP (needed for ICE)
 #   5. Opens UDP 10000-20000 (media) and TCP 443 (HTTPS/WSS) in the firewall
@@ -124,12 +124,75 @@ else
   D_ARGS=$(docker inspect drachtio --format '{{join .Config.Cmd " "}} {{join .Args " "}}' 2>/dev/null)
   D_IMAGE=$(docker inspect drachtio --format '{{.Config.Image}}' 2>/dev/null)
   D_IMAGE=${D_IMAGE:-$DEFAULT_DRACHTIO_IMAGE}
-  HAS_WS=false; HAS_TLS=false
+  HAS_WS=false; HAS_TLS=false; HAS_WSS=false
   echo "$D_ARGS" | grep -q 'transport=ws' && HAS_WS=true
   echo "$D_ARGS" | grep -q 'transport=tls' && HAS_TLS=true
+  echo "$D_ARGS" | grep -q 'transport=wss' && HAS_WSS=true
+
+  # Browsers connect over wss://, so SIP.js writes "Via: SIP/2.0/WSS".
+  # Sofia-sip drops any message whose Via transport has no listener — silently,
+  # with no log line anywhere — so a missing wss contact looks like a hang.
+  # Drachtio terminates TLS itself on that transport and refuses to start one
+  # without a key file, hence the certificate copy below.
+  if $HAS_WSS && ss -ltn 2>/dev/null | grep -q '127.0.0.1:5062'; then
+    log "Drachtio has a WSS contact and is listening on 127.0.0.1:5062 (${D_IMAGE})"
+  elif [ -n "$WEB_DOMAIN" ] && [ -f "/etc/letsencrypt/live/${WEB_DOMAIN}/privkey.pem" ]; then
+    err "Drachtio has no working WSS listener — browser REGISTER will time out with no log"
+    if $FIX_DRACHTIO || confirm "Recreate Drachtio with a WSS listener on 127.0.0.1:5062?"; then
+      if [ -z "$EXTERNAL_IP" ] || [ -z "$DRACHTIO_SECRET" ]; then
+        err "EXTERNAL_IP / DRACHTIO_SECRET missing in .env — cannot recreate Drachtio"
+      else
+        mkdir -p /etc/shadowpbx/tls
+        cp "/etc/letsencrypt/live/${WEB_DOMAIN}/fullchain.pem" /etc/shadowpbx/tls/
+        cp "/etc/letsencrypt/live/${WEB_DOMAIN}/privkey.pem" /etc/shadowpbx/tls/
+        chmod 600 /etc/shadowpbx/tls/*.pem
+        TLS5061=()
+        if $HAS_TLS && [ -f "${TLS_DIR}/fullchain.pem" ]; then
+          TLS5061=(--contact "sips:${EXTERNAL_IP}:5061;transport=tls,tls-cert-file=/etc/drachtio-tls-sip/fullchain.pem,tls-key-file=/etc/drachtio-tls-sip/privkey.pem")
+        fi
+        docker rm -f drachtio >/dev/null 2>&1 || true
+        docker run -d \
+          --name drachtio \
+          --restart unless-stopped \
+          --net host \
+          -v /etc/shadowpbx/tls:/etc/drachtio-tls:ro \
+          -v "${TLS_DIR}:/etc/drachtio-tls-sip:ro" \
+          --entrypoint drachtio \
+          "${D_IMAGE}" \
+            --contact "sip:${EXTERNAL_IP}:5060;transport=udp,tcp" \
+            "${TLS5061[@]}" \
+            --contact "sip:127.0.0.1:5061;transport=ws" \
+            --contact "sips:127.0.0.1:5062;transport=wss,tls-cert-file=/etc/drachtio-tls/fullchain.pem,tls-key-file=/etc/drachtio-tls/privkey.pem" \
+            --external-ip "${EXTERNAL_IP}" \
+            --secret "${DRACHTIO_SECRET}" \
+            --loglevel info >/dev/null
+        sleep 4
+        if ss -ltn 2>/dev/null | grep -q '127.0.0.1:5062'; then
+          log "Drachtio recreated with a WSS listener"; CHANGED=true; FAILURES=$((FAILURES-1))
+          # Keep its certificate copy fresh after renewal
+          mkdir -p /etc/letsencrypt/renewal-hooks/deploy
+          cat > /etc/letsencrypt/renewal-hooks/deploy/shadowpbx-drachtio.sh << 'HOOKEOF'
+#!/bin/bash
+DOMAIN=$(grep '^WEB_DOMAIN=' /opt/shadowpbx/.env | cut -d= -f2)
+[ -z "$DOMAIN" ] && exit 0
+cp /etc/letsencrypt/live/${DOMAIN}/fullchain.pem /etc/shadowpbx/tls/ 2>/dev/null
+cp /etc/letsencrypt/live/${DOMAIN}/privkey.pem  /etc/shadowpbx/tls/ 2>/dev/null
+chmod 600 /etc/shadowpbx/tls/*.pem 2>/dev/null
+docker restart drachtio > /dev/null 2>&1
+HOOKEOF
+          chmod +x /etc/letsencrypt/renewal-hooks/deploy/shadowpbx-drachtio.sh
+          log "Certificate renewal hook installed for Drachtio"
+        else
+          err "Drachtio WSS listener did not start — check: docker logs drachtio"
+        fi
+      fi
+    fi
+  else
+    warn "No WSS listener and no certificate for ${WEB_DOMAIN:-<no domain>} — get one first, then re-run with --fix-drachtio"
+  fi
 
   if $HAS_WS; then
-    log "Drachtio has a WS contact (${D_IMAGE})"
+    log "Drachtio has a WS contact"
   else
     err "Drachtio has NO WS contact — browsers cannot register (commonly caused by an older setup-tls.sh)"
     TLS_LABEL=""; $HAS_TLS && TLS_LABEL=" + existing TLS 5061"
@@ -178,15 +241,17 @@ fi
 # ============================================================
 step "2/7 nginx /ws proxy"
 # ============================================================
-NGINX_FILE=$(grep -rls 'proxy_pass http://127.0.0.1:5061' /etc/nginx/sites-enabled/ /etc/nginx/conf.d/ 2>/dev/null | head -1)
+NGINX_FILE=$(grep -Rls 'proxy_pass https\?://127.0.0.1:506[12]' /etc/nginx/sites-enabled/ /etc/nginx/sites-available/ /etc/nginx/conf.d/ 2>/dev/null | head -1)
 if [ -z "$NGINX_FILE" ]; then
-  err "No nginx location proxies to Drachtio WS (127.0.0.1:5061)"
+  err "No nginx location proxies /ws to Drachtio"
   info "Add this inside the 'listen 443 ssl' server block for ${WEB_DOMAIN:-your domain}, then: nginx -t && systemctl reload nginx"
   cat << 'NGX'
 
-    # SIP over WebSocket (WebRTC) -> Drachtio WS
+    # SIP over WebSocket (WebRTC) -> Drachtio WSS
     location /ws {
-        proxy_pass http://127.0.0.1:5061;
+        proxy_pass https://127.0.0.1:5062;
+        proxy_ssl_verify off;
+        proxy_ssl_server_name on;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -199,6 +264,11 @@ if [ -z "$NGINX_FILE" ]; then
 NGX
 else
   log "WS proxy found in ${NGINX_FILE}"
+  if grep -q 'proxy_pass http://127.0.0.1:5061' "$NGINX_FILE"; then
+    err "/ws proxies to the PLAIN ws port (5061) — browsers send Via: SIP/2.0/WSS and Drachtio drops it silently"
+    info "Change that line to:  proxy_pass https://127.0.0.1:5062;  and add:  proxy_ssl_verify off;"
+    info "Then: nginx -t && systemctl reload nginx"
+  fi
   grep -q 'proxy_read_timeout' "$NGINX_FILE" || warn "No proxy_read_timeout on /ws — nginx will drop idle SIP WebSockets after 60s (set 3600s)"
   grep -q 'listen 443' "$NGINX_FILE" || warn "${NGINX_FILE} has no 'listen 443' — browsers require wss:// (HTTPS)"
 fi
@@ -231,7 +301,7 @@ else
       log "wss://${WEB_DOMAIN}/ws answered 101 Switching Protocols (TLS + nginx + Drachtio OK)"
     else
       err "wss://${WEB_DOMAIN}/ws returned HTTP ${CODE:-no response} (expected 101)"
-      info "000 = TLS/DNS/firewall problem · 502 = nginx cannot reach Drachtio 127.0.0.1:5061 · 404 = /ws location missing"
+      info "000 = TLS/DNS/firewall problem · 502 = nginx cannot reach Drachtio (is 5062 listening?) · 404 = /ws location missing"
     fi
   fi
 fi
@@ -357,6 +427,11 @@ if [ -f "${APP_DIR}/scripts/webrtc-selftest.js" ]; then
   (cd "${APP_DIR}" && node scripts/webrtc-selftest.js) || FAILURES=$((FAILURES+1))
 else
   warn "${APP_DIR}/scripts/webrtc-selftest.js not found — copy the Phase 1 files to ${APP_DIR} first"
+fi
+
+# End-to-end SIP probe: nginx -> Drachtio -> ShadowPBX, exactly as a browser does it
+if [ -f "${APP_DIR}/scripts/wss-register-probe.js" ]; then
+  (cd "${APP_DIR}" && node scripts/wss-register-probe.js) || FAILURES=$((FAILURES+1))
 fi
 
 echo ""

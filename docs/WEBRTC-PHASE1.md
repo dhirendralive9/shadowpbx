@@ -24,10 +24,37 @@ Admin → **Network → WebRTC**:
    `audio/PCMU/8000`, recording in CDR as usual.
 3. Call the browser extension from a desk phone to test the reverse direction.
 
+## How the signalling path fits together
+
+```
+browser ──wss://domain/ws──> nginx (TLS) ──TLS──> Drachtio wss  127.0.0.1:5062 ──> ShadowPBX
+```
+
+Drachtio needs a **wss** listener, not just a ws one, and it terminates that
+TLS itself — it refuses to start the transport without a certificate, which is
+why `/etc/shadowpbx/tls` exists and is refreshed by a certbot renewal hook.
+
+This matters because of one silent failure mode: browsers connect over `wss://`,
+so SIP.js writes `Via: SIP/2.0/WSS`, and sofia-sip discards any message whose
+Via transport has no matching listener — with no log line in Drachtio or
+ShadowPBX. The WebSocket connects happily, the REGISTER disappears, and the
+browser reports `408 Request Timeout` about 30 seconds later. Proxying `/ws` to
+the plain ws port (5061) produces exactly the same symptom.
+
+Check the whole path in one command:
+
+```bash
+node scripts/wss-register-probe.js            # through nginx, as a browser does
+node scripts/wss-register-probe.js --direct   # bypass nginx, straight to Drachtio
+```
+
+A `401` is success: the request reached ShadowPBX and was challenged.
+
 ## Troubleshooting
 
 | Symptom | Likely cause |
 |---|---|
+| WebSocket connects, REGISTER times out (408), nothing logged | No Drachtio wss listener, or nginx `/ws` points at 5061 — `setup-webrtc.sh --fix-drachtio` |
 | Register fails, "Start failed" | WSS: cert, nginx `/ws`, or Drachtio WS listener — re-run setup-webrtc.sh |
 | Call connects, ICE `failed` | UDP 10000-20000 blocked, or RTPEngine advertises a private IP (`--fix-rtpengine`) |
 | Sent packets rise, received stay 0 | Same as above, or one-way NAT — TURN arrives in Phase 8 |
@@ -38,7 +65,7 @@ with the resulting profile, codecs, ICE and DTLS role.
 
 ## API
 
-- `GET /api/webrtc/status` (X-API-Key) — config, RTPEngine, WSS, browser registrations, issues
+- `GET /api/webrtc/status` (X-API-Key) — config, RTPEngine, WSS, TURN, browser registrations, issues
 - `POST /api/webrtc/selftest` (X-API-Key) — run the bridge self-test
 - `/health` now includes `checks.webrtc`
 

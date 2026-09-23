@@ -249,6 +249,8 @@ function spRegister() {
     });
   }).catch(function (e) {
     log('Start failed: ' + e.message + ' — check WSS URL, TLS certificate and nginx /ws proxy');
+    log('If the WebSocket connects but REGISTER times out (408), Drachtio has no wss listener ' +
+        'or nginx /ws points at port 5061 — run: sudo bash scripts/setup-webrtc.sh --fix-drachtio');
     pill('sp-reg-state', 'failed', 'p-err');
     ua = null;
   });
