@@ -142,11 +142,21 @@ class CallHandler {
 
     try {
       const contact = this._getLatestContact(calleeContacts);
-      const targetUri = `sip:${toExt}@${contact.ip}:${contact.port}`;
-      logger.info(`INTERNAL: ${fromExt} -> ${toExt} at ${contact.ip}:${contact.port}`);
-      const rtpOffer = await this._rtpengineOffer(callId, from.params.tag, req.body);
+      const target = this._contactTarget(toExt, contact);
+      const targetUri = target.uri;
+      logger.info(`INTERNAL: ${fromExt} -> ${toExt} at ${contact.ip}:${contact.port}${target.webrtc ? ' (WebRTC)' : ''}${this._isWebRTCRequest(req) ? ' [caller WebRTC]' : ''}`);
+      const rtpOffer = await this._rtpengineOffer(callId, from.params.tag, req.body, { target: target.media });
 
       if (!rtpOffer) {
+        // A browser leg can't talk directly to a plain-RTP phone (DTLS-SRTP/ICE
+        // vs RTP/AVP) — without RTPEngine there is no media, so fail cleanly.
+        if (target.webrtc || this._isWebRTCRequest(req)) {
+          logger.warn(`INTERNAL: WebRTC call ${fromExt} -> ${toExt} needs RTPEngine bridging but the offer failed [${callId}]`);
+          this._emitPresence(fromExt, 'idle');
+          this._emitPresence(toExt, 'idle');
+          try { res.send(488); } catch (e) {}
+          return this._failCall(cdr, Object.assign(new Error('WebRTC media bridge unavailable'), { status: 488 }), fromExt, toExt);
+        }
         return this._directCall(req, res, targetUri, cdr, callId);
       }
 
@@ -303,13 +313,14 @@ class CallHandler {
       }
 
       const contact = this._getLatestContact(contacts);
-      const targetUri = `sip:${target}@${contact.ip}:${contact.port}`;
-      logger.info(`INBOUND: dialing ${target} at ${contact.ip}:${contact.port}`);
+      const dest = this._contactTarget(target, contact);
+      const targetUri = dest.uri;
+      logger.info(`INBOUND: dialing ${target} at ${contact.ip}:${contact.port}${dest.webrtc ? ' (WebRTC)' : ''}`);
 
       try {
         // Route through RTPEngine for proper NAT/media handling
         const fromTag = req.getParsedHeader('From').params.tag;
-        const rtpOffer = await this._rtpengineOffer(callId, fromTag, req.body);
+        const rtpOffer = await this._rtpengineOffer(callId, fromTag, req.body, { target: dest.media });
         const offerSdp = rtpOffer ? rtpOffer.sdp : req.body;
 
         const { uas, uac } = await this.srf.createB2BUA(req, res, targetUri, {
@@ -607,11 +618,12 @@ class CallHandler {
     this._emitPresence(toExt, 'ringing', { callId, remoteParty: callerID, direction: 'recipient' });
 
     const contact = this._getLatestContact(contacts);
-    const targetUri = `sip:${toExt}@${contact.ip}:${contact.port}`;
+    const dest = this._contactTarget(toExt, contact);
+    const targetUri = dest.uri;
 
     try {
       const fromTag = req.getParsedHeader('From').params.tag;
-      const rtpOffer = await this._rtpengineOffer(callId, fromTag, req.body);
+      const rtpOffer = await this._rtpengineOffer(callId, fromTag, req.body, { target: dest.media });
       const offerSdp = rtpOffer ? rtpOffer.sdp : req.body;
 
       const { uas, uac } = await this.srf.createB2BUA(req, res, targetUri, {
@@ -835,9 +847,33 @@ class CallHandler {
     }
   }
 
-  async _rtpengineOffer(callId, fromTag, sdp) {
+  // opts.target: 'webrtc' | 'sip' — media type of the endpoint receiving the offer.
+  // Omitted = SIP endpoint (previous behaviour). A browser caller's offer is
+  // detected automatically from its SDP and converted to plain RTP.
+  async _rtpengineOffer(callId, fromTag, sdp, opts) {
     const rtpHelper = require('../utils/rtp-helper');
-    return rtpHelper.offer(this.rtpengine, callId, fromTag, sdp, { 'record call': 'yes' });
+    return rtpHelper.offer(this.rtpengine, callId, fromTag, sdp, { 'record call': 'yes' }, opts);
+  }
+
+  // ============================================================
+  // WebRTC helpers (Phase 1)
+  // ============================================================
+
+  // Request-URI + media type for a registered contact.
+  // Falls back to the classic sip:ext@ip:port form if the registrar
+  // predates the WebRTC changes.
+  _contactTarget(ext, contact) {
+    if (this.registrar && typeof this.registrar.contactTarget === 'function') {
+      const t = this.registrar.contactTarget(ext, contact);
+      if (t) return t;
+    }
+    return { uri: `sip:${ext}@${contact.ip}:${contact.port}`, media: 'sip', webrtc: false };
+  }
+
+  // True when the INVITE came from a browser (WS transport or WebRTC SDP).
+  _isWebRTCRequest(req) {
+    const sdpUtil = require('../utils/webrtc-sdp');
+    return sdpUtil.isWebSocketTransport(sdpUtil.requestTransport(req)) || sdpUtil.isWebRTCSdp(req.body);
   }
 
   async _rtpengineAnswer(callId, fromTag, toTag, sdp) {

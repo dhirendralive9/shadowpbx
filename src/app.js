@@ -302,6 +302,10 @@ async function main() {
   });
 
   app.use('/api', createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler, monitorHandler, timeConditionService, presenceHandler, queueHandler, appointmentHandler, dialerEngine, securityTracker));
+
+  // WebRTC (Phase 1): bridge status + RTPEngine self-test (API-key protected)
+  const webrtcRoutes = require('./routes/webrtc');
+  app.use('/api', webrtcRoutes.createWebrtcApiRouter({ rtpengine, registrar }));
   // ─── Health & Monitoring Endpoint ───
   app.get('/health', async (req, res) => {
     const uptime = process.uptime();
@@ -348,6 +352,9 @@ async function main() {
       for (const [, c] of dialerEngine.activeCalls) dialerActiveCalls++;
     }
 
+    // WebRTC bridge (Phase 1)
+    try { checks.webrtc = rtpHelper.webrtcSummary(); } catch (e) { checks.webrtc = 'error'; }
+
     const overall = (checks.mongodb === 'ok' && checks.rtpengine === 'ok') ? 'healthy' :
                     (checks.mongodb === 'ok' ? 'degraded' : 'unhealthy');
 
@@ -372,6 +379,9 @@ async function main() {
       }
     });
   });
+
+  // WebRTC admin page + session-authenticated status/self-test
+  app.use('/', webrtcRoutes.createWebrtcWebRouter({ rtpengine, registrar }));
 
   // Web GUI routes
   app.use('/', createWebRouter(process.env.ADMIN_SECRET));

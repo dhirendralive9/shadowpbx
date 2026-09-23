@@ -16,6 +16,8 @@ const extensionSchema = new mongoose.Schema({
     contactUri: String,
     ip: String,
     port: Number,
+    transport: { type: String, default: 'udp' },   // udp | tcp | tls | ws | wss
+    webrtc: { type: Boolean, default: false },       // registered from a browser (SIP over WebSocket)
     userAgent: String,
     expires: Date,
     registeredAt: { type: Date, default: Date.now }

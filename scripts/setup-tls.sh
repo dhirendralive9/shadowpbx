@@ -131,7 +131,10 @@ docker stop drachtio 2>/dev/null || true
 docker rm drachtio 2>/dev/null || true
 
 # Drachtio supports multiple --contact flags for multi-transport
-# We keep UDP on 5060 and add TLS on 5061
+# We keep UDP on 5060 and add TLS on 5061.
+# The WS listener on 127.0.0.1:5061 MUST stay: nginx proxies browser
+# WebRTC signalling (wss://<domain>/ws) to it. Without it the web phone,
+# the WebRTC test page and the web dialer widget stop working.
 docker run -d \
   --name drachtio \
   --restart unless-stopped \
@@ -141,6 +144,7 @@ docker run -d \
   drachtio \
     --contact "sip:${EXTERNAL_IP}:5060;transport=udp" \
     --contact "sips:${EXTERNAL_IP}:5061;transport=tls,tls-cert-file=/etc/drachtio-tls/fullchain.pem,tls-key-file=/etc/drachtio-tls/privkey.pem" \
+    --contact "sip:127.0.0.1:5061;transport=ws" \
     --external-ip ${EXTERNAL_IP} \
     --admin-port 9022 \
     --secret ${DRACHTIO_SECRET} \
@@ -148,7 +152,7 @@ docker run -d \
 
 sleep 3
 if docker ps | grep -q drachtio; then
-  log "Drachtio running with TLS on :5061 + UDP on :5060"
+  log "Drachtio running with TLS on :5061 + UDP on :5060 + WS on 127.0.0.1:5061"
 else
   err "Drachtio failed to start — check: docker logs drachtio"
   exit 1

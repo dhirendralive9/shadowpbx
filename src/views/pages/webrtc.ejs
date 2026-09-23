@@ -1,0 +1,408 @@
+<%- include('../partials/head', { title: 'WebRTC', active: 'network' }) %>
+<%- include('../partials/network-tabs', { netActive: 'webrtc' }) %>
+
+<div class="sec-head">
+  <span class="sec-title">WebRTC bridge</span>
+  <button class="btn btn-sm" onclick="loadStatus()">Refresh</button>
+</div>
+
+<div class="grid-2">
+  <div class="mini-card">
+    <div class="mc-title">Status</div>
+    <div id="wr-status"><div class="mc-row"><span class="muted">Loading...</span></div></div>
+  </div>
+  <div class="mini-card">
+    <div class="mc-title">Issues</div>
+    <div id="wr-issues"><div class="mc-row"><span class="muted">Loading...</span></div></div>
+  </div>
+</div>
+
+<div class="mini-card" style="margin-bottom:14px">
+  <div class="mc-title">Browser registrations <span class="muted" id="wr-reg-count" style="font-weight:400;text-transform:none;letter-spacing:0"></span></div>
+  <div id="wr-regs"><div class="mc-row"><span class="muted">None</span></div></div>
+</div>
+
+<div class="sec-head">
+  <span class="sec-title">RTPEngine self-test</span>
+  <button class="btn btn-primary btn-sm" id="st-btn" onclick="runSelftest()">Run self-test</button>
+</div>
+<p class="muted" style="font-size:12px;margin:-6px 0 10px">
+  Sends synthetic browser and desk-phone SDPs through RTPEngine (no real call) and checks each leg is converted correctly:
+  browser &rarr; plain RTP/AVP G.711, phone &rarr; DTLS-SRTP + ICE, and phone &rarr; phone unchanged.
+</p>
+<div id="st-out" style="margin-bottom:18px"></div>
+
+<div class="sec-head">
+  <span class="sec-title">Test softphone</span>
+  <span class="muted" style="font-size:12px">SIP.js <span id="sipjs-ver"></span> over <span class="mono" id="wss-label"></span></span>
+</div>
+<div id="secure-warn" class="mini-card" style="display:none;margin-bottom:14px;border-color:var(--red)">
+  <div class="mc-row"><span class="pill p-err">HTTP</span><span>Microphone access needs HTTPS. Open this page via https:// on your PBX domain.</span></div>
+</div>
+
+<div class="grid-2">
+  <div class="mini-card">
+    <div class="mc-title">1. Register an extension</div>
+    <div class="form-group"><label class="form-label">WSS URL</label><input class="form-input mono" id="sp-wss"></div>
+    <div class="form-group"><label class="form-label">SIP domain</label><input class="form-input mono" id="sp-domain"></div>
+    <div style="display:flex;gap:8px">
+      <div class="form-group" style="flex:1"><label class="form-label">Extension</label><input class="form-input" id="sp-ext" placeholder="1001" autocomplete="off"></div>
+      <div class="form-group" style="flex:1"><label class="form-label">SIP password</label><input class="form-input" id="sp-pass" type="password" autocomplete="new-password"></div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <button class="btn btn-primary btn-sm" id="sp-reg" onclick="spRegister()">Register</button>
+      <button class="btn btn-sm" id="sp-unreg" onclick="spUnregister()" disabled>Unregister</button>
+      <span class="pill p-gray" id="sp-reg-state">offline</span>
+    </div>
+  </div>
+
+  <div class="mini-card">
+    <div class="mc-title">2. Call</div>
+    <div style="display:flex;gap:8px">
+      <div class="form-group" style="flex:1"><label class="form-label">Dial (extension, ring group, or number)</label><input class="form-input" id="sp-dest" placeholder="1002"></div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <button class="btn btn-primary btn-sm" id="sp-call" onclick="spCall()" disabled>Call</button>
+      <button class="btn btn-sm" id="sp-answer" onclick="spAnswer()" style="display:none">Answer</button>
+      <button class="btn btn-danger btn-sm" id="sp-hang" onclick="spHangup()" disabled>Hang up</button>
+      <button class="btn btn-sm" id="sp-mute" onclick="spMute()" disabled>Mute</button>
+      <span class="pill p-gray" id="sp-call-state">idle</span>
+      <span class="mono muted" id="sp-timer"></span>
+    </div>
+    <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:10px" id="sp-pad"></div>
+    <div class="mc-row" style="margin-top:10px"><span class="mc-name">ICE / DTLS</span><span class="pill p-gray" id="sp-ice">-</span></div>
+    <div class="mc-row"><span class="mc-name">Audio packets (sent / received)</span><span class="mono" id="sp-pkts">-</span></div>
+    <div class="mc-row"><span class="mc-name">Codec in use</span><span class="mono" id="sp-codec">-</span></div>
+  </div>
+</div>
+
+<div class="grid-2">
+  <div class="mini-card">
+    <div class="mc-title">Local SDP (browser &rarr; PBX)</div>
+    <div id="sdp-local" class="mono" style="font-size:11px"><span class="muted">-</span></div>
+  </div>
+  <div class="mini-card">
+    <div class="mc-title">Remote SDP (PBX &rarr; browser, from RTPEngine)</div>
+    <div id="sdp-remote" class="mono" style="font-size:11px"><span class="muted">-</span></div>
+  </div>
+</div>
+
+<div class="mini-card">
+  <div class="mc-title">Log <button class="btn btn-sm" style="float:right" onclick="document.getElementById('sp-log').textContent=''">Clear</button></div>
+  <pre id="sp-log" class="mono" style="font-size:11px;max-height:260px;overflow:auto;white-space:pre-wrap;margin:0"></pre>
+</div>
+
+<audio id="sp-audio" autoplay playsinline></audio>
+
+<script src="/vendor/sip-0.21.2.min.js"></script>
+<script>
+var CFG = <%- JSON.stringify(webrtcConfig || {}).replace(/</g, '\\u003c') %>;
+var ua = null, registerer = null, session = null, incoming = null, muted = false, statsTimer = null, callTimer = null, callStart = 0;
+
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+function log(msg) {
+  var el = document.getElementById('sp-log');
+  el.textContent += '[' + new Date().toLocaleTimeString() + '] ' + msg + '\n';
+  el.scrollTop = el.scrollHeight;
+}
+function pill(id, text, cls) { var el = document.getElementById(id); el.textContent = text; el.className = 'pill ' + cls; }
+function row(name, valHtml) { return '<div class="mc-row"><span class="mc-name">' + esc(name) + '</span>' + valHtml + '</div>'; }
+function okPill(ok, yes, no) { return '<span class="pill ' + (ok ? 'p-ok' : 'p-err') + '">' + esc(ok ? yes : no) + '</span>'; }
+
+// ---------- Status ----------
+async function loadStatus() {
+  try {
+    var r = await fetch('/webrtc/api/status', { credentials: 'same-origin' });
+    var d = await r.json();
+    var w = d.webrtc || {};
+    document.getElementById('wr-status').innerHTML =
+      row('Bridging', okPill(w.enabled, 'enabled', 'disabled')) +
+      row('RTPEngine', okPill(d.rtpengine === 'ok', 'responding', d.rtpengine)) +
+      row('Browser profile', '<span class="mono">' + esc(w.browserProtocol) + ' · DTLS ' + esc(w.dtlsAnswerRole) + '</span>') +
+      row('Codec policy', '<span class="mono">' + esc(w.codecPolicy) + '</span>') +
+      row('WSS', '<span class="mono">' + esc(d.signalling && d.signalling.wssUrl) + '</span>') +
+      row('STUN', '<span class="mono">' + esc((d.iceServers[0] && d.iceServers[0].urls || []).join(', ') || 'none') + '</span>') +
+      row('Bridged offers / answers', '<span class="mono">' + (w.webrtcOffers || 0) + ' / ' + (w.webrtcAnswers || 0) + '</span>') +
+      row('Failures', '<span class="mono">' + (w.webrtcFailures || 0) + '</span>') +
+      (w.lastWebrtcError ? row('Last error', '<span class="mono" style="font-size:11px">' + esc(w.lastWebrtcError) + '</span>') : '');
+    document.getElementById('wr-issues').innerHTML = (d.issues && d.issues.length)
+      ? d.issues.map(function (i) { return '<div class="mc-row"><span class="pill p-hold">check</span><span style="font-size:12px">' + esc(i) + '</span></div>'; }).join('')
+      : '<div class="mc-row"><span class="pill p-ok">ok</span><span class="muted">No configuration issues detected</span></div>';
+    var regs = d.registrations || [];
+    document.getElementById('wr-reg-count').textContent = regs.length ? '(' + regs.length + ')' : '';
+    document.getElementById('wr-regs').innerHTML = regs.length
+      ? regs.map(function (g) { return row(g.extension, '<span class="muted" style="font-size:12px">' + esc(g.transport) + ' · ' + esc(g.userAgent) + '</span>'); }).join('')
+      : '<div class="mc-row"><span class="muted">No browsers registered</span></div>';
+  } catch (e) {
+    document.getElementById('wr-status').innerHTML = row('Status', '<span class="pill p-err">' + esc(e.message) + '</span>');
+  }
+}
+
+// ---------- Self-test ----------
+async function runSelftest() {
+  var btn = document.getElementById('st-btn'), out = document.getElementById('st-out');
+  btn.disabled = true; btn.textContent = 'Running...';
+  try {
+    var r = await fetch('/webrtc/api/selftest', { method: 'POST', credentials: 'same-origin' });
+    var d = await r.json();
+    if (d.error) { out.innerHTML = '<span class="pill p-err">' + esc(d.error) + '</span>'; return; }
+    var html = '<div class="mc-row" style="margin-bottom:8px">' + okPill(d.ok, 'PASS', 'FAIL') +
+      '<span class="muted">' + d.summary.passed + ' / ' + d.summary.total + ' checks passed</span></div>';
+    d.scenarios.forEach(function (sc) {
+      html += '<table class="tbl" style="margin-bottom:12px"><thead><tr><th style="width:70px">' + (sc.ok ? 'PASS' : 'FAIL') +
+        '</th><th>' + esc(sc.name) + '</th><th>Detail</th></tr></thead><tbody>';
+      sc.results.forEach(function (x) {
+        html += '<tr><td>' + okPill(x.ok, 'ok', 'fail') + '</td><td>' + esc(x.name) + '</td><td class="mono" style="font-size:11px">' + esc(x.detail) + '</td></tr>';
+      });
+      html += '</tbody></table>';
+    });
+    out.innerHTML = html;
+    loadStatus();
+  } catch (e) {
+    out.innerHTML = '<span class="pill p-err">' + esc(e.message) + '</span>';
+  } finally {
+    btn.disabled = false; btn.textContent = 'Run self-test';
+  }
+}
+
+// ---------- SDP summary (mirrors src/utils/webrtc-sdp.js) ----------
+function sdpSummary(sdp) {
+  if (!sdp) return '<span class="muted">-</span>';
+  var proto = (sdp.match(/^m=audio\s+\d+\s+(\S+)/m) || [])[1] || '?';
+  var mline = (sdp.match(/^m=audio\s+\d+\s+\S+\s+([\d\s]+)$/m) || [])[1] || '';
+  var names = {}, re = /^a=rtpmap:(\d+)\s+([^/\s]+)/gm, m;
+  while ((m = re.exec(sdp)) !== null) names[m[1]] = m[2];
+  var codecs = mline.trim().split(/\s+/).filter(Boolean).map(function (pt) { return names[pt] || ({ '0': 'PCMU', '8': 'PCMA', '9': 'G722' })[pt] || pt; });
+  var cands = (sdp.match(/^a=candidate:.*$/gm) || []).map(function (c) { var p = c.split(' '); return p[4] + ':' + p[5] + ' ' + p[7]; });
+  var html = row('Profile', '<span>' + esc(proto) + '</span>') +
+    row('Codecs', '<span>' + esc(codecs.join(', ')) + '</span>') +
+    row('DTLS', '<span>' + (/^a=fingerprint:/m.test(sdp) ? 'yes, setup=' + esc((sdp.match(/^a=setup:(\S+)/m) || [])[1]) : 'no') + '</span>') +
+    row('rtcp-mux', '<span>' + (/^a=rtcp-mux/m.test(sdp) ? 'yes' : 'no') + '</span>') +
+    row('ICE candidates', '<span>' + esc(cands.join(' | ') || 'none') + '</span>');
+  return html + '<details style="margin-top:6px"><summary class="muted">Full SDP</summary><pre style="white-space:pre-wrap;font-size:10px">' + esc(sdp) + '</pre></details>';
+}
+
+// ---------- Softphone ----------
+function spRegister() {
+  var wss = document.getElementById('sp-wss').value.trim();
+  var domain = document.getElementById('sp-domain').value.trim();
+  var ext = document.getElementById('sp-ext').value.trim();
+  var pass = document.getElementById('sp-pass').value;
+  if (!wss || !domain || !ext || !pass) { log('Fill in WSS URL, domain, extension and password'); return; }
+  if (ua) { log('Already started'); return; }
+
+  var uri = SIP.UserAgent.makeURI('sip:' + ext + '@' + domain);
+  if (!uri) { log('Invalid SIP URI'); return; }
+
+  ua = new SIP.UserAgent({
+    uri: uri,
+    displayName: 'WebRTC test ' + ext,
+    authorizationUsername: ext,
+    authorizationPassword: pass,
+    transportOptions: { server: wss, traceSip: false },
+    userAgentString: 'ShadowPBX-WebRTC-Test (SIP.js ' + SIP.LIBRARY_VERSION + ')',
+    logLevel: 'warn',
+    sessionDescriptionHandlerFactoryOptions: {
+      iceGatheringTimeout: 3000,
+      peerConnectionConfiguration: { iceServers: CFG.iceServers || [] }
+    },
+    delegate: {
+      onConnect: function () { log('WebSocket connected: ' + wss); },
+      onDisconnect: function (err) { log('WebSocket disconnected' + (err ? ': ' + err.message : '')); pill('sp-reg-state', 'disconnected', 'p-err'); },
+      onInvite: function (invitation) {
+        if (session) { invitation.reject(); return; }
+        incoming = invitation;
+        var from = invitation.remoteIdentity.uri.user;
+        log('Incoming call from ' + from);
+        pill('sp-call-state', 'incoming ' + from, 'p-ring');
+        document.getElementById('sp-answer').style.display = '';
+        document.getElementById('sp-hang').disabled = false;
+        bindSession(invitation);
+      }
+    }
+  });
+
+  pill('sp-reg-state', 'connecting', 'p-ring');
+  ua.start().then(function () {
+    registerer = new SIP.Registerer(ua, { expires: 300 });
+    registerer.stateChange.addListener(function (st) {
+      log('Registration: ' + st);
+      if (st === SIP.RegistererState.Registered) { pill('sp-reg-state', 'registered', 'p-ok'); document.getElementById('sp-call').disabled = false; loadStatus(); }
+      else if (st === SIP.RegistererState.Unregistered) { pill('sp-reg-state', 'unregistered', 'p-gray'); document.getElementById('sp-call').disabled = true; }
+    });
+    document.getElementById('sp-reg').disabled = true;
+    document.getElementById('sp-unreg').disabled = false;
+    return registerer.register({
+      requestDelegate: {
+        onReject: function (resp) { log('REGISTER rejected: ' + resp.message.statusCode + ' ' + resp.message.reasonPhrase); pill('sp-reg-state', 'rejected', 'p-err'); }
+      }
+    });
+  }).catch(function (e) {
+    log('Start failed: ' + e.message + ' — check WSS URL, TLS certificate and nginx /ws proxy');
+    pill('sp-reg-state', 'failed', 'p-err');
+    ua = null;
+  });
+}
+
+function spUnregister() {
+  var done = function () {
+    if (ua) ua.stop();
+    ua = null; registerer = null;
+    document.getElementById('sp-reg').disabled = false;
+    document.getElementById('sp-unreg').disabled = true;
+    document.getElementById('sp-call').disabled = true;
+    pill('sp-reg-state', 'offline', 'p-gray');
+    loadStatus();
+  };
+  if (registerer) registerer.unregister().then(done).catch(done); else done();
+}
+
+function spCall() {
+  if (!ua || session) return;
+  var dest = document.getElementById('sp-dest').value.trim();
+  if (!dest) { log('Enter a destination'); return; }
+  var target = SIP.UserAgent.makeURI('sip:' + dest + '@' + document.getElementById('sp-domain').value.trim());
+  if (!target) { log('Invalid destination'); return; }
+  var inviter = new SIP.Inviter(ua, target, { sessionDescriptionHandlerOptions: { constraints: { audio: true, video: false } } });
+  bindSession(inviter);
+  pill('sp-call-state', 'calling', 'p-ring');
+  document.getElementById('sp-hang').disabled = false;
+  log('Calling ' + dest + ' (requesting microphone)...');
+  inviter.invite({
+    requestDelegate: {
+      onProgress: function (r) { log('Progress: ' + r.message.statusCode + ' ' + r.message.reasonPhrase); if (r.message.statusCode === 180 || r.message.statusCode === 183) pill('sp-call-state', 'ringing', 'p-ring'); },
+      onReject: function (r) { log('Rejected: ' + r.message.statusCode + ' ' + r.message.reasonPhrase); }
+    }
+  }).then(function () { showLocalSdp(inviter); })
+    .catch(function (e) { log('INVITE failed: ' + e.message); resetCall(); });
+}
+
+function spAnswer() {
+  if (!incoming) return;
+  document.getElementById('sp-answer').style.display = 'none';
+  incoming.accept({ sessionDescriptionHandlerOptions: { constraints: { audio: true, video: false } } })
+    .catch(function (e) { log('Answer failed: ' + e.message); });
+}
+
+function spHangup() {
+  if (!session) return;
+  var st = session.state;
+  try {
+    if (st === SIP.SessionState.Established) session.bye();
+    else if (session instanceof SIP.Inviter) session.cancel();
+    else session.reject();
+  } catch (e) { log('Hangup error: ' + e.message); }
+}
+
+function spMute() {
+  var pc = peer();
+  if (!pc) return;
+  muted = !muted;
+  pc.getSenders().forEach(function (s) { if (s.track) s.track.enabled = !muted; });
+  document.getElementById('sp-mute').textContent = muted ? 'Unmute' : 'Mute';
+  log(muted ? 'Microphone muted' : 'Microphone unmuted');
+}
+
+function spDtmf(d) {
+  if (!session || session.state !== SIP.SessionState.Established) return;
+  var ok = session.sessionDescriptionHandler && session.sessionDescriptionHandler.sendDtmf(d);
+  log('DTMF ' + d + (ok ? ' (RFC 2833)' : ' failed'));
+}
+
+function peer() {
+  return session && session.sessionDescriptionHandler ? session.sessionDescriptionHandler.peerConnection : null;
+}
+
+function bindSession(s) {
+  session = s;
+  s.stateChange.addListener(function (st) {
+    log('Call state: ' + st);
+    if (st === SIP.SessionState.Establishing) pill('sp-call-state', 'connecting', 'p-ring');
+    if (st === SIP.SessionState.Established) onEstablished();
+    if (st === SIP.SessionState.Terminated) resetCall();
+  });
+}
+
+function showLocalSdp(s) {
+  var pc = s.sessionDescriptionHandler && s.sessionDescriptionHandler.peerConnection;
+  if (pc && pc.localDescription) document.getElementById('sdp-local').innerHTML = sdpSummary(pc.localDescription.sdp);
+}
+
+function onEstablished() {
+  pill('sp-call-state', 'on call', 'p-ok');
+  document.getElementById('sp-mute').disabled = false;
+  document.getElementById('sp-answer').style.display = 'none';
+  var pc = peer();
+  if (!pc) return;
+  var remote = new MediaStream();
+  pc.getReceivers().forEach(function (r) { if (r.track) remote.addTrack(r.track); });
+  var audio = document.getElementById('sp-audio');
+  audio.srcObject = remote;
+  audio.play().catch(function () { log('Autoplay blocked — click anywhere on the page to hear audio'); });
+
+  if (pc.localDescription) document.getElementById('sdp-local').innerHTML = sdpSummary(pc.localDescription.sdp);
+  if (pc.remoteDescription) document.getElementById('sdp-remote').innerHTML = sdpSummary(pc.remoteDescription.sdp);
+
+  var iceUpd = function () {
+    var ice = pc.iceConnectionState, conn = pc.connectionState || '';
+    var good = ice === 'connected' || ice === 'completed';
+    pill('sp-ice', 'ICE ' + ice + (conn ? ' · ' + conn : ''), good && conn !== 'failed' ? 'p-ok' : (ice === 'failed' || conn === 'failed' ? 'p-err' : 'p-ring'));
+    if (ice === 'failed') log('ICE failed — the browser cannot reach RTPEngine. Check UDP 10000-20000 is open and RTPEngine advertises the public IP (TURN comes in Phase 8).');
+  };
+  pc.addEventListener('iceconnectionstatechange', iceUpd);
+  pc.addEventListener('connectionstatechange', iceUpd);
+  iceUpd();
+
+  callStart = Date.now();
+  callTimer = setInterval(function () {
+    var s = Math.floor((Date.now() - callStart) / 1000);
+    document.getElementById('sp-timer').textContent = String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+  }, 1000);
+
+  statsTimer = setInterval(async function () {
+    try {
+      var stats = await pc.getStats(), sent = 0, recv = 0, codecId = null, codecs = {};
+      stats.forEach(function (r) {
+        if (r.type === 'outbound-rtp' && r.kind === 'audio') sent = r.packetsSent;
+        if (r.type === 'inbound-rtp' && r.kind === 'audio') { recv = r.packetsReceived; codecId = r.codecId; }
+        if (r.type === 'codec') codecs[r.id] = r.mimeType + '/' + r.clockRate;
+      });
+      document.getElementById('sp-pkts').textContent = sent + ' / ' + recv + (sent > 50 && recv === 0 ? '  (no inbound audio!)' : '');
+      if (codecId && codecs[codecId]) document.getElementById('sp-codec').textContent = codecs[codecId];
+    } catch (e) {}
+  }, 2000);
+}
+
+function resetCall() {
+  session = null; incoming = null; muted = false;
+  clearInterval(statsTimer); clearInterval(callTimer);
+  document.getElementById('sp-audio').srcObject = null;
+  document.getElementById('sp-hang').disabled = true;
+  document.getElementById('sp-mute').disabled = true;
+  document.getElementById('sp-mute').textContent = 'Mute';
+  document.getElementById('sp-answer').style.display = 'none';
+  document.getElementById('sp-timer').textContent = '';
+  pill('sp-call-state', 'idle', 'p-gray');
+  pill('sp-ice', '-', 'p-gray');
+}
+
+// ---------- Init ----------
+(function init() {
+  document.getElementById('sp-wss').value = CFG.wssUrl || '';
+  document.getElementById('sp-domain').value = CFG.sipDomain || location.hostname;
+  document.getElementById('wss-label').textContent = CFG.wssUrl || '(not set)';
+  document.getElementById('sipjs-ver').textContent = (window.SIP && SIP.LIBRARY_VERSION) || '(not loaded)';
+  if (!window.isSecureContext) document.getElementById('secure-warn').style.display = '';
+  var pad = document.getElementById('sp-pad');
+  '123456789*0#'.split('').forEach(function (d) {
+    var b = document.createElement('button');
+    b.className = 'btn btn-sm'; b.textContent = d; b.style.minWidth = '34px';
+    b.onclick = function () { spDtmf(d); };
+    pad.appendChild(b);
+  });
+  if (!window.SIP) log('SIP.js failed to load from /vendor/sip-0.21.2.min.js');
+  window.addEventListener('beforeunload', function () { try { if (registerer) registerer.unregister(); if (ua) ua.stop(); } catch (e) {} });
+  loadStatus();
+})();
+</script>
+<%- include('../partials/foot') %>

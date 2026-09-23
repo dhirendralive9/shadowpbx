@@ -268,3 +268,9 @@ function createWebRouter(apiKey) {
 }
 
 module.exports = createWebRouter;
+// Exposed so other session-authenticated routers (e.g. routes/webrtc.js)
+// share the same login sessions and role checks.
+module.exports.authMiddleware = authMiddleware;
+module.exports.requireRole = requireRole;
+module.exports.adminOnly = adminOnly;
+module.exports.supervisorUp = supervisorUp;

@@ -1,13 +1,14 @@
 const crypto = require('crypto');
 const { Extension } = require('../models');
 const logger = require('../utils/logger');
+const sdpUtil = require('../utils/webrtc-sdp');
 
 class Registrar {
   constructor(srf) {
     this.srf = srf;
     this.realm = process.env.SIP_DOMAIN || 'shadowpbx';
     this.nonceMap = new Map();      // nonce -> { created, extension }
-    this.failedAttempts = new Map(); // ip -> { count, firstAttempt, banned }
+    this.failedAttempts = new Map(); // ip (or ws:<ext> for WebSocket clients) -> { count, firstAttempt, banned }
     this.maxAttempts = parseInt(process.env.MAX_REGISTER_ATTEMPTS) || 5;
     this.banDuration = parseInt(process.env.REGISTER_BAN_DURATION) || 300; // seconds
 
@@ -40,9 +41,16 @@ class Registrar {
     }
 
     // Check if IP is banned
-    const clientIp = req.source_address;
-    if (this._isBanned(clientIp)) {
-      logger.warn(`REGISTER blocked: IP ${clientIp} is banned (brute force protection)`);
+    // WebSocket (WebRTC) clients arrive through the nginx /ws proxy, so their
+    // source address is 127.0.0.1 for EVERY browser. Banning that address
+    // would lock out all web clients, so for proxied WS clients we track
+    // failures per extension instead (see _banKey).
+    const transport = sdpUtil.requestTransport(req);
+    const banKey = this._banKey(req, ext, transport);
+    if (this._isBanned(banKey)) {
+      // Keep the "IP <addr>" wording — fail2ban's shadowpbx filter matches it
+      if (banKey.startsWith('ws:')) logger.warn(`REGISTER blocked: WebSocket client for extension ${ext} is banned (brute force protection)`);
+      else logger.warn(`REGISTER blocked: IP ${banKey} is banned (brute force protection)`);
       return res.send(403);
     }
 
@@ -77,13 +85,13 @@ class Registrar {
     // Verify credentials (digest auth)
     const valid = this._verifyDigest(authParams, extension.password, req.method);
     if (!valid) {
-      this._recordFailure(req.source_address);
-      logger.warn(`REGISTER rejected: bad credentials for ${ext} from ${req.source_address}`);
+      this._recordFailure(banKey);
+      logger.warn(`REGISTER rejected: bad credentials for ${ext} from ${req.source_address}${transport ? ' via ' + transport : ''}`);
       return this._challenge(res, ext);
     }
 
     // Successful auth - clear any failure tracking
-    this.failedAttempts.delete(req.source_address);
+    this.failedAttempts.delete(banKey);
 
     // Clean up used nonce
     this.nonceMap.delete(authParams.nonce);
@@ -119,11 +127,20 @@ class Registrar {
     const contactUri = this._extractContactUri(contact);
 
     // Build new registration
+    // Transport + WebRTC detection (Phase 1 — WebRTC)
+    // Browsers (SIP.js / JsSIP) register over WS/WSS; their media is
+    // DTLS-SRTP + ICE and must be bridged by RTPEngine.
+    const regTransport = transport || sdpUtil.contactTransport(contact) || 'udp';
+    const isWebRTC = sdpUtil.isWebSocketTransport(regTransport) ||
+      sdpUtil.isWebSocketTransport(sdpUtil.contactTransport(contact));
+
     const regData = {
       contact: contact,
       contactUri: contactUri,  // stored for dedup matching
       ip: sourceIp,
       port: sourcePort,
+      transport: regTransport,
+      webrtc: isWebRTC,
       userAgent: ua,
       expires: new Date(Date.now() + expires * 1000),
       registeredAt: new Date()
@@ -178,7 +195,7 @@ class Registrar {
     // Update in-memory cache
     this._updateCache(ext, extension.registrations);
 
-    logger.info(`Extension ${ext} (${extension.name}) registered from ${source} [${ua}] expires=${expires}s contacts=${extension.registrations.length}`);
+    logger.info(`Extension ${ext} (${extension.name}) registered from ${source}${isWebRTC ? ' (WebRTC/' + regTransport + ')' : ''} [${ua}] expires=${expires}s contacts=${extension.registrations.length}`);
 
     res.send(200, {
       headers: {
@@ -294,6 +311,8 @@ class Registrar {
       .map(r => ({
         ip: r.ip,
         port: r.port,
+        transport: r.transport || 'udp',
+        webrtc: !!r.webrtc,
         userAgent: r.userAgent,
         expires: r.expires instanceof Date ? r.expires : new Date(r.expires),
         registeredAt: r.registeredAt instanceof Date ? r.registeredAt : new Date(r.registeredAt)
@@ -397,6 +416,43 @@ class Registrar {
     for (const [nonce, data] of this.nonceMap) {
       if (data.created < cutoff) this.nonceMap.delete(nonce);
     }
+  }
+
+  // ============================================================
+  // WebRTC helpers (Phase 1)
+  // ============================================================
+
+  // Key used for brute-force tracking. Proxied WebSocket clients all share
+  // the proxy's loopback address, so they are tracked per extension.
+  _banKey(req, ext, transport) {
+    const ip = req.source_address;
+    const t = transport || sdpUtil.requestTransport(req);
+    if (sdpUtil.isLoopback(ip) && sdpUtil.isWebSocketTransport(t)) return `ws:${ext}`;
+    return ip;
+  }
+
+  // True if this registration/contact is a browser (WebRTC) endpoint.
+  isWebRTCContact(contact) {
+    if (!contact) return false;
+    if (contact.webrtc) return true;
+    return sdpUtil.isWebSocketTransport(contact.transport) ||
+      sdpUtil.isWebSocketTransport(sdpUtil.contactTransport(contact.contact));
+  }
+
+  // Build the request-URI used to reach a contact, plus its media type.
+  //   SIP phone : sip:1001@1.2.3.4:5060                 media=sip
+  //   Browser   : sip:1001@127.0.0.1:41822;transport=ws  media=webrtc
+  // For browsers, drachtio re-uses the existing WebSocket connection
+  // (via the nginx /ws proxy) that the REGISTER arrived on.
+  contactTarget(ext, contact) {
+    if (!contact) return null;
+    const webrtc = this.isWebRTCContact(contact);
+    let uri = `sip:${ext}@${contact.ip}:${contact.port}`;
+    if (webrtc) {
+      const t = sdpUtil.normalizeTransport(contact.transport);
+      uri += `;transport=${t === 'wss' ? 'wss' : 'ws'}`;
+    }
+    return { uri, media: webrtc ? 'webrtc' : 'sip', webrtc };
   }
 
   _isBanned(ip) {
