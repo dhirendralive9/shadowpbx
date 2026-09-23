@@ -19,10 +19,11 @@ const selftest = require('../utils/webrtc-selftest');
 // API key embedded in its HTML.
 // ============================================================
 
-function iceServers() {
-  const list = (process.env.WEBRTC_STUN_SERVERS || 'stun:stun.l.google.com:19302')
-    .split(',').map(s => s.trim()).filter(Boolean);
-  return list.length ? [{ urls: list }] : [];
+const turn = require('../utils/turn-credentials');
+
+function iceServers(label) {
+  // STUN plus, when TURN is configured, a fresh ephemeral relay credential
+  return turn.iceServers(label);
 }
 
 function wssUrl(req) {
@@ -37,8 +38,8 @@ function sipDomain(req) {
   return host ? host.split(',')[0].split(':')[0].trim() : (process.env.EXTERNAL_IP || 'localhost');
 }
 
-function clientConfig(req) {
-  return { wssUrl: wssUrl(req), sipDomain: sipDomain(req), iceServers: iceServers() };
+function clientConfig(req, label) {
+  return { wssUrl: wssUrl(req), sipDomain: sipDomain(req), iceServers: iceServers(label) };
 }
 
 function webrtcRegistrations(registrar) {
@@ -77,6 +78,7 @@ async function buildStatus(deps, req) {
   const proto = req ? (req.get('x-forwarded-proto') || req.protocol) : '';
   if (req && proto && proto.split(',')[0].trim() !== 'https') issues.push('Page served over HTTP — browsers only allow microphone access on HTTPS');
   if (summary.codecPolicy === 'transcode') issues.push('WEBRTC_CODEC_POLICY=transcode — recordings of browser legs may not decode (recorder expects mu-law)');
+  if (!turn.configured()) issues.push('TURN not configured — visitors behind strict NAT/firewalls will connect but hear nothing (run scripts/setup-turn.sh)');
 
   return {
     success: true,
@@ -88,6 +90,7 @@ async function buildStatus(deps, req) {
       drachtioWs: '127.0.0.1:5061 (behind nginx /ws)'
     },
     iceServers: cfg.iceServers,
+    turn: turn.summary(),
     registrations: webrtcRegistrations(registrar),
     webcall: deps.guestManager ? deps.guestManager.summary() : null,
     issues

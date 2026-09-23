@@ -318,6 +318,8 @@ else
 fi
 info "Cloud firewall / security group: open the same ports there too."
 info "Drachtio WS (5061) should NOT be public — nginx reaches it on 127.0.0.1."
+info "Public web-call endpoints are rate-limited in the app (WEBCALL_TOKENS_PER_IP);"
+info "for an extra layer, add nginx limit_req on /api/webcall/ and /ws."
 
 # ============================================================
 step "6/7 .env WebRTC settings"
@@ -326,6 +328,14 @@ env_default WEBRTC_ENABLED true
 env_default WEBRTC_CODEC_POLICY g711
 env_default WEBRTC_DTLS_ANSWER passive
 env_default WEBRTC_STUN_SERVERS "stun:stun.l.google.com:19302"
+env_default WEBCALL_ENABLED true
+env_default TURN_TTL 3600
+if grep -qE '^TURN_SECRET=.+' "$ENV_FILE"; then
+  log "TURN configured: $(env_get TURN_URLS)"
+else
+  warn "No TURN relay — visitors behind strict NAT/firewalls will connect but hear nothing"
+  info "Fix with: sudo bash ${APP_DIR}/scripts/setup-turn.sh"
+fi
 if [ -n "$WEB_DOMAIN" ]; then
   if [ -z "$WSS_URL" ]; then
     sed -i '/^WSS_URL=$/d' "$ENV_FILE"

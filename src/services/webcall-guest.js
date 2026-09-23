@@ -34,12 +34,21 @@ const MAX_CALL_MIN = parseInt(process.env.WEBCALL_MAX_CALL_MINUTES) || 60;      
 const RATE_PER_IP = parseInt(process.env.WEBCALL_TOKENS_PER_IP) || 10;           // token requests per window
 const RATE_WINDOW = parseInt(process.env.WEBCALL_RATE_WINDOW) || 600;            // seconds
 const DEFAULT_MAX_CONCURRENT = parseInt(process.env.WEBCALL_MAX_CONCURRENT) || 10;
+// Phase 7 — abuse prevention
+const RATE_PER_WIDGET = parseInt(process.env.WEBCALL_TOKENS_PER_WIDGET) || 60;   // per widget, per window
+const ABUSE_BLOCK_AFTER = parseInt(process.env.WEBCALL_ABUSE_BLOCK_AFTER) || 0;  // 0 = report only, never block
+const TURNSTILE_SECRET = process.env.TURNSTILE_SECRET || '';
+const TURNSTILE_SITE_KEY = process.env.TURNSTILE_SITE_KEY || '';
 
 class WebCallGuestManager {
   constructor() {
     this.guests = new Map();        // username -> guest record
     this.byCallId = new Map();      // SIP Call-ID -> username
     this.rate = new Map();          // ip -> { count, windowStart }
+    this.widgetRate = new Map();    // widgetId -> { count, windowStart }
+    this.abuse = new Map();         // ip -> consecutive refusals (Phase 7)
+    this.blockedIps = new Set();    // already handed to the firewall — don't repeat
+    this.timeConditionService = null;  // set in app.js — widget business hours
     this.realm = process.env.SIP_DOMAIN || 'shadowpbx';
     this.nonces = new Map();        // nonce -> { created, username }
     this.securityTracker = null;    // set after construction
@@ -47,7 +56,7 @@ class WebCallGuestManager {
     // voicemail own their own dialogs, so for those we ask whether the call
     // has finished instead of waiting for a destroy handler (Phase 3).
     this.callEndedCheck = null;
-    this.stats = { issued: 0, registered: 0, calls: 0, rejected: 0, expired: 0 };
+    this.stats = { issued: 0, registered: 0, calls: 0, rejected: 0, expired: 0, captchaFailures: 0, closedHours: 0, blocked: 0 };
 
     const t1 = setInterval(() => { this._sweep().catch(() => {}); }, 15000);
     const t2 = setInterval(() => this._sweepNonces(), 300000);
@@ -76,14 +85,17 @@ class WebCallGuestManager {
    * Issue a single-use guest credential for a widget.
    * @returns {Promise<{ok:boolean, status?:number, error?:string, guest?:object}>}
    */
-  async issueToken({ widgetId, ip, origin, userAgent, pageUrl, name, number }) {
+  async issueToken({ widgetId, ip, origin, userAgent, pageUrl, name, number, captchaToken }) {
     if (!ENABLED) return { ok: false, status: 503, error: 'Web calling is disabled' };
     if (!widgetId) return { ok: false, status: 400, error: 'widgetId required' };
 
     if (!this._rateOk(ip)) {
-      this.stats.rejected++;
-      logger.warn(`WEBCALL: token rate limit hit by ${ip} for widget ${widgetId}`);
-      if (this.securityTracker) this.securityTracker.record(ip, 'Web-call token flood', userAgent, widgetId);
+      this._refused(ip, userAgent, 'Web-call token flood', widgetId);
+      return { ok: false, status: 429, error: 'Too many requests' };
+    }
+    if (!this._widgetRateOk(widgetId)) {
+      this._refused(ip, userAgent, 'Web-call widget flood', widgetId);
+      logger.warn(`WEBCALL: widget ${widgetId} is over its request rate`);
       return { ok: false, status: 429, error: 'Too many requests' };
     }
 
@@ -111,6 +123,33 @@ class WebCallGuestManager {
       return { ok: false, status: 503, error: 'All lines are busy, please try again shortly' };
     }
 
+    // Optional CAPTCHA (Phase 7). Off unless the widget asks for it AND a
+    // Turnstile secret is configured — it is never required by default.
+    if (this.captchaRequired(widget)) {
+      const passed = await this.verifyCaptcha(captchaToken, ip);
+      if (!passed) {
+        this.stats.captchaFailures++;
+        this._refused(ip, userAgent, 'Web-call CAPTCHA failed', widgetId);
+        return { ok: false, status: 403, error: 'Please complete the challenge and try again', captcha: true };
+      }
+    }
+
+    // Business hours — only refuse when the widget is set to turn callers away;
+    // the default routes closed-hours calls to the time condition's own
+    // no-match destination (voicemail, an after-hours group, and so on).
+    const hours = widget.businessHours || {};
+    if (hours.enabled && hours.closedAction === 'message' && hours.timeConditionNumber) {
+      const open = await this.isOpen(hours.timeConditionNumber);
+      if (open === false) {
+        this.stats.closedHours++;
+        logger.info(`WEBCALL: widget ${widgetId} is outside business hours`);
+        return {
+          ok: false, status: 503, closed: true,
+          error: hours.closedMessage || 'We are closed right now. Please try again during business hours.'
+        };
+      }
+    }
+
     const username = GUEST_PREFIX + crypto.randomBytes(3).toString('hex');
     const secret = crypto.randomBytes(24).toString('hex');
     const now = Date.now();
@@ -121,6 +160,7 @@ class WebCallGuestManager {
       widgetName: widget.name || widgetId,
       destination: widget.destination || {},
       businessHours: widget.businessHours || { enabled: false },
+      captcha: !!widget.captcha,
       collectInfo: widget.collectInfo || 'none',
       crmCreateLead: !!widget.crmCreateLead,
       state: 'issued',                       // issued -> registered -> in-call -> ended
@@ -141,6 +181,74 @@ class WebCallGuestManager {
     this.stats.issued++;
     logger.info(`WEBCALL: issued guest ${username} for widget ${widgetId} (${guest.widgetName}) from ${ip} origin=${origin || 'n/a'} ttl=${TOKEN_TTL}s`);
     return { ok: true, guest, ttl: TOKEN_TTL };
+  }
+
+  // ============================================================
+  // Abuse prevention (Phase 7)
+  // ============================================================
+
+  captchaRequired(widget) {
+    return !!(widget && widget.captcha && TURNSTILE_SECRET);
+  }
+
+  /** Site key a widget should render, or '' when no challenge is needed. */
+  captchaSiteKey(widget) {
+    return this.captchaRequired(widget) ? TURNSTILE_SITE_KEY : '';
+  }
+
+  /** Verify a Cloudflare Turnstile response token. */
+  async verifyCaptcha(token, ip) {
+    if (!TURNSTILE_SECRET) return true;      // not configured — nothing to check
+    if (!token) return false;
+    try {
+      const body = new URLSearchParams({ secret: TURNSTILE_SECRET, response: token });
+      if (ip) body.append('remoteip', ip);
+      const r = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString()
+      });
+      const d = await r.json();
+      return d.success === true;
+    } catch (e) {
+      logger.warn(`WEBCALL: CAPTCHA verification failed to reach Cloudflare: ${e.message}`);
+      return false;   // fail closed: a widget that asked for a challenge keeps it
+    }
+  }
+
+  /** Is this time condition currently matching? null when it can't be evaluated. */
+  async isOpen(timeConditionNumber) {
+    if (!this.timeConditionService || !timeConditionNumber) return null;
+    try {
+      const result = await this.timeConditionService.evaluate(timeConditionNumber);
+      return result ? !!result.matched : null;
+    } catch (e) {
+      logger.warn(`WEBCALL: business-hours check failed: ${e.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * One refused request. Repeat offenders are reported to the security
+   * tracker and, if WEBCALL_ABUSE_BLOCK_AFTER is set, blocked at the firewall
+   * — the same mechanism the SIP attack monitor uses.
+   */
+  _refused(ip, userAgent, reason, widgetId) {
+    this.stats.rejected++;
+    if (!ip) return;
+    const n = (this.abuse.get(ip) || 0) + 1;
+    this.abuse.set(ip, n);
+    logger.warn(`WEBCALL: ${reason} from ${ip} (widget ${widgetId}, ${n} refusals)`);
+    if (this.securityTracker) {
+      try { this.securityTracker.record(ip, reason, userAgent, widgetId); } catch (e) {}
+      if (ABUSE_BLOCK_AFTER > 0 && n >= ABUSE_BLOCK_AFTER && this.securityTracker.blockIp && !this.blockedIps.has(ip)) {
+        this.blockedIps.add(ip);
+        this.stats.blocked++;
+        logger.warn(`WEBCALL: blocking ${ip} after ${n} refused web-call requests`);
+        Promise.resolve(this.securityTracker.blockIp(ip)).catch(() => {});
+        this.abuse.delete(ip);
+      }
+    }
   }
 
   /** Origin/Referer check against the widget's allowedDomains. */
@@ -295,6 +403,10 @@ class WebCallGuestManager {
       tokenTtlSeconds: TOKEN_TTL,
       maxCallMinutes: MAX_CALL_MIN,
       tokensPerIp: `${RATE_PER_IP} / ${RATE_WINDOW}s`,
+      tokensPerWidget: `${RATE_PER_WIDGET} / ${RATE_WINDOW}s`,
+      captchaAvailable: !!TURNSTILE_SECRET,
+      autoBlockAfter: ABUSE_BLOCK_AFTER || 'off',
+      watchedIps: this.abuse.size,
       active: this.activeCount(),
       inCall: this.list().filter(g => g.state === 'in-call').length,
       ...this.stats
@@ -344,18 +456,30 @@ class WebCallGuestManager {
   _sweepNonces() {
     const cutoff = Date.now() - 600000;
     for (const [n, rec] of this.nonces) if (rec.created < cutoff) this.nonces.delete(n);
+    // Forget quiet offenders and stale rate windows
+    const stale = Date.now() - RATE_WINDOW * 1000 * 2;
+    for (const [ip, rec] of this.rate) if (rec.windowStart < stale) { this.rate.delete(ip); this.abuse.delete(ip); }
+    for (const [id, rec] of this.widgetRate) if (rec.windowStart < stale) this.widgetRate.delete(id);
   }
 
   _rateOk(ip) {
-    if (!ip) return true;
+    return this._windowOk(this.rate, ip, RATE_PER_IP);
+  }
+
+  _widgetRateOk(widgetId) {
+    return this._windowOk(this.widgetRate, widgetId, RATE_PER_WIDGET);
+  }
+
+  _windowOk(map, key, limit) {
+    if (!key) return true;
     const now = Date.now();
-    const rec = this.rate.get(ip);
+    const rec = map.get(key);
     if (!rec || now - rec.windowStart > RATE_WINDOW * 1000) {
-      this.rate.set(ip, { count: 1, windowStart: now });
+      map.set(key, { count: 1, windowStart: now });
       return true;
     }
     rec.count++;
-    return rec.count <= RATE_PER_IP;
+    return rec.count <= limit;
   }
 }
 

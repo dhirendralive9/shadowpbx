@@ -1,6 +1,8 @@
-# ShadowPBX v2.0
+# ShadowPBX v3.0
 
-A self-hosted, open-source PBX (Private Branch Exchange) built entirely in Node.js. ShadowPBX gives you a full-featured IP phone system — SIP registration, call routing, ring groups, IVR, voicemail, call recording, transfers, hold, parking, and supervisor monitoring — all running on a Linux server.
+A self-hosted, open-source PBX (Private Branch Exchange) built entirely in Node.js. ShadowPBX gives you a full-featured IP phone system — SIP registration, call routing, ring groups, IVR, queues, voicemail, call recording, transfers, hold, parking, supervisor monitoring, a predictive dialer and CRM integration — all running on a Linux server.
+
+**New in v3.0 — browser calling.** Agents can work from a browser instead of a desk phone, and any website can carry a "Call us" button that rings straight into your PBX. Visitors need nothing but a microphone: no phone number, no app, no plugin. Web calls flow through the same ring groups, IVRs and queues as PSTN calls, land in the same CDR, and are recorded the same way.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -117,6 +119,16 @@ Call ends → RTPEngine flushes pcap + metadata to /var/spool/rtpengine/
 - Hold/resume with Music on Hold via RTPEngine
 - Call parking on numbered slots (70-79)
 
+### WebRTC & Web Dialer (v3.0)
+- Browser calling end to end: RTPEngine bridges the browser's DTLS-SRTP to the plain RTP your phones and trunks use
+- Embeddable "Call us" widget — one script tag, shadow-DOM isolated, no CDN
+- Guest identities: each web call gets a single-use SIP credential that can reach one destination and nothing else
+- Web calls route through your existing ring groups, IVRs, queues, voicemail and time conditions
+- Caller's name, number and the page they called from reach the agent as a screen pop and land in the CDR
+- Optional CAPTCHA, per-IP and per-widget rate limits, domain allow-lists, concurrency caps
+- TURN relay (coturn) with ephemeral credentials for visitors behind restrictive firewalls
+- Admin UI at **Call flow → Web dialer**, diagnostics at **Network → WebRTC**
+
 ### Voicemail
 - Per-extension mailbox with recording/playback
 - Message management via REST API
@@ -137,6 +149,12 @@ Call ends → RTPEngine flushes pcap + metadata to /var/spool/rtpengine/
 - Role-based access: Admin, Supervisor, Agent
 - Auto-generated passwords with copy/download
 - Dark/light theme
+
+### Predictive Dialer & CRM
+- Campaign engine with auto, predictive and pre-connect (announce / press-1) modes
+- Answering machine detection, DNC handling and call dispositions
+- Hold, retention and opt-out flows with per-campaign audio
+- Salesforce, HubSpot, Zoho, Freshsales and Pipedrive integration with screen pop and disposition sync
 
 ### Security
 - Nginx reverse proxy with Let's Encrypt SSL
@@ -187,6 +205,30 @@ The installer prompts for:
 sudo bash scripts/setup-features.sh
 ```
 
+### 2b. Browser calling (v3.0, optional but recommended)
+
+```bash
+sudo bash scripts/setup-webrtc.sh     # checks WSS, RTPEngine ICE, firewall; fixes what it can
+sudo bash scripts/setup-turn.sh       # installs coturn so calls work behind strict firewalls
+```
+
+`setup-webrtc.sh` ends with a self-test that must report **All checks passed**.
+Then open **Network → WebRTC** to run it from the UI, register the test softphone
+and place a browser call. See [docs/WEBRTC-PHASE1.md](docs/WEBRTC-PHASE1.md).
+
+To put a call button on a website, go to **Call flow → Web dialer**, create a
+widget, and copy its embed snippet:
+
+```html
+<script src="https://pbx.yourdomain.com/widget.js"
+        data-widget="abc123"
+        data-label="Call us"
+        data-color="#2563eb"
+        data-position="bottom-right" async></script>
+```
+
+Test it first on `https://your-pbx-domain/widget-demo.html`.
+
 ### 3. Create Extensions
 
 ```bash
@@ -210,6 +252,11 @@ curl -X POST http://localhost:3000/api/extensions/bulk \
 | Password | extension password |
 
 **MicroSIP tips:** Use G.711 A-law/u-law only, STUN off, ICE off, Keep-Alive 10s.
+
+### 5. Or skip the softphone — use a browser
+
+Agents can register from **Network → WebRTC** (test softphone) over `wss://your-domain/ws`.
+Browser-registered extensions ring from direct calls exactly like a desk phone.
 
 ---
 
@@ -330,14 +377,40 @@ Required open ports:
 | 443 | TCP | HTTPS + WSS (nginx) |
 | 5060 | UDP/TCP | SIP signaling |
 | 10000–20000 | UDP | RTP media |
+| 3478 | UDP/TCP | TURN (v3.0, if coturn installed) |
+| 5349 | TCP | TURN over TLS (v3.0, optional) |
+| 49160–49200 | UDP | TURN relay range (v3.0) |
 
 Port 3000 is localhost-only — all external access goes through nginx.
+Drachtio's WebSocket listener (127.0.0.1:5061) must **not** be public: nginx
+proxies `/ws` to it.
+
+---
+
+## Documentation
+
+| Doc | Covers |
+|-----|--------|
+| [docs/WEBRTC-PHASE1.md](docs/WEBRTC-PHASE1.md) | WebRTC foundations, media bridging, self-test, troubleshooting |
+| [docs/WEBCALL-PHASE2.md](docs/WEBCALL-PHASE2.md) | Guest identities, destination lockdown, web-call API |
+| [docs/WEBDIALER-PHASE3-4.md](docs/WEBDIALER-PHASE3-4.md) | Web-call routing and the embeddable widget |
+| [docs/WEBDIALER-PHASE5-6.md](docs/WEBDIALER-PHASE5-6.md) | Widget admin UI, screen pop, CDR attribution |
+| [docs/WEBDIALER-PHASE7-8.md](docs/WEBDIALER-PHASE7-8.md) | Abuse prevention, CAPTCHA, TURN, go-live checklist |
+
+## Self-tests
+
+```bash
+node scripts/webrtc-selftest.js     # RTPEngine WebRTC bridge — 36 checks
+node scripts/webcall-selftest.js    # guest tokens, auth, lockdown, lifecycle
+```
 
 ---
 
 ## Roadmap
 
-- [ ] WebRTC browser phone (SIP.js via WSS — infrastructure ready)
+- [x] WebRTC browser phone (v3.0)
+- [x] Embeddable web-call widget (v3.0)
+- [ ] Video calling and screen share
 - [ ] PM2 cluster mode with Redis state externalization
 - [ ] Multi-tenant SaaS (Kamailio edge + Docker per tenant)
 - [ ] Webhook events for call lifecycle

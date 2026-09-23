@@ -1,12 +1,16 @@
 {
   "name": "shadowpbx",
-  "version": "2.0.0",
-  "description": "Minimal Node.js PBX - Internal communications, ring groups, SIP trunking, call recording",
+  "version": "3.0.0",
+  "description": "Self-hosted Node.js PBX — SIP + WebRTC calling, ring groups, IVR, queues, predictive dialer, CRM integration and an embeddable browser call widget",
   "main": "src/app.js",
   "scripts": {
     "start": "node src/app.js",
     "dev": "nodemon src/app.js",
-    "setup": "bash scripts/install-drachtio.sh"
+    "setup": "bash scripts/install-drachtio.sh",
+    "setup:webrtc": "bash scripts/setup-webrtc.sh",
+    "setup:turn": "bash scripts/setup-turn.sh",
+    "test:webrtc": "node scripts/webrtc-selftest.js",
+    "test:webcall": "node scripts/webcall-selftest.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
@@ -35,7 +39,12 @@
     "call-recording",
     "telephony",
     "ring-group",
-    "trunk"
+    "trunk",
+    "webrtc",
+    "web-dialer",
+    "click-to-call",
+    "predictive-dialer",
+    "crm"
   ],
   "license": "MIT",
   "repository": {

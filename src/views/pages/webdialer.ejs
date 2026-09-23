@@ -51,6 +51,10 @@
         <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:6px">
           <input type="checkbox" id="f-crm"> Create a CRM contact for unknown web callers
         </label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:6px">
+          <input type="checkbox" id="f-captcha"> Require a CAPTCHA before calling
+          <span class="muted" id="captcha-note" style="font-size:11px"></span>
+        </label>
         <label style="display:flex;align-items:center;gap:8px;font-size:13px">
           <input type="checkbox" id="f-enabled" checked> Widget enabled
         </label>
@@ -65,10 +69,18 @@
           <div class="form-group" style="flex:1"><label class="form-label">Max concurrent calls</label>
             <input class="form-input" id="f-max" type="number" min="1" value="5"></div>
           <div class="form-group" style="flex:1"><label class="form-label">Business hours</label>
-            <select class="form-input" id="f-hours">
+            <select class="form-input" id="f-hours" onchange="hoursChanged()">
               <option value="">Always open</option>
-            </select>
-            <span class="muted" style="font-size:11px">Closed-hours calls follow that condition's own no-match destination.</span></div>
+            </select></div>
+        </div>
+        <div id="hours-opts" style="display:none">
+          <div class="form-group"><label class="form-label">Outside hours</label>
+            <select class="form-input" id="f-closed-action" onchange="hoursChanged()">
+              <option value="route">Take the call and follow the condition's no-match destination</option>
+              <option value="message">Turn callers away with a message</option>
+            </select></div>
+          <div class="form-group" id="closed-msg-wrap" style="display:none"><label class="form-label">Closed message</label>
+            <input class="form-input" id="f-closed-msg" placeholder="We are closed right now. Please try again during business hours."></div>
         </div>
       </div>
     </div>
@@ -229,6 +241,11 @@ function openEditor(widgetId) {
   set('f-greeting', b.greeting || '');
   document.getElementById('f-enabled').checked = w ? w.enabled !== false : true;
   document.getElementById('f-crm').checked = !!(w && w.crmCreateLead);
+  document.getElementById('f-captcha').checked = !!(w && w.captcha);
+  var bh = (w && w.businessHours) || {};
+  set('f-closed-action', bh.closedAction || 'route');
+  set('f-closed-msg', bh.closedMessage || '');
+  hoursChanged();
   preview();
   document.getElementById('editor').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
@@ -244,7 +261,13 @@ async function saveWidget() {
     collectInfo: val('f-collect'),
     allowedDomains: val('f-domains').split(',').map(function (s) { return s.trim(); }).filter(Boolean),
     maxConcurrent: parseInt(val('f-max')) || 5,
-    businessHours: { enabled: !!hours, timeConditionNumber: hours },
+    businessHours: {
+      enabled: !!hours,
+      timeConditionNumber: hours,
+      closedAction: val('f-closed-action'),
+      closedMessage: val('f-closed-msg').trim()
+    },
+    captcha: document.getElementById('f-captcha').checked,
     crmCreateLead: document.getElementById('f-crm').checked,
     enabled: document.getElementById('f-enabled').checked,
     branding: { label: val('f-label'), color: val('f-color'), position: val('f-position'), greeting: val('f-greeting') }
@@ -271,6 +294,11 @@ async function removeWidget(id) {
   if (!confirm('Delete widget ' + id + '? Any page still embedding it stops working.')) return;
   try { await api('/webcall/api/widgets/' + encodeURIComponent(id), { method: 'DELETE' }); loadWidgets(); }
   catch (e) { alert(e.message); }
+}
+
+function hoursChanged() {
+  document.getElementById('hours-opts').style.display = val('f-hours') ? 'block' : 'none';
+  document.getElementById('closed-msg-wrap').style.display = val('f-closed-action') === 'message' ? 'block' : 'none';
 }
 
 // ---------- preview ----------
@@ -321,12 +349,18 @@ async function loadGuests() {
   try {
     var d = await api('/webcall/api/guests');
     var s = d.summary;
+    var note = document.getElementById('captcha-note');
+    if (note) note.textContent = s.captchaAvailable ? '' : '(set TURNSTILE_SECRET in .env to use this)';
+    document.getElementById('f-captcha').disabled = !s.captchaAvailable;
     document.getElementById('g-summary').innerHTML =
       row('Web calling', okPill(s.enabled, 'enabled', 'disabled')) +
       row('Active now', '<span class="mono">' + s.active + ' (' + s.inCall + ' on a call)</span>') +
       row('Tokens issued / calls placed', '<span class="mono">' + s.issued + ' / ' + s.calls + '</span>') +
       row('Rejected / expired unused', '<span class="mono">' + s.rejected + ' / ' + s.expired + '</span>') +
-      row('Token life · call cap · rate', '<span class="mono">' + s.tokenTtlSeconds + 's · ' + s.maxCallMinutes + 'min · ' + esc(s.tokensPerIp) + '</span>');
+      row('Token life · call cap', '<span class="mono">' + s.tokenTtlSeconds + 's · ' + s.maxCallMinutes + 'min</span>') +
+      row('Rate limits (IP / widget)', '<span class="mono">' + esc(s.tokensPerIp) + ' · ' + esc(s.tokensPerWidget) + '</span>') +
+      row('CAPTCHA available · auto-block', '<span class="mono">' + (s.captchaAvailable ? 'yes' : 'no') + ' · ' + esc(String(s.autoBlockAfter)) + '</span>') +
+      row('Refused: captcha / closed / blocked', '<span class="mono">' + s.captchaFailures + ' · ' + s.closedHours + ' · ' + s.blocked + '</span>');
     var body = document.getElementById('g-body');
     body.innerHTML = d.guests.length ? d.guests.map(function (g) {
       return '<tr><td class="mono">' + esc(g.username) + '</td><td>' + esc(g.widgetName || g.widgetId) + '</td>' +

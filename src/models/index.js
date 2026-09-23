@@ -661,8 +661,13 @@ const webCallWidgetSchema = new mongoose.Schema({
   },
   businessHours: {
     enabled: { type: Boolean, default: false },
-    timeConditionNumber: { type: String, default: '' }
+    timeConditionNumber: { type: String, default: '' },
+    // 'route'   — closed calls follow the time condition's no-match destination (default)
+    // 'message' — the widget refuses the call and shows closedMessage instead
+    closedAction: { type: String, enum: ['route', 'message'], default: 'route' },
+    closedMessage: { type: String, default: '' }
   },
+  captcha: { type: Boolean, default: false },        // optional Turnstile challenge (Phase 7)
   allowedDomains: [String],                        // empty = any site (tightened in Phase 5/7)
   maxConcurrent: { type: Number, default: 5 },
   crmCreateLead: { type: Boolean, default: false },   // create a CRM contact for unknown web callers (Phase 6)

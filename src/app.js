@@ -45,7 +45,7 @@ try {
 
 async function main() {
   logger.info('===========================================');
-  logger.info('  ShadowPBX v2.0 Starting...');
+  logger.info('  ShadowPBX v3.0 Starting...');
   logger.info('===========================================');
 
   // 1. MongoDB
@@ -144,6 +144,7 @@ async function main() {
   // Log SRTP mode
   const rtpHelper = require('./utils/rtp-helper');
   rtpHelper.logMode();
+  require('./utils/turn-credentials').logMode();
 
   // 4. Initialize services
   const registrar = new Registrar(srf);
@@ -178,6 +179,7 @@ async function main() {
   const WebCallGuestManager = require('./services/webcall-guest');
   const guestManager = new WebCallGuestManager();
   guestManager.securityTracker = securityTracker;
+  guestManager.timeConditionService = timeConditionService;
   registrar.guestManager = guestManager;
   callHandler.guestManager = guestManager;
   logger.info(`Web dialer guests: ${guestManager.enabled ? 'enabled' : 'disabled (WEBCALL_ENABLED=false)'}`);
@@ -387,7 +389,7 @@ async function main() {
     res.json({
       status: overall,
       service: 'ShadowPBX',
-      version: '2.0.0',
+      version: '3.0.0',
       uptime: Math.round(uptime),
       uptimeHuman: `${Math.floor(uptime / 86400)}d ${Math.floor((uptime % 86400) / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`,
       memory: {
@@ -746,7 +748,7 @@ async function main() {
   });
 
   logger.info('===========================================');
-  logger.info('  ShadowPBX v2.0 Ready!');
+  logger.info('  ShadowPBX v3.0 Ready!');
   logger.info(`  SIP: ${process.env.EXTERNAL_IP}:${process.env.SIP_PORT || 5060}`);
   logger.info(`  API: http://localhost:${apiPort}/api`);
   logger.info('===========================================');

@@ -150,6 +150,7 @@
   // State
   // ---------------------------------------------------------------
   var ua = null, session = null, muted = false, timer = null, started = 0, busy = false, remoteCfg = null;
+  var captchaSiteKey = '', captchaWidgetId = null, captchaHost = null;
 
   function status(text, kind) {
     el.status.hidden = false;
@@ -201,11 +202,82 @@
           el.form.hidden = false;
           el.numWrap.hidden = collect !== 'name+number';
         }
+        // Outside business hours the widget says so instead of offering a
+        // button that would only be refused (Phase 7)
+        if (d.open === false) {
+          el.greet.textContent = d.closedMessage || 'We are closed right now.';
+          el.start.disabled = true;
+          el.form.hidden = true;
+          status('Closed', '');
+        }
+        captchaSiteKey = d.captchaSiteKey || '';
       })
       .catch(function (e) {
         el.greet.textContent = CFG.greeting || 'Talk to us right from your browser.';
         console.warn('[ShadowPBX] widget config: ' + e.message);
       });
+  }
+
+  // ---------------------------------------------------------------
+  // Optional CAPTCHA (Cloudflare Turnstile)
+  //
+  // Only runs when the widget is configured for it. The challenge is
+  // rendered in the light DOM — Turnstile's own iframe needs to size and
+  // focus itself, which it cannot reliably do inside a shadow root.
+  // ---------------------------------------------------------------
+  function loadTurnstile() {
+    if (window.turnstile) return Promise.resolve(window.turnstile);
+    if (loadTurnstile._p) return loadTurnstile._p;
+    loadTurnstile._p = new Promise(function (resolve, reject) {
+      var s = document.createElement('script');
+      s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+      s.async = true;
+      s.onload = function () { window.turnstile ? resolve(window.turnstile) : reject(new Error('Challenge failed to load')); };
+      s.onerror = function () { reject(new Error('Challenge could not be loaded')); };
+      document.head.appendChild(s);
+    });
+    return loadTurnstile._p;
+  }
+
+  function captchaOverlay() {
+    if (captchaHost) return captchaHost;
+    captchaHost = document.createElement('div');
+    captchaHost.setAttribute('data-shadowpbx-captcha', WIDGET_ID);
+    captchaHost.style.cssText = 'position:fixed;inset:0;z-index:2147483001;display:flex;align-items:center;' +
+      'justify-content:center;background:rgba(15,23,42,.45)';
+    var box = document.createElement('div');
+    box.style.cssText = 'background:#fff;border-radius:14px;padding:20px;box-shadow:0 12px 40px rgba(0,0,0,.3);' +
+      'text-align:center;font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#111827';
+    box.innerHTML = '<div style="margin-bottom:12px;font-weight:600">Just checking you are human</div>' +
+      '<div id="spbx-turnstile"></div>';
+    captchaHost.appendChild(box);
+    document.body.appendChild(captchaHost);
+    return captchaHost;
+  }
+
+  function solveCaptcha() {
+    return loadTurnstile().then(function (ts) {
+      var overlay = captchaOverlay();
+      overlay.style.display = 'flex';
+      var mount = overlay.querySelector('#spbx-turnstile');
+      return new Promise(function (resolve, reject) {
+        var done = function (fn) { return function (arg) { overlay.style.display = 'none'; fn(arg); }; };
+        if (captchaWidgetId !== null) {
+          ts.reset(captchaWidgetId);
+          ts.execute(captchaWidgetId);
+        }
+        captchaWidgetId = ts.render(mount, {
+          sitekey: captchaSiteKey,
+          callback: done(resolve),
+          'error-callback': done(function () { reject(new Error('The challenge failed. Please try again.')); }),
+          'expired-callback': done(function () { reject(new Error('The challenge expired. Please try again.')); })
+        });
+      });
+    });
+  }
+
+  function resetCaptcha() {
+    try { if (window.turnstile && captchaWidgetId !== null) window.turnstile.reset(captchaWidgetId); } catch (e) {}
   }
 
   // ---------------------------------------------------------------
@@ -259,7 +331,13 @@
       }
       stream.getTracks().forEach(function (t) { t.stop(); });   // SIP.js opens its own
 
-      // 2. single-use credential
+      // 2. optional challenge, then the single-use credential
+      var captchaToken = '';
+      if (captchaSiteKey) {
+        status('Confirming you are human…', 'ring');
+        captchaToken = await solveCaptcha();
+      }
+
       var SIPLIB = await loadSip();
       var r = await fetch(BASE + '/api/webcall/token', {
         method: 'POST', mode: 'cors',
@@ -268,11 +346,16 @@
           widgetId: WIDGET_ID,
           pageUrl: location.href,
           name: el.name.value.trim(),
-          number: el.num.value.trim()
+          number: el.num.value.trim(),
+          captchaToken: captchaToken
         })
       });
       var tok = await r.json();
-      if (!r.ok || !tok.success) throw new Error(tok.error || 'Calling is unavailable right now.');
+      if (!r.ok || !tok.success) {
+        if (tok && tok.captcha) resetCaptcha();
+        if (tok && tok.closed) el.start.disabled = true;
+        throw new Error(tok.error || 'Calling is unavailable right now.');
+      }
 
       // 3. register + invite
       var uri = SIPLIB.UserAgent.makeURI('sip:' + tok.username + '@' + tok.sipDomain);

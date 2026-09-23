@@ -87,12 +87,25 @@ function createWebcallPublicRouter(deps) {
       if (!w) return res.status(404).json({ success: false, error: 'Unknown widget' });
       if (!gm.originAllowed(w, requestOrigin(req))) return res.status(403).json({ success: false, error: 'Not allowed on this site' });
       await corsFor(req, res, req.params.widgetId);
-      res.set('Cache-Control', 'public, max-age=60');
+      // Business hours: tell the browser up front when the widget turns
+      // callers away outside hours, so it can show the closed message
+      // instead of a button that will not work (Phase 7).
+      const hours = w.businessHours || {};
+      let open = true;
+      if (hours.enabled && hours.closedAction === 'message' && hours.timeConditionNumber) {
+        const state = await gm.isOpen(hours.timeConditionNumber);
+        if (state === false) open = false;
+      }
+
+      res.set('Cache-Control', open ? 'public, max-age=60' : 'no-store');
       res.json({
         success: true,
         widgetId: w.widgetId,
         branding: w.branding || {},
         collectInfo: w.collectInfo || 'none',
+        captchaSiteKey: gm.captchaSiteKey(w),
+        open,
+        closedMessage: open ? '' : (hours.closedMessage || 'We are closed right now. Please try again during business hours.'),
         enabled: true
       });
     } catch (err) {
@@ -113,11 +126,19 @@ function createWebcallPublicRouter(deps) {
         userAgent: req.get('user-agent') || '',
         pageUrl: body.pageUrl || '',
         name: body.name,
-        number: body.number
+        number: body.number,
+        captchaToken: body.captchaToken || body['cf-turnstile-response']
       });
-      if (!result.ok) return res.status(result.status || 400).json({ success: false, error: result.error });
+      if (!result.ok) {
+        return res.status(result.status || 400).json({
+          success: false, error: result.error,
+          captcha: !!result.captcha, closed: !!result.closed
+        });
+      }
 
-      const cfg = clientConfig(req);
+      // ICE servers are minted per call: STUN plus, when configured, a TURN
+      // relay credential that expires on its own (Phase 8).
+      const cfg = clientConfig(req, result.guest.username);
       const g = result.guest;
       res.set('Cache-Control', 'no-store');
       res.json({
@@ -181,6 +202,7 @@ function adminHandlers(deps) {
           maxConcurrent: b.maxConcurrent || 5,
           businessHours: b.businessHours || { enabled: false },
           crmCreateLead: !!b.crmCreateLead,
+          captcha: !!b.captcha,
           enabled: b.enabled !== false
         });
         logger.info(`WEBCALL: widget created ${widget.widgetId} (${widget.name}) -> ${dest.type}:${dest.target}`);
@@ -200,7 +222,7 @@ function adminHandlers(deps) {
           if (bad) return res.status(400).json({ success: false, error: bad });
           update.destination = { type: b.destination.type, target: String(b.destination.target) };
         }
-        ['name', 'collectInfo', 'branding', 'allowedDomains', 'maxConcurrent', 'enabled', 'businessHours', 'crmCreateLead'].forEach(k => {
+        ['name', 'collectInfo', 'branding', 'allowedDomains', 'maxConcurrent', 'enabled', 'businessHours', 'crmCreateLead', 'captcha'].forEach(k => {
           if (b[k] !== undefined) update[k] = b[k];
         });
         const widget = await WebCallWidget.findOneAndUpdate({ widgetId: req.params.widgetId }, update, { new: true });
