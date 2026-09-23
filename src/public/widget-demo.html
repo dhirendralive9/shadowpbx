@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ShadowPBX — Web Dialer demo</title>
+<style>
+  :root { color-scheme: light; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+         margin: 0; background: #f6f7f9; color: #111827; }
+  main { max-width: 720px; margin: 0 auto; padding: 48px 20px 140px; }
+  h1 { font-size: 24px; margin: 0 0 6px; }
+  p.lede { color: #4b5563; margin: 0 0 28px; }
+  .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 20px; margin-bottom: 18px; }
+  .card h2 { font-size: 15px; margin: 0 0 12px; text-transform: uppercase; letter-spacing: .04em; color: #6b7280; }
+  label { display: block; font-size: 12px; font-weight: 600; margin: 0 0 4px; color: #374151; }
+  input, select { width: 100%; padding: 9px 11px; border: 1px solid #d1d5db; border-radius: 8px; font: inherit; margin-bottom: 12px; }
+  button { font: inherit; font-weight: 600; padding: 10px 18px; border: 0; border-radius: 8px;
+           background: #2563eb; color: #fff; cursor: pointer; }
+  button.ghost { background: #f3f4f6; color: #374151; }
+  pre { background: #0f172a; color: #e2e8f0; padding: 14px; border-radius: 10px; overflow-x: auto; font-size: 12px; margin: 0; }
+  ol { color: #4b5563; padding-left: 20px; }
+  li { margin-bottom: 6px; }
+  code { background: #eef2ff; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Web Dialer demo page</h1>
+  <p class="lede">Loads the widget the same way a customer's website would. Serve this from the PBX
+  (<code>/widget-demo.html</code>) or copy the snippet onto any site you have allow-listed.</p>
+
+  <div class="card">
+    <h2>Load a widget</h2>
+    <label for="wid">Widget ID</label>
+    <input id="wid" placeholder="paste the id from Network &rarr; WebRTC">
+    <label for="label">Button label</label>
+    <input id="label" value="Call us">
+    <label for="color">Colour</label>
+    <input id="color" type="color" value="#2563eb" style="height:42px;padding:4px">
+    <label for="pos">Position</label>
+    <select id="pos">
+      <option value="bottom-right">bottom-right</option>
+      <option value="bottom-left">bottom-left</option>
+      <option value="top-right">top-right</option>
+      <option value="top-left">top-left</option>
+    </select>
+    <button onclick="load()">Load widget</button>
+    <button class="ghost" onclick="location.reload()">Reset page</button>
+  </div>
+
+  <div class="card">
+    <h2>Embed snippet</h2>
+    <pre id="snippet">Fill in a widget id above.</pre>
+  </div>
+
+  <div class="card">
+    <h2>What to check</h2>
+    <ol>
+      <li>The floating button appears and opens a panel.</li>
+      <li>"Start call" asks for the microphone (only once per site).</li>
+      <li>The status goes Connecting &rarr; Ringing &rarr; Connected, and the timer runs.</li>
+      <li>The agent's phone rings and audio works both ways.</li>
+      <li>Mute silences your side; Hang up ends the call on both ends.</li>
+      <li>In <b>Network &rarr; WebRTC</b> the guest appears while the call is up and disappears after it.</li>
+      <li>The call shows in the CDR with direction <code>web-inbound</code>, with a recording.</li>
+    </ol>
+  </div>
+</main>
+
+<script>
+function load() {
+  var id = document.getElementById('wid').value.trim();
+  if (!id) return alert('Enter a widget id');
+  var label = document.getElementById('label').value || 'Call us';
+  var color = document.getElementById('color').value;
+  var pos = document.getElementById('pos').value;
+
+  document.getElementById('snippet').textContent =
+    '<script src="' + location.origin + '/widget.js"\n' +
+    '        data-widget="' + id + '"\n' +
+    '        data-label="' + label + '"\n' +
+    '        data-color="' + color + '"\n' +
+    '        data-position="' + pos + '" async><\/script>';
+
+  var s = document.createElement('script');
+  s.src = '/widget.js';
+  s.async = true;
+  s.setAttribute('data-widget', id);
+  s.setAttribute('data-label', label);
+  s.setAttribute('data-color', color);
+  s.setAttribute('data-position', pos);
+  document.body.appendChild(s);
+}
+</script>
+</body>
+</html>

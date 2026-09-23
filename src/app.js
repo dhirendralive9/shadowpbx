@@ -182,6 +182,17 @@ async function main() {
   callHandler.guestManager = guestManager;
   logger.info(`Web dialer guests: ${guestManager.enabled ? 'enabled' : 'disabled (WEBCALL_ENABLED=false)'}`);
 
+  // IVR / queue / voicemail own their dialogs, so the guest identity is
+  // released when the call's CDR reaches a terminal state (Phase 3).
+  const TERMINAL_CDR = ['completed', 'failed', 'missed', 'busy', 'voicemail', 'blocked'];
+  guestManager.callEndedCheck = async (sipCallId) => {
+    try {
+      const { CDR } = require('./models');
+      const cdr = await CDR.findOne({ sipCallId }, 'status').lean();
+      return !!cdr && TERMINAL_CDR.includes(cdr.status);
+    } catch (e) { return false; }
+  };
+
   const presenceHandler = new PresenceHandler(srf, registrar, callHandler);
   callHandler.presenceHandler = presenceHandler;
 

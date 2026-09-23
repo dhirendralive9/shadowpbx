@@ -793,6 +793,10 @@ class CallHandler {
   }
 
   async _endCall(cdr, hangupBy) {
+    // Web calls: the guest identity dies with the call (Phase 2/3)
+    if (this.guestManager && cdr && cdr.direction === 'web-inbound' && cdr.sipCallId) {
+      try { this.guestManager.endCall(cdr.sipCallId, `call ended (${hangupBy})`); } catch (e) {}
+    }
     const endTime = new Date();
     cdr.status = 'completed';
     cdr.endTime = endTime;
@@ -917,8 +921,49 @@ class CallHandler {
       return res.send(403);
     }
 
-    const dest = authz.destination;
-    logger.info(`WEBCALL: ${username} (widget ${guest.widgetId}) -> ${dest.type}:${dest.target} [${callId}]`);
+    logger.info(`WEBCALL: ${username} (widget ${guest.widgetId}) -> ${authz.destination.type}:${authz.destination.target} [${callId}]`);
+    return this._routeGuestCall(req, res, guest, authz.destination, callId);
+  }
+
+  // ============================================================
+  // Web-call routing (Web Dialer — Phase 3)
+  //
+  // Resolves the widget's destination — through business hours and time
+  // conditions if configured — and hands the call to the SAME handlers a
+  // PSTN call uses: ring groups, IVR, queues, voicemail. Nothing about
+  // ring strategies, menus or queue positions is duplicated here.
+  //
+  // Media is bridged by RTPEngine exactly as in Phase 1: the browser leg
+  // stays DTLS-SRTP, everything inside the PBX stays plain RTP, and the
+  // recorder sees an ordinary G.711 call.
+  // ============================================================
+  async _routeGuestCall(req, res, guest, dest, callId) {
+    // Widget business hours — closed hours follow the time condition's
+    // own no-match destination (voicemail, another group, and so on).
+    const hours = guest.businessHours;
+    if (hours && hours.enabled && hours.timeConditionNumber && this.callRouter) {
+      try {
+        const resolved = await this.callRouter.resolveDestination({ type: 'timecondition', target: hours.timeConditionNumber });
+        if (resolved && resolved.type) {
+          logger.info(`WEBCALL: business hours ${hours.timeConditionNumber} -> ${resolved.type}:${resolved.target} [${callId}]`);
+          dest = resolved;
+        }
+      } catch (e) {
+        logger.warn(`WEBCALL: business hours check failed (${e.message}) — using the widget destination [${callId}]`);
+      }
+    }
+
+    // A destination that is itself a time condition
+    if (dest.type === 'timecondition' && this.callRouter) {
+      try {
+        const resolved = await this.callRouter.resolveDestination(dest);
+        logger.info(`WEBCALL: time condition ${dest.target} -> ${resolved.type}:${resolved.target} [${callId}]`);
+        dest = resolved;
+      } catch (e) {
+        logger.warn(`WEBCALL: time condition ${dest.target} failed: ${e.message} [${callId}]`);
+      }
+    }
+
     return this._dialGuestDestination(req, res, guest, dest, callId);
   }
 
@@ -1018,9 +1063,69 @@ class CallHandler {
       return;
     }
 
-    // IVR / queue / time condition destinations land in Phase 3
-    logger.warn(`WEBCALL: destination type '${dest.type}' is not wired up yet (Web Dialer Phase 3) [${callId}]`);
-    finish('destination type not supported yet');
+    // IVR, queue and voicemail are handled by their own engines. They own the
+    // dialog from here, so the guest identity is reclaimed by the call-ended
+    // reconciliation in the guest manager rather than a destroy handler.
+    const cdr = await this._createCDR(callerLabel, `${dest.type}:${dest.target}`, 'web-inbound', callId, req.source_address);
+
+    try {
+      if (dest.type === 'ivr') {
+        const { IVR } = require('../models');
+        const ivrConfig = this.ivrHandler ? await IVR.findOne({ number: dest.target, enabled: true }) : null;
+        if (!ivrConfig) {
+          logger.warn(`WEBCALL: IVR ${dest.target} not found or disabled [${callId}]`);
+          cdr.status = 'failed'; cdr.hangupCause = 'ivr_missing'; await cdr.save();
+          finish('IVR missing');
+          return res.send(404);
+        }
+        cdr.to = `IVR:${dest.target}`;
+        await cdr.save();
+        logger.info(`WEBCALL: ${callerLabel} -> IVR ${dest.target} (${ivrConfig.name}) [${callId}]`);
+        return this.ivrHandler.handleIvr(req, res, ivrConfig, cdr);
+      }
+
+      if (dest.type === 'queue') {
+        const { Queue } = require('../models');
+        const queueConfig = this.queueHandler ? await Queue.findOne({ number: dest.target, enabled: true }) : null;
+        if (!queueConfig) {
+          logger.warn(`WEBCALL: queue ${dest.target} not found or disabled [${callId}]`);
+          cdr.status = 'failed'; cdr.hangupCause = 'queue_missing'; await cdr.save();
+          finish('queue missing');
+          return res.send(404);
+        }
+        cdr.to = `Q:${dest.target}`;
+        await cdr.save();
+        logger.info(`WEBCALL: ${callerLabel} -> queue ${dest.target} (${queueConfig.name}) [${callId}]`);
+        const handled = await this.queueHandler.handleQueue(req, res, queueConfig, cdr, callerLabel);
+        if (handled) return;
+        finish('queue declined the call');
+        if (!res.finalResponseSent) res.send(503);
+        return;
+      }
+
+      if (dest.type === 'voicemail') {
+        if (!this.voicemailHandler) {
+          finish('voicemail unavailable');
+          return res.send(480);
+        }
+        logger.info(`WEBCALL: ${callerLabel} -> voicemail ${dest.target} [${callId}]`);
+        const handled = await this.voicemailHandler.handleVoicemail(req, res, callerLabel, dest.target, cdr);
+        if (handled) return;
+        finish('voicemail declined the call');
+        if (!res.finalResponseSent) res.send(480);
+        return;
+      }
+    } catch (err) {
+      logger.error(`WEBCALL: ${dest.type} ${dest.target} failed: ${err.message} [${callId}]`);
+      await this._failCall(cdr, err, callerLabel, `${dest.type}:${dest.target}`);
+      finish('failed');
+      if (!res.finalResponseSent) res.send(500);
+      return;
+    }
+
+    logger.warn(`WEBCALL: unsupported destination type '${dest.type}' [${callId}]`);
+    cdr.status = 'failed'; cdr.hangupCause = 'bad_destination'; await cdr.save();
+    finish('unsupported destination type');
     return res.send(503);
   }
 

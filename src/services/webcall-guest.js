@@ -43,9 +43,13 @@ class WebCallGuestManager {
     this.realm = process.env.SIP_DOMAIN || 'shadowpbx';
     this.nonces = new Map();        // nonce -> { created, username }
     this.securityTracker = null;    // set after construction
+    // Optional async (callId) => boolean, wired in app.js. IVR, queue and
+    // voicemail own their own dialogs, so for those we ask whether the call
+    // has finished instead of waiting for a destroy handler (Phase 3).
+    this.callEndedCheck = null;
     this.stats = { issued: 0, registered: 0, calls: 0, rejected: 0, expired: 0 };
 
-    const t1 = setInterval(() => this._sweep(), 15000);
+    const t1 = setInterval(() => { this._sweep().catch(() => {}); }, 15000);
     const t2 = setInterval(() => this._sweepNonces(), 300000);
     if (t1.unref) t1.unref();
     if (t2.unref) t2.unref();
@@ -116,6 +120,8 @@ class WebCallGuestManager {
       widgetId,
       widgetName: widget.name || widgetId,
       destination: widget.destination || {},
+      businessHours: widget.businessHours || { enabled: false },
+      collectInfo: widget.collectInfo || 'none',
       state: 'issued',                       // issued -> registered -> in-call -> ended
       createdAt: now,
       expiresAt: now + TOKEN_TTL * 1000,     // only until a call starts
@@ -311,8 +317,20 @@ class WebCallGuestManager {
     logger.info(`WEBCALL: guest ${username} destroyed (${reason})`);
   }
 
-  _sweep() {
+  async _sweep() {
     const now = Date.now();
+
+    // Reclaim identities whose call has ended inside another handler
+    if (this.callEndedCheck) {
+      for (const [username, g] of this.guests) {
+        if (g.state !== 'in-call' || !g.callId) continue;
+        if (now - g.callStartedAt < 30000) continue;   // give the call time to appear
+        try {
+          if (await this.callEndedCheck(g.callId)) this._destroy(username, 'call ended');
+        } catch (e) { /* checked again on the next sweep */ }
+      }
+    }
+
     for (const [username, g] of this.guests) {
       if (now > g.expiresAt) {
         if (g.state === 'in-call') logger.warn(`WEBCALL: guest ${username} hit the ${MAX_CALL_MIN} minute call cap`);

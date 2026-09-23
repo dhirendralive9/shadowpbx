@@ -65,6 +65,16 @@
   <tbody id="w-body"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody>
 </table>
 
+<div class="mini-card" id="embed-box" style="display:none;margin-bottom:14px">
+  <div class="mc-title">Embed snippet — widget <span class="mono" id="embed-id"></span>
+    <button class="btn btn-sm" id="embed-copy" style="float:right" onclick="copyEmbed()">Copy</button></div>
+  <pre class="mono" id="embed-code" style="font-size:11px;white-space:pre-wrap;margin:0 0 8px"></pre>
+  <div class="muted" style="font-size:12px">
+    Paste this on any page of an allowed site. Try it first on
+    <a href="/widget-demo.html" target="_blank">/widget-demo.html</a>.
+  </div>
+</div>
+
 <div class="sec-head">
   <span class="sec-title">Active guest sessions</span>
   <button class="btn btn-sm" onclick="loadGuests()">Refresh</button>
@@ -381,7 +391,8 @@ function onEstablished() {
   pc.getReceivers().forEach(function (r) { if (r.track) remote.addTrack(r.track); });
   var audio = document.getElementById('sp-audio');
   audio.srcObject = remote;
-  audio.play().catch(function () { log('Autoplay blocked — click anywhere on the page to hear audio'); });
+  var played = audio.play();
+  if (played && played.catch) played.catch(function () { log('Autoplay blocked — click anywhere on the page to hear audio'); });
 
   if (pc.localDescription) document.getElementById('sdp-local').innerHTML = sdpSummary(pc.localDescription.sdp);
   if (pc.remoteDescription) document.getElementById('sdp-remote').innerHTML = sdpSummary(pc.remoteDescription.sdp);
@@ -450,7 +461,8 @@ async function loadWidgets() {
         '<td class="muted" style="font-size:12px">' + esc((w.allowedDomains || []).join(', ') || 'any') + '</td>' +
         '<td>' + (w.maxConcurrent || 5) + '</td>' +
         '<td>' + okPill(w.enabled, 'enabled', 'disabled') + '</td>' +
-        '<td><button class="btn btn-sm" onclick="toggleWidget(\'' + esc(w.widgetId) + '\',' + (!w.enabled) + ')">' + (w.enabled ? 'Disable' : 'Enable') + '</button> ' +
+        '<td><button class="btn btn-sm" onclick="showEmbed(\'' + esc(w.widgetId) + '\')">Embed</button> ' +
+        '<button class="btn btn-sm" onclick="toggleWidget(\'' + esc(w.widgetId) + '\',' + (!w.enabled) + ')">' + (w.enabled ? 'Disable' : 'Enable') + '</button> ' +
         '<button class="btn btn-sm btn-danger" onclick="deleteWidget(\'' + esc(w.widgetId) + '\')">Delete</button></td></tr>';
     }).join('');
   } catch (e) {
@@ -505,6 +517,27 @@ async function loadGuests() {
   } catch (e) {
     document.getElementById('g-summary').innerHTML = row('Guests', '<span class="pill p-err">' + esc(e.message) + '</span>');
   }
+}
+
+function embedSnippet(id) {
+  return '<!-- ShadowPBX Web Dialer -->\n<script src="' + location.origin + '/widget.js"\n        data-widget="' + id +
+    '"\n        data-label="Call us"\n        data-color="#2563eb"\n        data-position="bottom-right"\n        async><\/script>';
+}
+
+function showEmbed(id) {
+  var box = document.getElementById('embed-box');
+  document.getElementById('embed-id').textContent = id;
+  document.getElementById('embed-code').textContent = embedSnippet(id);
+  box.style.display = 'block';
+  box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function copyEmbed() {
+  var text = document.getElementById('embed-code').textContent;
+  navigator.clipboard.writeText(text).then(function () {
+    var b = document.getElementById('embed-copy');
+    b.textContent = 'Copied'; setTimeout(function () { b.textContent = 'Copy'; }, 1500);
+  }).catch(function () { alert('Copy failed — select the text manually'); });
 }
 
 async function killGuest(u) {

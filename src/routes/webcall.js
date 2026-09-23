@@ -38,9 +38,47 @@ function requestOrigin(req) {
 }
 
 // ---------- public ----------
+//
+// The widget runs on the customer's own site, so these two endpoints are
+// cross-origin. CORS is granted per widget: a widget with allowedDomains
+// answers only those sites; one with none answers any site (Phase 5/7
+// tighten that default). Credentials are never used — the token in the
+// response body is the only thing that grants anything.
 function createWebcallPublicRouter(deps) {
   const router = express.Router();
   const gm = deps.guestManager;
+
+  async function corsFor(req, res, widgetId) {
+    const origin = requestOrigin(req);
+    if (!origin) return true;                       // same-origin or a non-browser client
+    let widget = null;
+    try { widget = await WebCallWidget.findOne({ widgetId, enabled: true }).lean(); } catch (e) {}
+    if (!widget || !gm.originAllowed(widget, origin)) return false;
+    res.set('Access-Control-Allow-Origin', origin);
+    res.set('Vary', 'Origin');
+    return true;
+  }
+
+  router.options('/webcall/token', async (req, res) => {
+    const ok = await corsFor(req, res, (req.query.widgetId || req.get('x-widget-id') || '').toString());
+    // The widget id is not in a preflight, so allow the method here and let
+    // the POST itself decide: it re-checks the origin against the widget.
+    res.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.set('Access-Control-Allow-Headers', 'Content-Type');
+    res.set('Access-Control-Max-Age', '600');
+    if (!ok) {
+      const origin = requestOrigin(req);
+      if (origin) { res.set('Access-Control-Allow-Origin', origin); res.set('Vary', 'Origin'); }
+    }
+    res.sendStatus(204);
+  });
+
+  router.options('/webcall/config/:widgetId', async (req, res) => {
+    await corsFor(req, res, req.params.widgetId);
+    res.set('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.set('Access-Control-Max-Age', '600');
+    res.sendStatus(204);
+  });
 
   // Branding for the button. No destination, no internals.
   router.get('/webcall/config/:widgetId', async (req, res) => {
@@ -48,6 +86,7 @@ function createWebcallPublicRouter(deps) {
       const w = await WebCallWidget.findOne({ widgetId: req.params.widgetId, enabled: true }).lean();
       if (!w) return res.status(404).json({ success: false, error: 'Unknown widget' });
       if (!gm.originAllowed(w, requestOrigin(req))) return res.status(403).json({ success: false, error: 'Not allowed on this site' });
+      await corsFor(req, res, req.params.widgetId);
       res.set('Cache-Control', 'public, max-age=60');
       res.json({
         success: true,
@@ -65,8 +104,10 @@ function createWebcallPublicRouter(deps) {
   router.post('/webcall/token', async (req, res) => {
     try {
       const body = req.body || {};
+      const widgetId = body.widgetId || req.query.widgetId;
+      await corsFor(req, res, String(widgetId || ''));
       const result = await gm.issueToken({
-        widgetId: body.widgetId || req.query.widgetId,
+        widgetId,
         ip: publicIp(req),
         origin: requestOrigin(req),
         userAgent: req.get('user-agent') || '',
