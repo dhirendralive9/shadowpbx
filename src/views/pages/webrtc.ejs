@@ -33,6 +33,49 @@
 <div id="st-out" style="margin-bottom:18px"></div>
 
 <div class="sec-head">
+  <span class="sec-title">Web dialer widgets</span>
+  <button class="btn btn-sm" onclick="document.getElementById('add-widget').style.display='block'">+ Add widget</button>
+</div>
+<p class="muted" style="font-size:12px;margin:-6px 0 10px">
+  A widget binds a public id to one internal destination. Web callers get a single-use
+  credential that can reach that destination and nothing else — never a trunk, never another extension.
+  The embeddable button itself arrives in Phase 4.
+</p>
+<div id="add-widget" class="mini-card" style="display:none;margin-bottom:14px">
+  <div class="mc-title">New widget</div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <div class="form-group" style="flex:2;min-width:180px"><label class="form-label">Name</label><input class="form-input" id="w-name" placeholder="Homepage sales button"></div>
+    <div class="form-group" style="flex:1;min-width:130px"><label class="form-label">Destination</label>
+      <select class="form-select form-input" id="w-type">
+        <option value="extension">Extension</option>
+        <option value="ringgroup">Ring group</option>
+        <option value="ivr">IVR (Phase 3)</option>
+        <option value="queue">Queue (Phase 3)</option>
+      </select>
+    </div>
+    <div class="form-group" style="flex:1;min-width:110px"><label class="form-label">Target number</label><input class="form-input" id="w-target" placeholder="1001"></div>
+    <div class="form-group" style="flex:1;min-width:110px"><label class="form-label">Max concurrent</label><input class="form-input" id="w-max" type="number" value="5"></div>
+  </div>
+  <div class="form-group"><label class="form-label">Allowed domains (comma separated, blank = any site)</label><input class="form-input" id="w-domains" placeholder="example.com, *.example.com"></div>
+  <button class="btn btn-primary btn-sm" onclick="createWidget()">Create</button>
+  <button class="btn btn-sm" onclick="document.getElementById('add-widget').style.display='none'">Cancel</button>
+</div>
+<table class="tbl" style="margin-bottom:18px">
+  <thead><tr><th>Widget ID</th><th>Name</th><th>Destination</th><th>Sites</th><th>Max</th><th>Status</th><th>Actions</th></tr></thead>
+  <tbody id="w-body"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody>
+</table>
+
+<div class="sec-head">
+  <span class="sec-title">Active guest sessions</span>
+  <button class="btn btn-sm" onclick="loadGuests()">Refresh</button>
+</div>
+<div id="g-summary" class="mini-card" style="margin-bottom:10px"><div class="mc-row"><span class="muted">Loading...</span></div></div>
+<table class="tbl" style="margin-bottom:18px">
+  <thead><tr><th>Guest</th><th>Widget</th><th>State</th><th>From</th><th>Age</th><th>Expires in</th><th></th></tr></thead>
+  <tbody id="g-body"><tr><td colspan="7" class="empty">No active guests</td></tr></tbody>
+</table>
+
+<div class="sec-head">
   <span class="sec-title">Test softphone</span>
   <span class="muted" style="font-size:12px">SIP.js <span id="sipjs-ver"></span> over <span class="mono" id="wss-label"></span></span>
 </div>
@@ -386,6 +429,89 @@ function resetCall() {
   pill('sp-ice', '-', 'p-gray');
 }
 
+
+// ---------- Widgets + guests (Phase 2) ----------
+async function api(path, opts) {
+  var r = await fetch(path, Object.assign({ credentials: 'same-origin', headers: { 'Content-Type': 'application/json' } }, opts || {}));
+  var d = await r.json();
+  if (!d.success) throw new Error(d.error || 'request failed');
+  return d;
+}
+
+async function loadWidgets() {
+  var body = document.getElementById('w-body');
+  try {
+    var d = await api('/webcall/api/widgets');
+    if (!d.widgets.length) { body.innerHTML = '<tr><td colspan="7" class="empty">No widgets yet</td></tr>'; return; }
+    body.innerHTML = d.widgets.map(function (w) {
+      var dest = (w.destination || {});
+      return '<tr><td class="mono">' + esc(w.widgetId) + '</td><td>' + esc(w.name) + '</td>' +
+        '<td>' + esc(dest.type || '-') + ':' + esc(dest.target || '-') + '</td>' +
+        '<td class="muted" style="font-size:12px">' + esc((w.allowedDomains || []).join(', ') || 'any') + '</td>' +
+        '<td>' + (w.maxConcurrent || 5) + '</td>' +
+        '<td>' + okPill(w.enabled, 'enabled', 'disabled') + '</td>' +
+        '<td><button class="btn btn-sm" onclick="toggleWidget(\'' + esc(w.widgetId) + '\',' + (!w.enabled) + ')">' + (w.enabled ? 'Disable' : 'Enable') + '</button> ' +
+        '<button class="btn btn-sm btn-danger" onclick="deleteWidget(\'' + esc(w.widgetId) + '\')">Delete</button></td></tr>';
+    }).join('');
+  } catch (e) {
+    body.innerHTML = '<tr><td colspan="7" class="empty">' + esc(e.message) + '</td></tr>';
+  }
+}
+
+async function createWidget() {
+  var domains = document.getElementById('w-domains').value.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+  try {
+    await api('/webcall/api/widgets', { method: 'POST', body: JSON.stringify({
+      name: document.getElementById('w-name').value.trim(),
+      destination: { type: document.getElementById('w-type').value, target: document.getElementById('w-target').value.trim() },
+      allowedDomains: domains,
+      maxConcurrent: parseInt(document.getElementById('w-max').value) || 5
+    }) });
+    document.getElementById('add-widget').style.display = 'none';
+    document.getElementById('w-name').value = ''; document.getElementById('w-target').value = '';
+    loadWidgets();
+  } catch (e) { alert(e.message); }
+}
+
+async function toggleWidget(id, enabled) {
+  try { await api('/webcall/api/widgets/' + encodeURIComponent(id), { method: 'PUT', body: JSON.stringify({ enabled: enabled }) }); loadWidgets(); }
+  catch (e) { alert(e.message); }
+}
+
+async function deleteWidget(id) {
+  if (!confirm('Delete widget ' + id + '?')) return;
+  try { await api('/webcall/api/widgets/' + encodeURIComponent(id), { method: 'DELETE' }); loadWidgets(); }
+  catch (e) { alert(e.message); }
+}
+
+async function loadGuests() {
+  try {
+    var d = await api('/webcall/api/guests');
+    var s = d.summary;
+    document.getElementById('g-summary').innerHTML =
+      row('Web calling', okPill(s.enabled, 'enabled', 'disabled')) +
+      row('Active now', '<span class="mono">' + s.active + ' (' + s.inCall + ' on a call)</span>') +
+      row('Tokens issued / calls placed', '<span class="mono">' + s.issued + ' / ' + s.calls + '</span>') +
+      row('Rejected / expired unused', '<span class="mono">' + s.rejected + ' / ' + s.expired + '</span>') +
+      row('Token lifetime · call cap · rate', '<span class="mono">' + s.tokenTtlSeconds + 's · ' + s.maxCallMinutes + 'min · ' + esc(s.tokensPerIp) + '</span>');
+    var body = document.getElementById('g-body');
+    body.innerHTML = d.guests.length ? d.guests.map(function (g) {
+      return '<tr><td class="mono">' + esc(g.username) + '</td><td>' + esc(g.widgetName || g.widgetId) + '</td>' +
+        '<td><span class="pill ' + (g.state === 'in-call' ? 'p-ok' : 'p-ring') + '">' + esc(g.state) + '</span></td>' +
+        '<td class="muted" style="font-size:12px">' + esc(g.ip || '') + ' ' + esc(g.origin || '') + '</td>' +
+        '<td>' + g.ageSeconds + 's</td><td>' + g.expiresInSeconds + 's</td>' +
+        '<td><button class="btn btn-sm btn-danger" onclick="killGuest(\'' + esc(g.username) + '\')">End</button></td></tr>';
+    }).join('') : '<tr><td colspan="7" class="empty">No active guests</td></tr>';
+  } catch (e) {
+    document.getElementById('g-summary').innerHTML = row('Guests', '<span class="pill p-err">' + esc(e.message) + '</span>');
+  }
+}
+
+async function killGuest(u) {
+  try { await api('/webcall/api/guests/' + encodeURIComponent(u), { method: 'DELETE' }); loadGuests(); }
+  catch (e) { alert(e.message); }
+}
+
 // ---------- Init ----------
 (function init() {
   document.getElementById('sp-wss').value = CFG.wssUrl || '';
@@ -403,6 +529,9 @@ function resetCall() {
   if (!window.SIP) log('SIP.js failed to load from /vendor/sip-0.21.2.min.js');
   window.addEventListener('beforeunload', function () { try { if (registerer) registerer.unregister(); if (ua) ua.stop(); } catch (e) {} });
   loadStatus();
+  loadWidgets();
+  loadGuests();
+  setInterval(loadGuests, 10000);
 })();
 </script>
 <%- include('../partials/foot') %>

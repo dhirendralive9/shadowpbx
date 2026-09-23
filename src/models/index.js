@@ -222,7 +222,7 @@ const cdrSchema = new mongoose.Schema({
   callId: { type: String, required: true, unique: true, index: true },
   from: { type: String, required: true, index: true },
   to: { type: String, required: true, index: true },
-  direction: { type: String, enum: ['internal', 'inbound', 'outbound'], default: 'internal' },
+  direction: { type: String, enum: ['internal', 'inbound', 'outbound', 'web-inbound'], default: 'internal' },
   status: {
     type: String,
     enum: ['ringing', 'answered', 'completed', 'missed', 'failed', 'busy', 'voicemail'],
@@ -627,6 +627,38 @@ const Extension = mongoose.model('Extension', extensionSchema);
 const RingGroup = mongoose.model('RingGroup', ringGroupSchema);
 const Trunk = mongoose.model('Trunk', trunkSchema);
 const InboundRoute = mongoose.model('InboundRoute', inboundRouteSchema);
+// ============================================================
+// WebCallWidget — browser "Call us" button (Web Dialer Phase 2)
+//
+// One document per embeddable widget. A widget binds a public id to
+// exactly one internal destination; guest callers can reach that
+// destination and nothing else.
+// ============================================================
+const webCallWidgetSchema = new mongoose.Schema({
+  widgetId: { type: String, required: true, unique: true, index: true },  // public id used in the embed snippet
+  name: { type: String, required: true },                                  // internal label
+  destination: {
+    type: { type: String, enum: ['extension', 'ringgroup', 'ivr', 'queue', 'timecondition'], default: 'extension' },
+    target: { type: String, default: '' }
+  },
+  collectInfo: { type: String, enum: ['none', 'name', 'name+number'], default: 'none' },
+  branding: {
+    label: { type: String, default: 'Call us' },
+    color: { type: String, default: '#2563eb' },
+    position: { type: String, default: 'bottom-right' },
+    greeting: { type: String, default: '' }
+  },
+  businessHours: {
+    enabled: { type: Boolean, default: false },
+    timeConditionNumber: { type: String, default: '' }
+  },
+  allowedDomains: [String],                        // empty = any site (tightened in Phase 5/7)
+  maxConcurrent: { type: Number, default: 5 },
+  enabled: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+});
+
 const OutboundRoute = mongoose.model('OutboundRoute', outboundRouteSchema);
 const IVR = mongoose.model('IVR', ivrSchema);
 const TimeCondition = mongoose.model('TimeCondition', timeConditionSchema);
@@ -645,5 +677,6 @@ const Campaign = mongoose.model('Campaign', campaignSchema);
 const Lead = mongoose.model('Lead', leadSchema);
 const DNC = mongoose.model('DNC', dncSchema);
 const CrmConfig = mongoose.model('CrmConfig', crmConfigSchema);
+const WebCallWidget = mongoose.model('WebCallWidget', webCallWidgetSchema);
 
-module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, IVR, TimeCondition, Queue, User, ChatMessage, BlockedNumber, CDR, VoicemailMessage, ActiveCall, SystemSettings, Appointment, AppointmentMessage, SIPDomain, Campaign, Lead, DNC, CrmConfig };
+module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, IVR, TimeCondition, Queue, User, ChatMessage, BlockedNumber, CDR, VoicemailMessage, ActiveCall, SystemSettings, Appointment, AppointmentMessage, SIPDomain, Campaign, Lead, DNC, CrmConfig, WebCallWidget };

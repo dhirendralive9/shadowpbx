@@ -174,6 +174,14 @@ async function main() {
   const monitorHandler = new MonitorHandler(srf, rtpengine, callHandler, registrar);
   callHandler.monitorHandler = monitorHandler;
 
+  // Web-call guests (Web Dialer Phase 2) — short-lived browser identities
+  const WebCallGuestManager = require('./services/webcall-guest');
+  const guestManager = new WebCallGuestManager();
+  guestManager.securityTracker = securityTracker;
+  registrar.guestManager = guestManager;
+  callHandler.guestManager = guestManager;
+  logger.info(`Web dialer guests: ${guestManager.enabled ? 'enabled' : 'disabled (WEBCALL_ENABLED=false)'}`);
+
   const presenceHandler = new PresenceHandler(srf, registrar, callHandler);
   callHandler.presenceHandler = presenceHandler;
 
@@ -286,6 +294,11 @@ async function main() {
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
 
+  // Web-call token + widget config (PUBLIC — the browser widget calls these
+  // before it has any credentials; rate-limited inside the guest manager)
+  const webcallRoutes = require('./routes/webcall');
+  app.use('/api', webcallRoutes.createWebcallPublicRouter({ guestManager }));
+
   // Appointment webhook routes (PUBLIC — Twilio/SignalWire must reach these)
   appointmentHandler.registerWebhookRoutes(app);
 
@@ -305,7 +318,8 @@ async function main() {
 
   // WebRTC (Phase 1): bridge status + RTPEngine self-test (API-key protected)
   const webrtcRoutes = require('./routes/webrtc');
-  app.use('/api', webrtcRoutes.createWebrtcApiRouter({ rtpengine, registrar }));
+  app.use('/api', webrtcRoutes.createWebrtcApiRouter({ rtpengine, registrar, guestManager }));
+  app.use('/api', webcallRoutes.createWebcallApiRouter({ guestManager }));
   // ─── Health & Monitoring Endpoint ───
   app.get('/health', async (req, res) => {
     const uptime = process.uptime();
@@ -354,6 +368,7 @@ async function main() {
 
     // WebRTC bridge (Phase 1)
     try { checks.webrtc = rtpHelper.webrtcSummary(); } catch (e) { checks.webrtc = 'error'; }
+    try { checks.webcall = guestManager.summary(); } catch (e) { checks.webcall = 'error'; }
 
     const overall = (checks.mongodb === 'ok' && checks.rtpengine === 'ok') ? 'healthy' :
                     (checks.mongodb === 'ok' ? 'degraded' : 'unhealthy');
@@ -381,7 +396,8 @@ async function main() {
   });
 
   // WebRTC admin page + session-authenticated status/self-test
-  app.use('/', webrtcRoutes.createWebrtcWebRouter({ rtpengine, registrar }));
+  app.use('/', webrtcRoutes.createWebrtcWebRouter({ rtpengine, registrar, guestManager }));
+  app.use('/', webcallRoutes.createWebcallWebRouter({ guestManager }));
 
   // Web GUI routes
   app.use('/', createWebRouter(process.env.ADMIN_SECRET));

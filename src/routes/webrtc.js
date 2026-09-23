@@ -55,7 +55,8 @@ function webrtcRegistrations(registrar) {
   return out;
 }
 
-async function buildStatus({ rtpengine, registrar }, req) {
+async function buildStatus(deps, req) {
+  const { rtpengine, registrar } = deps;
   const issues = [];
   const cfg = clientConfig(req);
   const summary = rtpHelper.webrtcSummary();
@@ -88,6 +89,7 @@ async function buildStatus({ rtpengine, registrar }, req) {
     },
     iceServers: cfg.iceServers,
     registrations: webrtcRegistrations(registrar),
+    webcall: deps.guestManager ? deps.guestManager.summary() : null,
     issues
   };
 }

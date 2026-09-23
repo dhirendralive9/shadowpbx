@@ -16,6 +16,7 @@ class Registrar {
     // This avoids hitting MongoDB on every INVITE for contact lookups
     this.contactCache = new Map();
     this.securityTracker = null;  // set after construction
+    this.guestManager = null;     // WebCallGuestManager — set after construction (Phase 2)
 
     // Clean expired nonces every 5 min
     setInterval(() => this._cleanNonces(), 300000);
@@ -33,6 +34,15 @@ class Registrar {
   async handleRegister(req, res) {
     const from = req.getParsedHeader('From');
     const uri = from.uri;
+
+    // Web-call guests (Phase 2) register as web-xxxxxx with a one-shot
+    // token as their password. They are never stored in the Extension
+    // collection, so they get their own short path here.
+    const user = (uri.match(/sip:([^@;>]+)@/) || [])[1];
+    if (this.guestManager && this.guestManager.isGuestUser(user)) {
+      return this._handleGuestRegister(req, res, user);
+    }
+
     const ext = uri.match(/sip:(\d+)@/)?.[1];
 
     if (!ext) {
@@ -203,6 +213,62 @@ class Registrar {
         'Expires': String(expires)
       }
     });
+  }
+
+  // ============================================================
+  // Guest REGISTER (Web Dialer Phase 2)
+  //
+  // Registration is optional for web callers — SIP.js can send an
+  // INVITE straight away — but accepting it keeps the widget simple
+  // and lets the browser learn early that its token is valid.
+  // Nothing is written to MongoDB and no contact is cached: the guest
+  // is reachable only on the WebSocket it dialled in on.
+  // ============================================================
+  async _handleGuestRegister(req, res, username) {
+    const gm = this.guestManager;
+    const transport = sdpUtil.requestTransport(req);
+
+    if (!sdpUtil.isWebSocketTransport(transport)) {
+      logger.warn(`WEBCALL: REGISTER for guest ${username} over ${transport || 'unknown'} — only WS/WSS is allowed`);
+      return res.send(403);
+    }
+
+    const guest = gm.get(username);
+    if (!guest) {
+      logger.warn(`WEBCALL: REGISTER rejected: unknown or expired guest ${username} from ${req.source_address}`);
+      return res.send(403);
+    }
+
+    const authHeader = req.get('Authorization');
+    if (!authHeader) return gm.challenge(res, username);
+
+    const authParams = this._parseAuthHeader(authHeader);
+    const check = gm.verify(username, authParams, req.method);
+    if (!check.ok) {
+      logger.warn(`WEBCALL: REGISTER rejected for guest ${username}: ${check.reason}`);
+      if (check.reason === 'bad credentials' && this.securityTracker) {
+        this.securityTracker.record(req.source_address, 'Web-call guest bad credentials', req.get('User-Agent'), username);
+      }
+      return gm.challenge(res, username);
+    }
+
+    const contact = req.get('Contact');
+    let expires = parseInt(req.get('Expires'));
+    if (isNaN(expires)) expires = 300;
+
+    if (expires === 0 || contact === '*') {
+      gm.destroy(username, 'unregistered');
+      return res.send(200, { headers: { 'Expires': '0' } });
+    }
+
+    // Never outlive the token / call cap
+    const left = Math.max(30, Math.round((guest.expiresAt - Date.now()) / 1000));
+    expires = Math.min(expires, 300, left);
+
+    gm.markRegistered(username, { contact, transport });
+    logger.info(`WEBCALL: guest ${username} registered (widget ${guest.widgetId}) via ${transport} expires=${expires}s`);
+
+    res.send(200, { headers: { 'Contact': contact, 'Expires': String(expires) } });
   }
 
   // ============================================================

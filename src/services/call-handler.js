@@ -59,6 +59,13 @@ class CallHandler {
       return this._handleInbound(req, res, trunkCheck);
     }
 
+    // Web-call guests (Phase 2): From is web-xxxxxx, authenticated with a
+    // one-shot token and locked to its widget's destination.
+    const fromUser = (String(fromUri).match(/sip:([^@;>]+)@/) || [])[1];
+    if (this.guestManager && this.guestManager.isGuestUser(fromUser)) {
+      return this._handleGuestInvite(req, res, fromUser, to, callId);
+    }
+
     const fromExt = this._extractExtFromUri(fromUri);
     const toExt = this._extractExtFromUri(to.uri);
 
@@ -845,6 +852,176 @@ class CallHandler {
     } catch (err) {
       await this._failCall(cdr, err, cdr.from, cdr.to);
     }
+  }
+
+
+  // ============================================================
+  // Web-call guest INVITE (Web Dialer — Phase 2)
+  //
+  //   1. Digest-challenge the INVITE and verify it against the guest's
+  //      one-shot token (browsers all share the proxy's loopback address,
+  //      so the credential is the only identity that counts)
+  //   2. Refuse any destination except the widget's own — a guest can
+  //      never reach a trunk, another extension or a feature code
+  //   3. Bind the token to this call (single-use) and destroy the guest
+  //      identity when the call ends
+  //
+  // Phase 3 replaces the dialling below with full route resolution
+  // (IVR, queues, time conditions) and the web-call CDR/screen-pop work.
+  // ============================================================
+  async _handleGuestInvite(req, res, username, to, callId) {
+    const gm = this.guestManager;
+    const sdpUtil = require('../utils/webrtc-sdp');
+    const transport = sdpUtil.requestTransport(req);
+
+    if (!sdpUtil.isWebSocketTransport(transport)) {
+      logger.warn(`WEBCALL: INVITE from guest ${username} over ${transport || 'unknown'} — only WS/WSS is allowed`);
+      return res.send(403);
+    }
+
+    const guest = gm.get(username);
+    if (!guest) {
+      logger.warn(`WEBCALL: INVITE rejected: unknown or expired guest ${username}`);
+      return res.send(403);
+    }
+
+    // --- 1. Authenticate ---
+    const authHeader = req.get('Authorization') || req.get('Proxy-Authorization');
+    if (!authHeader) return gm.challenge(res, username);
+
+    const authParams = this.registrar._parseAuthHeader(authHeader);
+    const check = gm.verify(username, authParams, req.method);
+    if (!check.ok) {
+      logger.warn(`WEBCALL: INVITE rejected for guest ${username}: ${check.reason}`);
+      if (check.reason === 'bad credentials' && this.securityTracker) {
+        this.securityTracker.record(req.source_address, 'Web-call guest bad credentials', req.get('User-Agent'), username);
+      }
+      return gm.challenge(res, username);
+    }
+
+    // --- 2. Lockdown: only this widget's destination ---
+    const requested = (String(to.uri).match(/sip:\+?([^@;>]+)@/) || [])[1];
+    const authz = gm.authorizeDestination(guest, requested);
+    if (!authz.allowed) {
+      logger.warn(`WEBCALL: guest ${username} DENIED: ${authz.reason}`);
+      if (this.securityTracker) {
+        this.securityTracker.record(req.source_address, 'Web-call guest dialled a forbidden destination', req.get('User-Agent'), requested);
+      }
+      return res.send(403);
+    }
+
+    // --- 3. Single-use binding ---
+    const bind = gm.bindCall(username, callId);
+    if (!bind.ok) {
+      logger.warn(`WEBCALL: guest ${username} refused: ${bind.reason}`);
+      return res.send(403);
+    }
+
+    const dest = authz.destination;
+    logger.info(`WEBCALL: ${username} (widget ${guest.widgetId}) -> ${dest.type}:${dest.target} [${callId}]`);
+    return this._dialGuestDestination(req, res, guest, dest, callId);
+  }
+
+  async _dialGuestDestination(req, res, guest, dest, callId) {
+    const gm = this.guestManager;
+    const from = req.getParsedHeader('From');
+    const fromTag = from.params.tag;
+    const callerLabel = guest.callerName || guest.callerNumber || guest.username;
+
+    const finish = (reason) => { try { gm.endCall(callId, reason); } catch (e) {} };
+
+    // Ring group — reuse the existing ring-group engine unchanged
+    if (dest.type === 'ringgroup') {
+      const ringGroup = await this.ringGroupHandler.isRingGroup(dest.target);
+      if (!ringGroup) { logger.warn(`WEBCALL: ring group ${dest.target} not found [${callId}]`); finish('destination missing'); return res.send(404); }
+      const cdr = await this._createCDR(callerLabel, `RG:${ringGroup.number}`, 'web-inbound', callId, req.source_address);
+      if (ringGroup.members) ringGroup.members.forEach(m => this._emitPresence(m, 'ringing', { callId, remoteParty: callerLabel, direction: 'recipient' }));
+      try {
+        const result = await this.ringGroupHandler.ringGroup(req, res, ringGroup, cdr);
+        if (result && result.uas && result.uac) {
+          cdr.status = 'answered';
+          cdr.answerTime = new Date();
+          if (result.answeredBy) cdr.to = result.answeredBy;
+          await cdr.save();
+          this._emitPresence(result.answeredBy, 'confirmed', { callId, remoteParty: callerLabel, direction: 'recipient' });
+          if (ringGroup.members) ringGroup.members.forEach(m => { if (m !== result.answeredBy) this._emitPresence(m, 'idle'); });
+
+          const onDestroy = async (hangupBy) => {
+            await this._endCall(cdr, hangupBy);
+            this.activeCalls.delete(callId);
+            finish(hangupBy === 'caller' ? 'web caller hung up' : 'agent hung up');
+          };
+          result.uas.on('destroy', () => { try { result.uac.destroy(); } catch (e) {} onDestroy('caller'); });
+          result.uac.on('destroy', () => { try { result.uas.destroy(); } catch (e) {} onDestroy('callee'); });
+          this.activeCalls.set(callId, { uas: result.uas, uac: result.uac, cdr, fromExt: callerLabel, toExt: result.answeredBy });
+        } else {
+          if (ringGroup.members) ringGroup.members.forEach(m => this._emitPresence(m, 'idle'));
+          await this._endCall(cdr, 'system');
+          finish('nobody answered');
+        }
+      } catch (err) {
+        await this._failCall(cdr, err, callerLabel, `RG:${ringGroup.number}`);
+        finish('failed');
+      }
+      return;
+    }
+
+    // Single extension
+    if (dest.type === 'extension') {
+      const contacts = await this.registrar.getContacts(dest.target);
+      if (contacts.length === 0) {
+        logger.warn(`WEBCALL: extension ${dest.target} not registered [${callId}]`);
+        finish('agent offline');
+        return res.send(480);
+      }
+      const cdr = await this._createCDR(callerLabel, dest.target, 'web-inbound', callId, req.source_address);
+      this._emitPresence(dest.target, 'ringing', { callId, remoteParty: callerLabel, direction: 'recipient' });
+
+      try {
+        const contact = this._getLatestContact(contacts);
+        const target = this._contactTarget(dest.target, contact);
+        const rtpOffer = await this._rtpengineOffer(callId, fromTag, req.body, { target: target.media });
+        if (!rtpOffer) {
+          logger.warn(`WEBCALL: RTPEngine offer failed — a browser call cannot bridge without it [${callId}]`);
+          this._emitPresence(dest.target, 'idle');
+          try { res.send(488); } catch (e) {}
+          finish('no media bridge');
+          return this._failCall(cdr, Object.assign(new Error('WebRTC media bridge unavailable'), { status: 488 }), callerLabel, dest.target);
+        }
+
+        const { uas, uac } = await this.srf.createB2BUA(req, res, target.uri, {
+          localSdpB: rtpOffer.sdp,
+          localSdpA: async (sdp, r) => {
+            const toTag = (r && r.getParsedHeader && r.getParsedHeader('To')) ? (r.getParsedHeader('To').params.tag || '') : '';
+            if (!toTag) return sdp;
+            const rtpAnswer = await this._rtpengineAnswer(callId, fromTag, toTag, sdp);
+            return rtpAnswer ? rtpAnswer.sdp : sdp;
+          }
+        });
+
+        cdr.status = 'answered';
+        cdr.answerTime = new Date();
+        cdr.recorded = true;
+        cdr.rtpengineCallId = callId;
+        await cdr.save();
+        this._emitPresence(dest.target, 'confirmed', { callId, remoteParty: callerLabel, direction: 'recipient' });
+        this._trackCall(callId, uas, uac, cdr, callerLabel, dest.target, fromTag);
+        // _trackCall ends the CDR and releases media; we only need to drop the guest identity
+        uas.on('destroy', () => { this._emitPresence(dest.target, 'idle'); finish('web caller hung up'); });
+        uac.on('destroy', () => { this._emitPresence(dest.target, 'idle'); finish('agent hung up'); });
+      } catch (err) {
+        this._emitPresence(dest.target, 'idle');
+        await this._failCall(cdr, err, callerLabel, dest.target);
+        await this._rtpengineDelete(callId, fromTag);
+        finish('failed');
+      }
+      return;
+    }
+
+    // IVR / queue / time condition destinations land in Phase 3
+    logger.warn(`WEBCALL: destination type '${dest.type}' is not wired up yet (Web Dialer Phase 3) [${callId}]`);
+    finish('destination type not supported yet');
+    return res.send(503);
   }
 
   // opts.target: 'webrtc' | 'sip' — media type of the endpoint receiving the offer.
