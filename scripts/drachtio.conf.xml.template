@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ShadowPBX — Drachtio configuration template
+
+  Written to /etc/shadowpbx/drachtio.conf.xml by the installer, with
+  __EXTERNAL_IP__ and __DRACHTIO_SECRET__ substituted. Drachtio runs with
+  "-f /etc/drachtio.conf.xml" (the file is bind-mounted into the container).
+
+  Why a config file rather than --contact flags:
+  browsers need a **wss** listener, and Drachtio terminates that TLS itself —
+  it refuses to start the transport without a certificate. The certificate
+  paths can only be given in this file; the equivalent command-line forms do
+  not work:
+
+      --contact "sips:...;transport=wss,tls-cert-file=..."   → transport parsed as empty
+      --tls-cert-file / --tls-key-file                        → unrecognized option
+
+  The <tls> block MUST sit inside <sip>. At the top level it is silently
+  ignored and the wss transport fails with "tls key file ... is required and
+  not specified".
+
+  Why it matters: browsers connect over wss://, so SIP.js writes
+  "Via: SIP/2.0/WSS", and sofia-sip discards any message whose Via transport
+  has no matching listener — with no log line anywhere. The WebSocket connects,
+  the REGISTER vanishes, and the browser reports 408 about 30 seconds later.
+  nginx must therefore proxy /ws to https://127.0.0.1:5062, not to 5061.
+
+  Ports:
+    5060 udp/tcp   SIP for phones and trunks
+    5061 ws        plain SIP-over-WebSocket, loopback only (kept for tooling)
+    5062 wss       what nginx proxies /ws to — this is the one browsers use
+    9022 tcp       Drachtio admin API, loopback only (ShadowPBX connects here)
+-->
+<drachtio>
+  <admin port="9022" secret="__DRACHTIO_SECRET__">127.0.0.1</admin>
+
+  <sip>
+    <contacts>
+      <contact external-ip="__EXTERNAL_IP__">sip:__EXTERNAL_IP__:5060;transport=udp,tcp</contact>
+      <contact>sip:127.0.0.1:5061;transport=ws</contact>
+      <contact>sips:127.0.0.1:5062;transport=wss</contact>
+    </contacts>
+
+    <!-- Certificate for the wss transport. Refreshed by the certbot deploy
+         hook at /etc/letsencrypt/renewal-hooks/deploy/shadowpbx-drachtio.sh,
+         which copies the files and restarts this container. -->
+    <tls>
+      <key-file>/etc/drachtio-tls/privkey.pem</key-file>
+      <cert-file>/etc/drachtio-tls/fullchain.pem</cert-file>
+    </tls>
+
+    <timers>
+      <t1>500</t1>
+      <t2>4000</t2>
+      <t4>5000</t4>
+      <t1x64>32000</t1x64>
+    </timers>
+  </sip>
+
+  <logging>
+    <loglevel>info</loglevel>
+    <sofia-loglevel>3</sofia-loglevel>
+  </logging>
+</drachtio>

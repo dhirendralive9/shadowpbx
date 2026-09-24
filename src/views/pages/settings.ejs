@@ -407,7 +407,7 @@
   <div class="sec-head"><span class="sec-title">System information</span></div>
   <div class="card">
     <div class="grid-3">
-      <div><span class="muted" style="font-size:11px">Version</span><div style="font-size:14px;font-weight:500">ShadowPBX v2.0</div></div>
+      <div><span class="muted" style="font-size:11px">Version</span><div style="font-size:14px;font-weight:500" id="sys-version">ShadowPBX v3.0</div></div>
       <div><span class="muted" style="font-size:11px">Uptime</span><div style="font-size:14px;font-weight:500" id="sys-uptime">—</div></div>
       <div><span class="muted" style="font-size:11px">Server time</span><div style="font-size:14px;font-weight:500" id="sys-time">—</div></div>
     </div>
@@ -416,6 +416,8 @@
     <div class="sec-head"><span class="sec-title">Quick actions</span></div>
     <div style="display:flex;gap:10px;flex-wrap:wrap">
       <a href="https://github.com/dhirendralive9/shadowpbx" target="_blank" class="btn btn-sm">GitHub repo</a>
+      <a href="/webrtc" class="btn btn-sm">WebRTC diagnostics</a>
+      <a href="/webdialer" class="btn btn-sm">Web dialer</a>
     </div>
   </div>
 </div>
@@ -1080,6 +1082,8 @@ async function loadSystem() {
       var up = d.uptime || 0;
       var days = Math.floor(up / 86400), hrs = Math.floor((up % 86400) / 3600), mins = Math.floor((up % 3600) / 60);
       document.getElementById('sys-uptime').textContent = (days > 0 ? days + 'd ' : '') + hrs + 'h ' + mins + 'm';
+      // Show the version the server actually reports, rather than a hard-coded one
+      if (d.version) document.getElementById('sys-version').textContent = 'ShadowPBX v' + d.version;
     }
     document.getElementById('sys-time').textContent = new Date().toLocaleString();
   } catch (e) {}

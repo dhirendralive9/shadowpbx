@@ -34,6 +34,23 @@ Drachtio needs a **wss** listener, not just a ws one, and it terminates that
 TLS itself — it refuses to start the transport without a certificate, which is
 why `/etc/shadowpbx/tls` exists and is refreshed by a certbot renewal hook.
 
+Those certificate paths can only be given in Drachtio's **config file**, with
+`<tls>` **inside** `<sip>`. Both command-line forms fail, and neither says so
+clearly:
+
+| Attempt | Result |
+|---|---|
+| `--contact "sips:...;transport=wss,tls-cert-file=..."` | transport parses as empty: `bind(...;transport=;...): Protocol not supported` |
+| `--tls-cert-file` / `--tls-key-file` | `unrecognized option` |
+| `<tls>` at the top level of the config file | ignored: `tls key file ... is required and not specified` |
+| `<tls>` inside `<sip>` | works |
+
+The installer writes `/etc/shadowpbx/drachtio.conf.xml` from
+`scripts/drachtio.conf.xml.template` and runs Drachtio with
+`-f /etc/drachtio.conf.xml`. Note that `setup-tls.sh` rebuilds Drachtio from
+flags and so drops the wss listener — follow it with
+`setup-webrtc.sh --fix-drachtio`.
+
 This matters because of one silent failure mode: browsers connect over `wss://`,
 so SIP.js writes `Via: SIP/2.0/WSS`, and sofia-sip discards any message whose
 Via transport has no matching listener — with no log line in Drachtio or

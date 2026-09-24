@@ -87,6 +87,24 @@ confirm() {
 
 env_get() { grep -E "^$1=" "$ENV_FILE" | tail -1 | cut -d= -f2-; }
 
+# Drachtio holds its own copy of the certificate for the wss transport, so a
+# renewal has to be copied over and the container restarted.
+install_renewal_hook() {
+  mkdir -p /etc/letsencrypt/renewal-hooks/deploy
+  cat > /etc/letsencrypt/renewal-hooks/deploy/shadowpbx-drachtio.sh << 'HOOKEOF'
+#!/bin/bash
+DOMAIN=$(grep '^WEB_DOMAIN=' /opt/shadowpbx/.env | cut -d= -f2)
+[ -z "$DOMAIN" ] && exit 0
+[ -d /etc/shadowpbx/tls ] || exit 0
+cp /etc/letsencrypt/live/${DOMAIN}/fullchain.pem /etc/shadowpbx/tls/ 2>/dev/null
+cp /etc/letsencrypt/live/${DOMAIN}/privkey.pem  /etc/shadowpbx/tls/ 2>/dev/null
+chmod 600 /etc/shadowpbx/tls/*.pem 2>/dev/null
+docker restart drachtio > /dev/null 2>&1
+HOOKEOF
+  chmod +x /etc/letsencrypt/renewal-hooks/deploy/shadowpbx-drachtio.sh
+  log "Certificate renewal hook installed (Drachtio reloads the new certificate)"
+}
+
 env_default() {
   # Add KEY=VALUE only if KEY is absent — never overwrite an existing value
   if ! grep -qE "^$1=" "$ENV_FILE"; then
@@ -134,11 +152,12 @@ else
   # with no log line anywhere — so a missing wss contact looks like a hang.
   # Drachtio terminates TLS itself on that transport and refuses to start one
   # without a key file, hence the certificate copy below.
-  if $HAS_WSS && ss -ltn 2>/dev/null | grep -q '127.0.0.1:5062'; then
-    log "Drachtio has a WSS contact and is listening on 127.0.0.1:5062 (${D_IMAGE})"
+  if ss -ltn 2>/dev/null | grep -q '127.0.0.1:5062'; then
+    log "Drachtio WSS listener is up on 127.0.0.1:5062 (${D_IMAGE})"
+    [ -f /etc/letsencrypt/renewal-hooks/deploy/shadowpbx-drachtio.sh ] || install_renewal_hook
   elif [ -n "$WEB_DOMAIN" ] && [ -f "/etc/letsencrypt/live/${WEB_DOMAIN}/privkey.pem" ]; then
-    err "Drachtio has no working WSS listener — browser REGISTER will time out with no log"
-    if $FIX_DRACHTIO || confirm "Recreate Drachtio with a WSS listener on 127.0.0.1:5062?"; then
+    err "Drachtio has no WSS listener — browser REGISTER will time out with no log anywhere"
+    if $FIX_DRACHTIO || confirm "Recreate Drachtio from a config file with a WSS listener on 5062? (brief SIP outage)"; then
       if [ -z "$EXTERNAL_IP" ] || [ -z "$DRACHTIO_SECRET" ]; then
         err "EXTERNAL_IP / DRACHTIO_SECRET missing in .env — cannot recreate Drachtio"
       else
@@ -146,44 +165,63 @@ else
         cp "/etc/letsencrypt/live/${WEB_DOMAIN}/fullchain.pem" /etc/shadowpbx/tls/
         cp "/etc/letsencrypt/live/${WEB_DOMAIN}/privkey.pem" /etc/shadowpbx/tls/
         chmod 600 /etc/shadowpbx/tls/*.pem
-        TLS5061=()
-        if $HAS_TLS && [ -f "${TLS_DIR}/fullchain.pem" ]; then
-          TLS5061=(--contact "sips:${EXTERNAL_IP}:5061;transport=tls,tls-cert-file=/etc/drachtio-tls-sip/fullchain.pem,tls-key-file=/etc/drachtio-tls-sip/privkey.pem")
+
+        # The certificate paths can only be set in the config file: the
+        # command-line equivalents are rejected by this Drachtio build, and
+        # <tls> is only honoured inside <sip>.
+        TEMPLATE="${APP_DIR}/scripts/drachtio.conf.xml.template"
+        if [ -f "$TEMPLATE" ]; then
+          sed -e "s|__EXTERNAL_IP__|${EXTERNAL_IP}|g" -e "s|__DRACHTIO_SECRET__|${DRACHTIO_SECRET}|g" \
+            "$TEMPLATE" > /etc/shadowpbx/drachtio.conf.xml
+        else
+          cat > /etc/shadowpbx/drachtio.conf.xml << XMLEOF
+<drachtio>
+  <admin port="9022" secret="${DRACHTIO_SECRET}">127.0.0.1</admin>
+  <sip>
+    <contacts>
+      <contact external-ip="${EXTERNAL_IP}">sip:${EXTERNAL_IP}:5060;transport=udp,tcp</contact>
+      <contact>sip:127.0.0.1:5061;transport=ws</contact>
+      <contact>sips:127.0.0.1:5062;transport=wss</contact>
+    </contacts>
+    <tls>
+      <key-file>/etc/drachtio-tls/privkey.pem</key-file>
+      <cert-file>/etc/drachtio-tls/fullchain.pem</cert-file>
+    </tls>
+  </sip>
+  <logging>
+    <loglevel>info</loglevel>
+    <sofia-loglevel>3</sofia-loglevel>
+  </logging>
+</drachtio>
+XMLEOF
         fi
+        chmod 600 /etc/shadowpbx/drachtio.conf.xml
+
         docker rm -f drachtio >/dev/null 2>&1 || true
         docker run -d \
           --name drachtio \
           --restart unless-stopped \
           --net host \
           -v /etc/shadowpbx/tls:/etc/drachtio-tls:ro \
-          -v "${TLS_DIR}:/etc/drachtio-tls-sip:ro" \
+          -v /etc/shadowpbx/drachtio.conf.xml:/etc/drachtio.conf.xml:ro \
           --entrypoint drachtio \
-          "${D_IMAGE}" \
-            --contact "sip:${EXTERNAL_IP}:5060;transport=udp,tcp" \
-            "${TLS5061[@]}" \
-            --contact "sip:127.0.0.1:5061;transport=ws" \
-            --contact "sips:127.0.0.1:5062;transport=wss,tls-cert-file=/etc/drachtio-tls/fullchain.pem,tls-key-file=/etc/drachtio-tls/privkey.pem" \
-            --external-ip "${EXTERNAL_IP}" \
-            --secret "${DRACHTIO_SECRET}" \
-            --loglevel info >/dev/null
+          "${D_IMAGE}" -f /etc/drachtio.conf.xml >/dev/null
         sleep 4
+
         if ss -ltn 2>/dev/null | grep -q '127.0.0.1:5062'; then
-          log "Drachtio recreated with a WSS listener"; CHANGED=true; FAILURES=$((FAILURES-1))
-          # Keep its certificate copy fresh after renewal
-          mkdir -p /etc/letsencrypt/renewal-hooks/deploy
-          cat > /etc/letsencrypt/renewal-hooks/deploy/shadowpbx-drachtio.sh << 'HOOKEOF'
-#!/bin/bash
-DOMAIN=$(grep '^WEB_DOMAIN=' /opt/shadowpbx/.env | cut -d= -f2)
-[ -z "$DOMAIN" ] && exit 0
-cp /etc/letsencrypt/live/${DOMAIN}/fullchain.pem /etc/shadowpbx/tls/ 2>/dev/null
-cp /etc/letsencrypt/live/${DOMAIN}/privkey.pem  /etc/shadowpbx/tls/ 2>/dev/null
-chmod 600 /etc/shadowpbx/tls/*.pem 2>/dev/null
-docker restart drachtio > /dev/null 2>&1
-HOOKEOF
-          chmod +x /etc/letsencrypt/renewal-hooks/deploy/shadowpbx-drachtio.sh
-          log "Certificate renewal hook installed for Drachtio"
+          log "Drachtio recreated with a WSS listener (config file)"; CHANGED=true; FAILURES=$((FAILURES-1))
+          install_renewal_hook
         else
           err "Drachtio WSS listener did not start — check: docker logs drachtio"
+          info "Rolling back to the previous flag-based setup so SIP keeps working…"
+          docker rm -f drachtio >/dev/null 2>&1 || true
+          docker run -d --name drachtio --restart unless-stopped --net host \
+            --entrypoint drachtio "${D_IMAGE}" \
+              --contact "sip:${EXTERNAL_IP}:5060;transport=udp,tcp" \
+              --contact "sip:127.0.0.1:5061;transport=ws" \
+              --external-ip "${EXTERNAL_IP}" --secret "${DRACHTIO_SECRET}" --loglevel info >/dev/null
+          sleep 3
+          ss -ltn 2>/dev/null | grep -q '127.0.0.1:5061' && log "Rolled back — SIP and trunks are working again"
         fi
       fi
     fi

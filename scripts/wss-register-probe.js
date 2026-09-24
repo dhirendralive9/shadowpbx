@@ -71,13 +71,15 @@ ws.on('open', () => {
   const id = Date.now();
   ws.send([
     `REGISTER sip:${domain} SIP/2.0`,
-    `Via: SIP/2.0/${viaTransport} probe.invalid;branch=z9hG4bK${id}`,
+    // The Via host and Contact must be resolvable names or sofia-sip answers
+    // 400 Bad Request before the app ever sees the message.
+    `Via: SIP/2.0/${viaTransport} ${domain};branch=z9hG4bK${id}`,
     'Max-Forwards: 70',
     `From: <sip:probe@${domain}>;tag=probe${id}`,
     `To: <sip:probe@${domain}>`,
     `Call-ID: shadowpbx-probe-${id}`,
     'CSeq: 1 REGISTER',
-    `Contact: <sip:probe@probe.invalid;transport=${viaTransport.toLowerCase()}>`,
+    `Contact: <sip:probe@${domain};transport=${viaTransport.toLowerCase()}>`,
     'Expires: 60',
     'Content-Length: 0', '', ''
   ].join('\r\n'));
@@ -90,6 +92,10 @@ ws.on('message', (data) => {
   const realm = (text.match(/realm="([^"]+)"/) || [])[1];
   try { ws.close(); } catch (e) {}
 
+  if (status === '400') {
+    done(false, 'Drachtio answered 400 Bad Request',
+      'The path works, but the probe message was rejected — report this, it is a probe bug, not a server fault.');
+  }
   if (status === '401' || status === '403' || status === '404') {
     done(true, `Drachtio and ShadowPBX answered (${status})`,
       realm && realm !== domain

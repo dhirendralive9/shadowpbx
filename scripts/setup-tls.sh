@@ -132,11 +132,11 @@ docker rm drachtio 2>/dev/null || true
 
 # Drachtio supports multiple --contact flags for multi-transport
 # We keep UDP on 5060 and add TLS on 5061.
-# The WS and WSS listeners MUST stay: nginx proxies browser WebRTC
-# signalling (wss://<domain>/ws) to the wss one on 5062. Browsers send
-# "Via: SIP/2.0/WSS" and sofia-sip silently drops messages whose Via
-# transport has no listener, so without it the web phone, the WebRTC test
-# page and the web dialer widget stop working — with no log line anywhere.
+# NOTE: this flag-based form cannot create the wss listener browsers need —
+# Drachtio only accepts TLS certificate paths from a config file. If browser
+# calling was set up, run scripts/setup-webrtc.sh --fix-drachtio afterwards to
+# restore it (it rebuilds Drachtio from /etc/shadowpbx/drachtio.conf.xml and
+# keeps this SIP/TLS contact).
 docker run -d \
   --name drachtio \
   --restart unless-stopped \
@@ -147,7 +147,6 @@ docker run -d \
     --contact "sip:${EXTERNAL_IP}:5060;transport=udp" \
     --contact "sips:${EXTERNAL_IP}:5061;transport=tls,tls-cert-file=/etc/drachtio-tls/fullchain.pem,tls-key-file=/etc/drachtio-tls/privkey.pem" \
     --contact "sip:127.0.0.1:5061;transport=ws" \
-    --contact "sips:127.0.0.1:5062;transport=wss,tls-cert-file=/etc/drachtio-tls/fullchain.pem,tls-key-file=/etc/drachtio-tls/privkey.pem" \
     --external-ip ${EXTERNAL_IP} \
     --admin-port 9022 \
     --secret ${DRACHTIO_SECRET} \
@@ -155,7 +154,11 @@ docker run -d \
 
 sleep 3
 if docker ps | grep -q drachtio; then
-  log "Drachtio running with TLS on :5061 + UDP on :5060 + WS/WSS on 127.0.0.1:5061/5062"
+  if [ -f /etc/shadowpbx/drachtio.conf.xml ]; then
+  warn "This rebuilt Drachtio WITHOUT the wss listener browsers need."
+  warn "Restore browser calling with: sudo bash ${0%/*}/setup-webrtc.sh --fix-drachtio"
+fi
+log "Drachtio running with TLS on :5061 + UDP on :5060 + WS on 127.0.0.1:5061"
 else
   err "Drachtio failed to start — check: docker logs drachtio"
   exit 1

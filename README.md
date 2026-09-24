@@ -207,6 +207,10 @@ sudo bash scripts/setup-features.sh
 
 ### 2b. Browser calling (v3.0, optional but recommended)
 
+> **Point your DNS at the server before installing.** Browsers block microphone
+> access and `ws://` on anything but HTTPS, so browser calling needs a real
+> hostname with a certificate — an IP address alone cannot work.
+
 ```bash
 sudo bash scripts/setup-webrtc.sh     # checks WSS, RTPEngine ICE, firewall; fixes what it can
 sudo bash scripts/setup-turn.sh       # installs coturn so calls work behind strict firewalls
@@ -391,6 +395,7 @@ proxies `/ws` to it.
 
 | Doc | Covers |
 |-----|--------|
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | **Day-to-day running**: logs, live tailing, restarts, updates, troubleshooting, fresh-install checklist |
 | [docs/WEBRTC-PHASE1.md](docs/WEBRTC-PHASE1.md) | WebRTC foundations, media bridging, self-test, troubleshooting |
 | [docs/WEBCALL-PHASE2.md](docs/WEBCALL-PHASE2.md) | Guest identities, destination lockdown, web-call API |
 | [docs/WEBDIALER-PHASE3-4.md](docs/WEBDIALER-PHASE3-4.md) | Web-call routing and the embeddable widget |
@@ -404,6 +409,27 @@ node scripts/webrtc-selftest.js      # RTPEngine WebRTC bridge — 36 checks
 node scripts/webcall-selftest.js     # guest tokens, auth, lockdown, lifecycle
 node scripts/wss-register-probe.js   # browser signalling path: nginx -> Drachtio -> PBX
 ```
+
+## Logs
+
+The app rotates logs by writing `shadowpbx1.log`, `shadowpbx2.log` and so on,
+with the **newest being the highest number** — so tail the most recent file
+rather than `shadowpbx.log`, which is often stale:
+
+```bash
+tail -f /var/log/shadowpbx/$(ls -t /var/log/shadowpbx/ | head -1)
+```
+
+Full command reference in [docs/OPERATIONS.md](docs/OPERATIONS.md).
+
+## Drachtio configuration
+
+From v3.0 Drachtio runs from `/etc/shadowpbx/drachtio.conf.xml` rather than
+command-line flags, because the `wss` listener browsers need requires TLS
+certificate paths that can only be set in that file (inside `<sip>`, not at the
+top level). The installer generates it from
+[scripts/drachtio.conf.xml.template](scripts/drachtio.conf.xml.template), and a
+certbot deploy hook refreshes Drachtio's copy of the certificate on renewal.
 
 ---
 

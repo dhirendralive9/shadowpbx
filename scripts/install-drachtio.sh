@@ -556,12 +556,43 @@ NGINXEOF
       nginx -t && systemctl reload nginx
 
       # ── Drachtio WSS listener (browser calling) ──
-      # Drachtio terminates TLS itself on the wss transport — it refuses to
-      # start one without a key file — so give it the certificate.
+      #
+      # Browsers connect over wss://, so SIP.js writes "Via: SIP/2.0/WSS", and
+      # sofia-sip discards any message whose Via transport has no listener —
+      # silently. Drachtio terminates that TLS itself and takes the certificate
+      # paths ONLY from a config file (<tls> inside <sip>); the command-line
+      # equivalents are rejected by this build.
       mkdir -p /etc/shadowpbx/tls
       cp /etc/letsencrypt/live/${WEB_DOMAIN}/fullchain.pem /etc/shadowpbx/tls/
       cp /etc/letsencrypt/live/${WEB_DOMAIN}/privkey.pem /etc/shadowpbx/tls/
       chmod 600 /etc/shadowpbx/tls/*.pem
+
+      if [ -f "${APP_DIR}/scripts/drachtio.conf.xml.template" ]; then
+        sed -e "s|__EXTERNAL_IP__|${EXTERNAL_IP}|g" -e "s|__DRACHTIO_SECRET__|${DRACHTIO_SECRET}|g" \
+          "${APP_DIR}/scripts/drachtio.conf.xml.template" > /etc/shadowpbx/drachtio.conf.xml
+      else
+        cat > /etc/shadowpbx/drachtio.conf.xml << XMLEOF
+<drachtio>
+  <admin port="9022" secret="${DRACHTIO_SECRET}">127.0.0.1</admin>
+  <sip>
+    <contacts>
+      <contact external-ip="${EXTERNAL_IP}">sip:${EXTERNAL_IP}:5060;transport=udp,tcp</contact>
+      <contact>sip:127.0.0.1:5061;transport=ws</contact>
+      <contact>sips:127.0.0.1:5062;transport=wss</contact>
+    </contacts>
+    <tls>
+      <key-file>/etc/drachtio-tls/privkey.pem</key-file>
+      <cert-file>/etc/drachtio-tls/fullchain.pem</cert-file>
+    </tls>
+  </sip>
+  <logging>
+    <loglevel>info</loglevel>
+    <sofia-loglevel>3</sofia-loglevel>
+  </logging>
+</drachtio>
+XMLEOF
+      fi
+      chmod 600 /etc/shadowpbx/drachtio.conf.xml
 
       docker rm -f drachtio > /dev/null 2>&1 || true
       docker run -d \
@@ -569,28 +600,32 @@ NGINXEOF
         --restart unless-stopped \
         --net host \
         -v /etc/shadowpbx/tls:/etc/drachtio-tls:ro \
+        -v /etc/shadowpbx/drachtio.conf.xml:/etc/drachtio.conf.xml:ro \
         --entrypoint drachtio \
-        drachtio/drachtio-server:0.8.25 \
-          --contact "sip:${EXTERNAL_IP}:5060;transport=udp,tcp" \
-          --contact "sip:127.0.0.1:5061;transport=ws" \
-          --contact "sips:127.0.0.1:5062;transport=wss,tls-cert-file=/etc/drachtio-tls/fullchain.pem,tls-key-file=/etc/drachtio-tls/privkey.pem" \
-          --external-ip ${EXTERNAL_IP} \
-          --secret ${DRACHTIO_SECRET} \
-          --loglevel info
-      sleep 3
+        drachtio/drachtio-server:0.8.25 -f /etc/drachtio.conf.xml
+      sleep 4
+
       if ss -ltn 2>/dev/null | grep -q '127.0.0.1:5062'; then
         log "Drachtio WSS listener ready on 127.0.0.1:5062 (browser calling)"
       else
         warn "Drachtio WSS listener did not start — check: docker logs drachtio"
-        warn "Browser calling will not work until it does. Re-run: scripts/setup-webrtc.sh --fix-drachtio"
+        warn "Rolling back to UDP/WS only so SIP keeps working"
+        docker rm -f drachtio > /dev/null 2>&1 || true
+        docker run -d --name drachtio --restart unless-stopped --net host \
+          --entrypoint drachtio drachtio/drachtio-server:0.8.25 \
+            --contact "sip:${EXTERNAL_IP}:5060;transport=udp,tcp" \
+            --contact "sip:127.0.0.1:5061;transport=ws" \
+            --external-ip ${EXTERNAL_IP} --secret ${DRACHTIO_SECRET} --loglevel info
+        warn "Browser calling is off until this is fixed: scripts/setup-webrtc.sh --fix-drachtio"
       fi
 
-      # Keep Drachtio's copy of the certificate fresh after renewal
+      # Drachtio holds its own copy of the certificate — refresh it on renewal
       mkdir -p /etc/letsencrypt/renewal-hooks/deploy
       cat > /etc/letsencrypt/renewal-hooks/deploy/shadowpbx-drachtio.sh << 'HOOKEOF'
 #!/bin/bash
 DOMAIN=$(grep '^WEB_DOMAIN=' /opt/shadowpbx/.env | cut -d= -f2)
 [ -z "$DOMAIN" ] && exit 0
+[ -d /etc/shadowpbx/tls ] || exit 0
 cp /etc/letsencrypt/live/${DOMAIN}/fullchain.pem /etc/shadowpbx/tls/ 2>/dev/null
 cp /etc/letsencrypt/live/${DOMAIN}/privkey.pem  /etc/shadowpbx/tls/ 2>/dev/null
 chmod 600 /etc/shadowpbx/tls/*.pem 2>/dev/null
