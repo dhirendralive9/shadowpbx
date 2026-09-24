@@ -125,6 +125,28 @@ counters. The Settings → System tab shows the same version.
 
 ## 4. Updating
 
+### From the UI (easiest)
+
+**Settings → System → Software updates**. It shows the installed version, how
+many commits are available and what each one changes. **Update now** pulls,
+runs `npm install` if dependencies changed, restarts the service, and reloads
+the page when the app is back.
+
+It refuses rather than guessing when:
+
+- files have been edited on the server (it lists them) — it will not discard
+  someone's fix silently;
+- the branch has local commits that aren't on origin;
+- calls are in progress — you get an "Update anyway" button if you mean it.
+
+Fix a blocked update on the server with `git checkout -- <file>` or
+`git stash`, then check again.
+
+The updater needs the install to be a git checkout and the service to run as
+root (it is by default). Set `UPDATE_ENABLED=false` in `.env` to hide it.
+
+### From the shell
+
 ```bash
 cd /opt/shadowpbx
 git pull origin main

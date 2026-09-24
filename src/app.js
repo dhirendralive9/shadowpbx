@@ -412,6 +412,9 @@ async function main() {
   app.use('/', webrtcRoutes.createWebrtcWebRouter({ rtpengine, registrar, guestManager }));
   app.use('/', webcallRoutes.createWebcallWebRouter({ guestManager }));
 
+  // Self-update from Settings → System (admin session only)
+  app.use('/', require('./routes/updates').createUpdateRouter({ callHandler }));
+
   // Web GUI routes
   app.use('/', createWebRouter(process.env.ADMIN_SECRET));
 

@@ -410,6 +410,14 @@ node scripts/webcall-selftest.js     # guest tokens, auth, lockdown, lifecycle
 node scripts/wss-register-probe.js   # browser signalling path: nginx -> Drachtio -> PBX
 ```
 
+## Updating
+
+**Settings → System → Software updates** checks GitHub, shows what changed and
+applies it in one click — pull, `npm install` when needed, restart. It refuses
+if the working tree has local edits or calls are in progress, rather than
+guessing. Shell equivalent and details in
+[docs/OPERATIONS.md](docs/OPERATIONS.md).
+
 ## Logs
 
 The app rotates logs by writing `shadowpbx1.log`, `shadowpbx2.log` and so on,

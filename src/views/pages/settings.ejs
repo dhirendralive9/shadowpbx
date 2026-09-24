@@ -412,6 +412,30 @@
       <div><span class="muted" style="font-size:11px">Server time</span><div style="font-size:14px;font-weight:500" id="sys-time">—</div></div>
     </div>
   </div>
+  <!-- ── Software updates ── -->
+  <div style="margin-top:20px">
+    <div class="sec-head">
+      <span class="sec-title">Software updates</span>
+      <button class="btn btn-sm" id="upd-check" onclick="checkUpdates()">Check for updates</button>
+    </div>
+    <div class="card">
+      <div id="upd-summary" class="muted">Checking…</div>
+      <div id="upd-commits" style="margin-top:12px;display:none">
+        <table class="tbl">
+          <thead><tr><th style="width:80px">Commit</th><th>Change</th><th style="width:130px">When</th></tr></thead>
+          <tbody id="upd-commit-body"></tbody>
+        </table>
+      </div>
+      <div id="upd-actions" style="margin-top:12px;display:none">
+        <button class="btn btn-primary btn-sm" id="upd-apply" onclick="applyUpdate(false)">Update now</button>
+        <span class="muted" style="font-size:12px;margin-left:8px">Pulls the changes and restarts the app. Calls in progress are interrupted.</span>
+      </div>
+      <div id="upd-progress" style="margin-top:12px;display:none">
+        <div id="upd-steps" class="mono" style="font-size:12px"></div>
+      </div>
+    </div>
+  </div>
+
   <div style="margin-top:20px">
     <div class="sec-head"><span class="sec-title">Quick actions</span></div>
     <div style="display:flex;gap:10px;flex-wrap:wrap">
@@ -1075,6 +1099,140 @@ async function deleteBackup(name) {
 }
 
 // ═══════════════════ SYSTEM ═══════════════════
+// ── Software updates ──
+var updPoll = null;
+
+function updEsc(t) { return String(t == null ? '' : t).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+
+async function updApi(path, opts) {
+  var r = await fetch(path, Object.assign({ credentials: 'same-origin', headers: { 'Content-Type': 'application/json' } }, opts || {}));
+  var d = await r.json();
+  if (!d.success) throw new Error(d.error || 'Request failed');
+  return d;
+}
+
+async function checkUpdates(quiet) {
+  var btn = document.getElementById('upd-check');
+  var box = document.getElementById('upd-summary');
+  if (!quiet) { btn.disabled = true; btn.textContent = 'Checking…'; }
+  try {
+    var d = await updApi('/system/api/update/status');
+    document.getElementById('upd-commits').style.display = 'none';
+    document.getElementById('upd-actions').style.display = 'none';
+
+    if (!d.enabled) { box.innerHTML = '<span class="pill p-gray">unavailable</span> ' + updEsc(d.error || 'Updates are disabled'); return; }
+    if (d.error) { box.innerHTML = '<span class="pill p-err">error</span> ' + updEsc(d.error); return; }
+
+    var head = '<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">' +
+      '<span>Installed <b>v' + updEsc(d.version) + '</b> <span class="mono muted">' + updEsc(d.local || '') + '</span></span>' +
+      '<span class="muted">branch ' + updEsc(d.branch) + '</span>' +
+      (d.behind > 0 ? '<span class="pill p-hold">' + d.behind + ' update' + (d.behind > 1 ? 's' : '') + ' available</span>'
+                    : '<span class="pill p-ok">up to date</span>') + '</div>';
+
+    if (d.behind > 0 && d.commits && d.commits.length) {
+      document.getElementById('upd-commit-body').innerHTML = d.commits.map(function (c) {
+        return '<tr><td class="mono">' + updEsc(c.hash) + '</td><td>' + updEsc(c.subject) + '</td>' +
+          '<td class="muted">' + updEsc(c.when) + '</td></tr>';
+      }).join('');
+      document.getElementById('upd-commits').style.display = 'block';
+    }
+
+    var notes = [];
+    if (d.npmChanged) notes.push('Dependencies changed — npm install will run automatically.');
+    if (d.scriptsChanged) notes.push('Setup scripts changed — review them afterwards; infrastructure changes may need a setup script re-run.');
+    if (d.activeCalls > 0) notes.push(d.activeCalls + ' call(s) in progress — the restart will interrupt them.');
+    if (notes.length) head += '<div class="muted" style="font-size:12px;margin-top:8px">' + notes.map(updEsc).join('<br>') + '</div>';
+
+    if (d.behind > 0 && !d.canUpdate) {
+      head += '<div style="margin-top:10px"><span class="pill p-err">blocked</span> <span style="font-size:12px">' +
+        updEsc((d.blockers || []).join(' · ')) + '</span>' +
+        (d.dirty && d.dirty.length ? '<div class="mono muted" style="font-size:11px;margin-top:6px">' +
+          d.dirty.slice(0, 10).map(updEsc).join('<br>') + '</div>' : '') +
+        '<div class="muted" style="font-size:12px;margin-top:6px">Fix on the server with <span class="mono">git checkout -- &lt;file&gt;</span> or <span class="mono">git stash</span>, then check again.</div></div>';
+    }
+
+    box.innerHTML = head;
+    if (d.canUpdate) {
+      document.getElementById('upd-actions').style.display = 'block';
+      document.getElementById('upd-apply').textContent = 'Update to ' + d.remote;
+      window.__updActiveCalls = d.activeCalls;
+    }
+    if (d.updating) pollUpdate();
+  } catch (e) {
+    box.innerHTML = '<span class="pill p-err">error</span> ' + updEsc(e.message);
+  } finally {
+    if (!quiet) { btn.disabled = false; btn.textContent = 'Check for updates'; }
+  }
+}
+
+async function applyUpdate(force) {
+  var calls = window.__updActiveCalls || 0;
+  var msg = 'Update now?\n\nThe app will restart, so the web UI drops for a few seconds.' +
+    (calls > 0 ? '\n\n' + calls + ' call(s) are in progress and will be interrupted.' : '');
+  if (!confirm(msg)) return;
+
+  var btn = document.getElementById('upd-apply');
+  btn.disabled = true;
+  btn.textContent = 'Updating…';
+  document.getElementById('upd-progress').style.display = 'block';
+  document.getElementById('upd-steps').textContent = 'Starting…';
+  try {
+    await updApi('/system/api/update/apply', { method: 'POST', body: JSON.stringify({ force: !!force }) });
+    pollUpdate();
+  } catch (e) {
+    document.getElementById('upd-steps').innerHTML = '<span class="pill p-err">failed</span> ' + updEsc(e.message);
+    if (/in progress/.test(e.message)) {
+      document.getElementById('upd-steps').innerHTML +=
+        ' <button class="btn btn-sm btn-danger" onclick="applyUpdate(true)">Update anyway</button>';
+    }
+    btn.disabled = false;
+    btn.textContent = 'Update now';
+  }
+}
+
+function pollUpdate() {
+  clearInterval(updPoll);
+  var misses = 0;
+  updPoll = setInterval(async function () {
+    try {
+      var d = await updApi('/system/api/update/progress');
+      misses = 0;
+      var icon = { done: '✓', running: '…', scheduled: '✓', skipped: '–', note: '!', failed: '✗' };
+      document.getElementById('upd-steps').innerHTML = (d.steps || []).map(function (s) {
+        return '<div>' + (icon[s.state] || '') + ' ' + updEsc(s.name) +
+          (s.detail ? ' <span class="muted">— ' + updEsc(s.detail) + '</span>' : '') + '</div>';
+      }).join('');
+
+      if (!d.running && d.ok === true) {
+        clearInterval(updPoll);
+        document.getElementById('upd-steps').innerHTML +=
+          '<div style="margin-top:8px"><span class="pill p-ok">updated</span> Restarting — this page reloads when the app is back.</div>';
+        waitForRestart();
+      } else if (!d.running && d.ok === false) {
+        clearInterval(updPoll);
+        document.getElementById('upd-apply').disabled = false;
+        document.getElementById('upd-apply').textContent = 'Retry update';
+      }
+    } catch (e) {
+      // The restart kills this request — that is expected, not an error
+      if (++misses > 3) { clearInterval(updPoll); waitForRestart(); }
+    }
+  }, 1500);
+}
+
+function waitForRestart() {
+  var tries = 0;
+  var t = setInterval(async function () {
+    tries++;
+    try {
+      var r = await fetch('/system/api/update/status?fetch=0', { credentials: 'same-origin' });
+      if (r.ok) { clearInterval(t); location.reload(); }
+    } catch (e) { /* still down */ }
+    if (tries > 40) { clearInterval(t); document.getElementById('upd-steps').innerHTML +=
+      '<div class="muted">The app has not come back — check <span class="mono">journalctl -u shadowpbx -n 50</span></div>'; }
+  }, 3000);
+}
+
 async function loadSystem() {
   try {
     var d = await (await fetch(API + '/health', { headers: H })).json();
@@ -1087,6 +1245,7 @@ async function loadSystem() {
     }
     document.getElementById('sys-time').textContent = new Date().toLocaleString();
   } catch (e) {}
+  checkUpdates(true);
 }
 
 // ═══════════════════ SIP DOMAINS ═══════════════════
