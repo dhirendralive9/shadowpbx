@@ -14,15 +14,17 @@ A **web** badge on the row shows when an extension has a login attached.
 Enabling web access creates an **agent** User account:
 
 - **username** = the extension number
-- **password** = the extension's **SIP password** (mirrored)
+- **password** = a **separate web password** you set or generate (min 8 chars)
 - **role** = agent, linked to this extension
 
-The passwords are kept in sync: changing the SIP password here (or regenerating
-it) updates the mirrored web login automatically.
+The web password is **independent of the SIP password.** Changing or
+regenerating the SIP password does not affect the web login, and vice versa. To
+change the web password, use **Reset password** in the same panel.
 
-> **Security note.** The SIP password is stored in plaintext (required for
-> digest auth); the web password is bcrypt-hashed. Mirroring means the web login
-> is only as strong as the SIP secret. This is a deliberate, configured choice.
+> **Why separate.** The SIP password is stored in plaintext (required for digest
+> auth); the web password is bcrypt-hashed. Keeping them independent means a
+> database leak of the SIP password does not also hand over the web-UI login.
+> Only the display **name** is kept in sync between the two.
 
 ## Already-attached extensions
 
@@ -44,7 +46,7 @@ the list so you can keep it.
 | Endpoint | Purpose |
 |---|---|
 | `GET /api/extensions/:ext/web-access` | attachment status for one extension |
-| `POST /api/extensions/:ext/web-access` | enable / re-sync the agent login |
+| `POST /api/extensions/:ext/web-access` | enable, or reset the web password (body: `{ password }`, min 8) |
 | `DELETE /api/extensions/:ext/web-access` | disable (remove the agent login) |
 | `GET /api/extensions-available` | extensions with no login yet (for the dropdown) |
 

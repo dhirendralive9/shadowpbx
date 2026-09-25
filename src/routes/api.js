@@ -92,16 +92,20 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
 
-  // Enable web access: create (or re-sync) an agent login for this extension.
-  // Per configuration, the web login password MIRRORS the SIP password.
-  //
-  // NOTE: the SIP password is stored in plaintext (required for digest auth),
-  // while the web password is bcrypt-hashed. Mirroring means the web login is
-  // only as strong as the SIP secret — documented tradeoff, chosen deliberately.
+  // Enable web access, or reset the web login password. The web login has its
+  // OWN password — independent of the SIP secret — so a database leak of the
+  // (plaintext) SIP password does not also hand over the web-UI login. The
+  // caller must supply a password (or ask the client to generate one); we do
+  // not reuse the SIP password.
   router.post('/extensions/:ext/web-access', async (req, res) => {
     try {
       const ext = await Extension.findOne({ extension: req.params.ext });
       if (!ext) return res.status(404).json({ success: false, error: 'Extension not found' });
+
+      const webPassword = (req.body && req.body.password ? String(req.body.password) : '').trim();
+      if (webPassword.length < 8) {
+        return res.status(400).json({ success: false, error: 'A web password of at least 8 characters is required' });
+      }
 
       const existing = await User.findOne({ extension: req.params.ext });
       if (existing && !(existing.username === ext.extension && existing.role === 'agent')) {
@@ -119,14 +123,14 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
         return res.status(409).json({ success: false, conflict: true, error: `A user named "${ext.extension}" already exists. Choose a different account or detach it in Settings → Users.` });
       }
 
-      const hash = await bcrypt.hash(ext.password, 10);   // mirror the SIP password
+      const hash = await bcrypt.hash(webPassword, 10);
       if (existing) {
         existing.password = hash;
         existing.name = ext.name;
         existing.enabled = true;
         await existing.save();
-        logger.info(`Web access re-synced for extension ${ext.extension} (user ${existing.username})`);
-        return res.json({ success: true, attached: true, resynced: true, user: { username: existing.username, role: 'agent' } });
+        logger.info(`Web login password reset for extension ${ext.extension} (user ${existing.username})`);
+        return res.json({ success: true, attached: true, reset: true, user: { username: existing.username, role: 'agent' } });
       }
       const user = await User.create({
         username: ext.extension, password: hash, role: 'agent',
@@ -176,14 +180,14 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
       const ext = await Extension.findOneAndUpdate({ extension: req.params.ext }, updates, { new: true, select: '-password' });
       if (!ext) return res.status(404).json({ success: false, error: 'Not found' });
 
-      // Keep a mirrored agent login in sync when the SIP password or name changes.
-      if (req.body.password !== undefined || req.body.name !== undefined) {
+      // Keep only the display NAME in sync with a linked agent login. The web
+      // password is independent of the SIP password and is never changed here —
+      // reset it explicitly via POST /extensions/:ext/web-access.
+      if (req.body.name !== undefined) {
         const agent = await User.findOne({ extension: req.params.ext, username: req.params.ext, role: 'agent' });
-        if (agent) {
-          if (req.body.password !== undefined) agent.password = await bcrypt.hash(req.body.password, 10);
-          if (req.body.name !== undefined) agent.name = req.body.name;
+        if (agent && agent.name !== req.body.name) {
+          agent.name = req.body.name;
           await agent.save();
-          logger.info(`Extension ${req.params.ext}: mirrored web login updated`);
         }
       }
       res.json({ success: true, extension: ext });
@@ -224,9 +228,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
       ext.password = newPassword;
       ext.updatedAt = new Date();
       await ext.save();
-      const agent = await User.findOne({ extension: ext.extension, username: ext.extension, role: 'agent' });
-      if (agent) { agent.password = await bcrypt.hash(newPassword, 10); await agent.save(); }
-      logger.info(`Extension ${ext.extension}: password regenerated${agent ? ' (web login synced)' : ''}`);
+      logger.info(`Extension ${ext.extension}: SIP password regenerated (web login unaffected)`);
       res.json({ success: true, extension: ext.extension, name: ext.name, password: newPassword });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });

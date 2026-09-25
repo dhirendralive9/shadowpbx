@@ -368,7 +368,7 @@ setInterval(loadExtensions, 3000);
         <input class="form-input mono" id="es-password" style="flex:1" placeholder="leave blank to keep current" autocomplete="new-password">
         <button class="btn btn-sm" type="button" onclick="genExtPassword()">Generate</button>
       </div>
-      <span class="muted" style="font-size:11px">This is the phone's SIP secret. If web access is on, the login password is kept the same.</span>
+      <span class="muted" style="font-size:11px">This is the phone's SIP secret, used by the softphone to register. The web login has its own separate password.</span>
     </div>
 
     <div style="border-top:1px solid var(--border,#333);margin:14px 0;padding-top:14px">
@@ -428,12 +428,29 @@ async function loadWebAccess(ext) {
     } else if (d.attached) {
       body.innerHTML =
         '<div class="mc-row" style="margin-bottom:8px"><span class="pill p-ok">enabled</span>' +
-        '<span style="font-size:12px">Agent login <b>' + esc(d.user.username) + '</b> — same password as SIP</span></div>' +
-        '<button class="btn btn-sm btn-danger" onclick="setWebAccess(false)">Disable web access</button>';
+        '<span style="font-size:12px">Agent login <b>' + esc(d.user.username) + '</b></span></div>' +
+        '<div class="form-group"><label class="form-label">Reset web password</label>' +
+          '<div style="display:flex;gap:8px">' +
+            '<input class="form-input mono" id="es-web-pass" style="flex:1" placeholder="new web password (min 8)" autocomplete="new-password">' +
+            '<button class="btn btn-sm" type="button" onclick="genWebPassword()">Generate</button>' +
+          '</div>' +
+          '<span class="muted" style="font-size:11px">Separate from the SIP password.</span>' +
+        '</div>' +
+        '<div style="display:flex;gap:8px">' +
+          '<button class="btn btn-primary btn-sm" onclick="setWebAccess(true)">Reset password</button>' +
+          '<button class="btn btn-sm btn-danger" onclick="setWebAccess(false)">Disable web access</button>' +
+        '</div>';
     } else {
       body.innerHTML =
         '<div class="muted" style="font-size:12px;margin-bottom:8px">No web login. Enabling creates an agent account ' +
-        '(username = extension, password = the SIP password) so this agent can sign into the web UI.</div>' +
+        '(username = extension) with its own web password, so this agent can sign into the web UI.</div>' +
+        '<div class="form-group"><label class="form-label">Web password</label>' +
+          '<div style="display:flex;gap:8px">' +
+            '<input class="form-input mono" id="es-web-pass" style="flex:1" placeholder="web password (min 8)" autocomplete="new-password">' +
+            '<button class="btn btn-sm" type="button" onclick="genWebPassword()">Generate</button>' +
+          '</div>' +
+          '<span class="muted" style="font-size:11px">Independent of the SIP password.</span>' +
+        '</div>' +
         '<button class="btn btn-primary btn-sm" onclick="setWebAccess(true)">Enable web access</button>';
     }
   } catch (e) {
@@ -441,22 +458,31 @@ async function loadWebAccess(ext) {
   }
 }
 
+function genWebPassword() {
+  var el = document.getElementById('es-web-pass');
+  if (!el) return;
+  var c = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+  var p = '', a = new Uint32Array(16);
+  (window.crypto || {}).getRandomValues && window.crypto.getRandomValues(a);
+  for (var i = 0; i < 16; i++) p += c[(a[i] || Math.floor(Math.random() * 1e9)) % c.length];
+  el.value = p;
+  el.type = 'text';   // reveal a generated password so the admin can copy it
+}
+
 async function setWebAccess(enable) {
   var ext = esCurrent.extension;
-  // If enabling and a new SIP password was typed but not yet saved, save it first
-  // so the mirrored web password matches what the admin intends.
-  if (enable && document.getElementById('es-password').value.trim()) {
-    await saveExtSettings(true);
+  var opts = { method: enable ? 'POST' : 'DELETE', headers: Object.assign({ 'Content-Type': 'application/json' }, H), credentials: 'same-origin' };
+  if (enable) {
+    var passEl = document.getElementById('es-web-pass');
+    var pw = passEl ? passEl.value.trim() : '';
+    if (pw.length < 8) { document.getElementById('es-msg').textContent = 'Enter a web password of at least 8 characters (or Generate one).'; return; }
+    opts.body = JSON.stringify({ password: pw });
   }
   try {
-    var r = await fetch(API + '/extensions/' + encodeURIComponent(ext) + '/web-access', {
-      method: enable ? 'POST' : 'DELETE', headers: H, credentials: 'same-origin'
-    });
+    var r = await fetch(API + '/extensions/' + encodeURIComponent(ext) + '/web-access', opts);
     var d = await r.json();
-    if (!d.success) {
-      document.getElementById('es-msg').textContent = d.error || 'Failed';
-      return;
-    }
+    if (!d.success) { document.getElementById('es-msg').textContent = d.error || 'Failed'; return; }
+    document.getElementById('es-msg').textContent = enable ? (d.reset ? 'Web password reset.' : 'Web access enabled.') : 'Web access disabled.';
     loadWebAccess(ext);
     loadExtensions();
   } catch (e) {
@@ -478,7 +504,7 @@ async function saveExtSettings(silent) {
     if (!d.success) { document.getElementById('es-msg').textContent = d.error || 'Save failed'; return; }
     document.getElementById('es-password').value = '';
     if (!silent) {
-      document.getElementById('es-msg').textContent = 'Saved' + (payload.password ? ' — SIP' + (document.getElementById('es-web-body').innerHTML.indexOf('enabled') > -1 ? ' + web' : '') + ' password updated' : '');
+      document.getElementById('es-msg').textContent = 'Saved' + (payload.password ? ' — SIP password updated' : '');
       loadExtensions();
       loadWebAccess(ext);
     }
