@@ -72,6 +72,7 @@ const trunkSchema = new mongoose.Schema({
   password: { type: String, required: true },
   port: { type: Number, default: 5060 },
   transport: { type: String, default: 'udp' },
+  trustedIps: [{ type: String }],  // extra source IPs/SBCs that count as this trunk (beyond DNS of host)
   register: { type: Boolean, default: true },
   enabled: { type: Boolean, default: true },
   registered: { type: Boolean, default: false },

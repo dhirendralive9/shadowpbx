@@ -11,6 +11,46 @@ const TURNSTILE_SITE_KEY = process.env.TURNSTILE_SITE_KEY || '';
 const sessions = new Map();
 const SESSION_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
+// ── Login rate limiting ──
+// Always on, independent of Turnstile (which is optional): a deployment
+// without a CAPTCHA still needs brute-force protection at the login endpoint.
+// Per-IP: after LOGIN_MAX_FAILS failures within the window, lock out for
+// LOGIN_LOCKOUT seconds. Successful login clears the counter.
+const LOGIN_MAX_FAILS = parseInt(process.env.LOGIN_MAX_FAILS) || 5;
+const LOGIN_WINDOW = (parseInt(process.env.LOGIN_WINDOW_SECONDS) || 300) * 1000;
+const LOGIN_LOCKOUT = (parseInt(process.env.LOGIN_LOCKOUT_SECONDS) || 900) * 1000;
+const loginAttempts = new Map(); // ip -> { fails, first, lockedUntil }
+
+function loginLockRemaining(ip) {
+  const rec = loginAttempts.get(ip);
+  if (!rec) return 0;
+  if (rec.lockedUntil && Date.now() < rec.lockedUntil) return Math.ceil((rec.lockedUntil - Date.now()) / 1000);
+  return 0;
+}
+function recordLoginFail(ip) {
+  const now = Date.now();
+  let rec = loginAttempts.get(ip);
+  if (!rec || now - rec.first > LOGIN_WINDOW) rec = { fails: 0, first: now, lockedUntil: 0 };
+  rec.fails++;
+  if (rec.fails >= LOGIN_MAX_FAILS) rec.lockedUntil = now + LOGIN_LOCKOUT;
+  loginAttempts.set(ip, rec);
+}
+function clearLoginFails(ip) { loginAttempts.delete(ip); }
+
+// Session cookie options. Secure is set when the request arrived over HTTPS
+// (directly or via the proxy's X-Forwarded-Proto), so the cookie is never
+// sent in the clear.
+function cookieOpts(req) {
+  const proto = (req.get('x-forwarded-proto') || req.protocol || '').split(',')[0].trim();
+  return { httpOnly: true, sameSite: 'lax', maxAge: SESSION_TTL, secure: proto === 'https' };
+}
+
+const _loginSweep = setInterval(() => {
+  const now = Date.now();
+  for (const [ip, r] of loginAttempts) if ((!r.lockedUntil || now > r.lockedUntil) && now - r.first > LOGIN_WINDOW) loginAttempts.delete(ip);
+}, 5 * 60 * 1000);
+if (_loginSweep.unref) _loginSweep.unref();
+
 function generateToken() {
   return crypto.randomBytes(32).toString('hex');
 }
@@ -94,6 +134,14 @@ function createWebRouter(apiKey) {
     const { username, password } = req.body;
     const turnstileToken = req.body['cf-turnstile-response'];
 
+    // Rate limit first — before any DB or bcrypt work — so a locked-out IP
+    // can't be used to hammer the endpoint.
+    const lockLeft = loginLockRemaining(req.ip);
+    if (lockLeft > 0) {
+      logger.warn(`GUI: login blocked (rate limited) from ${req.ip}, ${lockLeft}s remaining`);
+      return res.status(429).render('pages/login', { error: `Too many attempts. Try again in ${Math.ceil(lockLeft / 60)} minute(s).`, turnstileSiteKey: TURNSTILE_SITE_KEY });
+    }
+
     if (TURNSTILE_SECRET) {
       const valid = await verifyTurnstile(turnstileToken);
       if (!valid) {
@@ -114,13 +162,22 @@ function createWebRouter(apiKey) {
         const envUser = process.env.ADMIN_USER || 'admin';
         const envPass = process.env.ADMIN_PASSWORD || '';
         if (username === envUser && envPass && password === envPass) {
+          // First-install bootstrap only. Once a real admin user exists in the
+          // DB this path should never be used; warn loudly if it is, so a
+          // forgotten ADMIN_PASSWORD in production is visible.
+          const realAdmins = await User.countDocuments({ role: 'admin', enabled: true }).catch(() => 0);
+          if (realAdmins > 0) {
+            logger.warn(`SECURITY: env-fallback admin login used from ${req.ip} even though ${realAdmins} DB admin(s) exist — remove ADMIN_PASSWORD from .env`);
+          }
+          clearLoginFails(req.ip);
           const sid = generateToken();
           sessions.set(sid, { user: username, role: 'admin', name: 'Administrator', extension: '', userId: '', created: Date.now() });
-          res.cookie('sid', sid, { httpOnly: true, sameSite: 'lax', maxAge: SESSION_TTL });
+          res.cookie('sid', sid, cookieOpts(req));
           logger.info(`GUI: admin (env fallback) logged in from ${req.ip}`);
           return res.redirect('/');
         }
 
+        recordLoginFail(req.ip);
         logger.warn(`GUI: failed login for '${username}' from ${req.ip}`);
         return res.render('pages/login', { error: 'Invalid username or password.', turnstileSiteKey: TURNSTILE_SITE_KEY });
       }
@@ -128,9 +185,11 @@ function createWebRouter(apiKey) {
       // Verify bcrypt password
       const valid = await bcrypt.compare(password, user.password);
       if (!valid) {
+        recordLoginFail(req.ip);
         logger.warn(`GUI: failed login for '${username}' from ${req.ip}`);
         return res.render('pages/login', { error: 'Invalid username or password.', turnstileSiteKey: TURNSTILE_SITE_KEY });
       }
+      clearLoginFails(req.ip);
 
       // Create session with role data
       const sid = generateToken();
@@ -142,7 +201,7 @@ function createWebRouter(apiKey) {
         userId: user._id.toString(),
         created: Date.now()
       });
-      res.cookie('sid', sid, { httpOnly: true, sameSite: 'lax', maxAge: SESSION_TTL });
+      res.cookie('sid', sid, cookieOpts(req));
 
       // Update last login
       user.lastLogin = new Date();
@@ -157,12 +216,17 @@ function createWebRouter(apiKey) {
     }
   });
 
-  router.get('/logout', (req, res) => {
+  // Logout is state-changing, so POST is primary. A GET is kept for the
+  // browser's convenience (a link/bookmark) but both invalidate the session
+  // server-side, so there is no CSRF-logout risk beyond a harmless redirect.
+  function doLogout(req, res) {
     const token = req.cookies && req.cookies.sid;
     if (token) sessions.delete(token);
     res.clearCookie('sid');
     res.redirect('/login');
-  });
+  }
+  router.post('/logout', doLogout);
+  router.get('/logout', doLogout);
 
   // ─── All roles ───
   router.get('/', authMiddleware, (req, res) => {

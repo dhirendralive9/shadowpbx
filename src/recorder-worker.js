@@ -181,23 +181,44 @@ function convertPcap(pcapFileName) {
     const wav2 = path.join(TMP_DIR, `${baseName}_2.wav`);
     const rawPath = path.join(TMP_DIR, `${baseName}.raw`);
 
+    // Ordering: RTP sequence numbers are 16-bit and wrap at 65535 — with 20 ms
+    // packets that is ~21.8 minutes, after which a numeric sort on rtp.seq
+    // scrambles the audio. We order by rtp.timestamp instead: it is 32-bit and
+    // increments by the samples-per-packet (160 for 8 kHz/20 ms), so it does
+    // not wrap within any realistic call and gives correct chronological order.
+    //
+    // Codec: decode by the negotiated RTP payload type, not a hardcoded law.
+    //   PT 0  = PCMU (mu-law)   PT 8 = PCMA (A-law)
+    // tshark reports rtp.p_type; we pick sox's -e per stream. G.722/Opus web
+    // legs are bridged to G.711 by RTPEngine before recording, so PT is 0 or 8.
     const script = `
+      law_for() {  # $1 = ssrc filter (or empty for all)
+        local FILT="$1"
+        local PT=$(tshark -n -r "${pcapPath}" -o rtp.heuristic_rtp:TRUE -Y "rtp\${FILT:+ && \$FILT}" -T fields -e rtp.p_type 2>/dev/null | grep -E '^[0-9]+$' | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')
+        if [ "$PT" = "8" ]; then echo "a-law"; else echo "mu-law"; fi
+      }
+      extract() {  # $1 = ssrc filter, $2 = out.raw
+        tshark -n -r "${pcapPath}" -o rtp.heuristic_rtp:TRUE -Y "rtp\${1:+ && $1}" -T fields -e rtp.timestamp -e rtp.payload 2>/dev/null \\
+          | sort -n -k1 | awk '{print $2}' | tr -d '\\n' | xxd -r -p > "$2"
+      }
       SSRCS=$(tshark -n -r "${pcapPath}" -o rtp.heuristic_rtp:TRUE -Y rtp -T fields -e rtp.ssrc 2>/dev/null | sort | uniq -c | sort -rn | awk '{print $2}')
       SSRC_COUNT=$(echo "$SSRCS" | grep -c .)
       if [ "$SSRC_COUNT" -ge 2 ]; then
         SSRC1=$(echo "$SSRCS" | head -1)
         SSRC2=$(echo "$SSRCS" | head -2 | tail -1)
-        # Extract payloads sorted by RTP sequence number (prevents crackling from out-of-order packets)
-        tshark -n -r "${pcapPath}" -o rtp.heuristic_rtp:TRUE -Y "rtp.ssrc==$SSRC1" -T fields -e rtp.seq -e rtp.payload 2>/dev/null | sort -n -k1 | awk '{print $2}' | tr -d '\\n' | xxd -r -p > "${raw1}"
-        tshark -n -r "${pcapPath}" -o rtp.heuristic_rtp:TRUE -Y "rtp.ssrc==$SSRC2" -T fields -e rtp.seq -e rtp.payload 2>/dev/null | sort -n -k1 | awk '{print $2}' | tr -d '\\n' | xxd -r -p > "${raw2}"
-        sox -t raw -r 8000 -e mu-law -b 8 -c 1 "${raw1}" "${wav1}" 2>/dev/null
-        sox -t raw -r 8000 -e mu-law -b 8 -c 1 "${raw2}" "${wav2}" 2>/dev/null
+        LAW1=$(law_for "rtp.ssrc==$SSRC1")
+        LAW2=$(law_for "rtp.ssrc==$SSRC2")
+        extract "rtp.ssrc==$SSRC1" "${raw1}"
+        extract "rtp.ssrc==$SSRC2" "${raw2}"
+        sox -t raw -r 8000 -e "$LAW1" -b 8 -c 1 "${raw1}" "${wav1}" 2>/dev/null
+        sox -t raw -r 8000 -e "$LAW2" -b 8 -c 1 "${raw2}" "${wav2}" 2>/dev/null
         sox -M "${wav1}" "${wav2}" "${wavPath}" 2>/dev/null
         rm -f "${raw1}" "${raw2}" "${wav1}" "${wav2}"
       else
-        tshark -n -r "${pcapPath}" -o rtp.heuristic_rtp:TRUE -Y rtp -T fields -e rtp.seq -e rtp.payload 2>/dev/null | sort -n -k1 | awk '{print $2}' | tr -d '\\n' | xxd -r -p > "${rawPath}"
+        LAW=$(law_for "")
+        extract "" "${rawPath}"
         if [ -s "${rawPath}" ]; then
-          sox -t raw -r 8000 -e mu-law -b 8 -c 1 "${rawPath}" "${wavPath}" 2>/dev/null
+          sox -t raw -r 8000 -e "$LAW" -b 8 -c 1 "${rawPath}" "${wavPath}" 2>/dev/null
         fi
         rm -f "${rawPath}"
       fi

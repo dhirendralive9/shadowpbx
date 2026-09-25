@@ -402,6 +402,7 @@ proxies `/ws` to it.
 | [docs/SECURITY.md](docs/SECURITY.md) | API authentication and per-role authorization model |
 | [docs/BUGFIXES-P1.md](docs/BUGFIXES-P1.md) | Feature-code routing, overnight time conditions, path-traversal hardening |
 | [docs/TOLL-FRAUD-FIX.md](docs/TOLL-FRAUD-FIX.md) | Anti-spoofing + outbound destination guard (toll-fraud protection) |
+| [docs/SECURITY-REVIEW-FIXES.md](docs/SECURITY-REVIEW-FIXES.md) | Trunk-trust hardening, idempotent teardown, recording fixes, login hardening |
 | [docs/WEBRTC-PHASE1.md](docs/WEBRTC-PHASE1.md) | WebRTC foundations, media bridging, self-test, troubleshooting |
 | [docs/WEBCALL-PHASE2.md](docs/WEBCALL-PHASE2.md) | Guest identities, destination lockdown, web-call API |
 | [docs/WEBDIALER-PHASE3-4.md](docs/WEBDIALER-PHASE3-4.md) | Web-call routing and the embeddable widget |

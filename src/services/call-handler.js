@@ -981,18 +981,32 @@ class CallHandler {
   }
 
   async _endCall(cdr, hangupBy) {
+    // Idempotency guard. Both call legs fire 'destroy' on a normal hangup, so
+    // every teardown path can reach here twice (BYE + the resulting destroy of
+    // the other leg). Without this, one hangup produces duplicate CDR saves,
+    // presence changes, CRM events and cleanup. Guard on the CDR object so it
+    // holds regardless of which of the several onDestroy closures calls us.
+    if (!cdr) return;
+    if (cdr.__ended) return;
+    cdr.__ended = true;
+
     // Web calls: the guest identity dies with the call (Phase 2/3)
     if (this.guestManager && cdr && cdr.direction === 'web-inbound' && cdr.sipCallId) {
       try { this.guestManager.endCall(cdr.sipCallId, `call ended (${hangupBy})`); } catch (e) {}
       if (this.screenPopHandler) { try { this.screenPopHandler.onCallEnded(cdr.sipCallId); } catch (e) {} }
     }
+    // If the CDR was already finalised (failed/missed/busy), don't overwrite it
+    // as 'completed' — just run the cleanup side-effects once.
+    const alreadyTerminal = ['completed', 'failed', 'missed', 'busy', 'voicemail'].includes(cdr.status);
     const endTime = new Date();
-    cdr.status = 'completed';
+    if (!alreadyTerminal) {
+      cdr.status = 'completed';
+      cdr.hangupCause = 'normal_clearing';
+    }
     cdr.endTime = endTime;
     cdr.duration = Math.round((endTime - cdr.startTime) / 1000);
     cdr.talkTime = cdr.answerTime ? Math.round((endTime - cdr.answerTime) / 1000) : 0;
     cdr.hangupBy = hangupBy;
-    cdr.hangupCause = 'normal_clearing';
     await cdr.save();
     logger.info(`CALL ENDED ${cdr.from} -> ${cdr.to} duration=${cdr.talkTime}s hangup=${hangupBy}`);
 
