@@ -108,6 +108,7 @@ async function loadExtensions() {
     });
     document.getElementById('ext-summary').textContent = online + ' online' + (inCall > 0 ? ', ' + inCall + ' in call' : '');
 
+    window.__lastExts = d.extensions;
     tbody.innerHTML = d.extensions.map(function(e) {
       var reg = e.registered;
       var c0 = (e.contacts && e.contacts.length > 0) ? e.contacts[0] : {};
@@ -116,7 +117,9 @@ async function loadExtensions() {
       return '<tr>' +
         '<td>' + statusDot(reg, p) + '</td>' +
         '<td class="mono">' + esc(e.extension) + '</td>' +
-        '<td>' + esc(e.name || '') + '</td>' +
+        '<td>' + esc(e.name || '') +
+          (e.webAccess ? ' <span class="pill p-ok" style="font-size:9px" title="Web access: ' + esc((e.webUser && e.webUser.username) || '') + ' (' + esc((e.webUser && e.webUser.role) || '') + ')">web</span>' : '') +
+        '</td>' +
         '<td>' + (reg ? presencePill(p, e.presenceRemote) : '<span class="pill p-gray">offline</span>') + '</td>' +
         '<td class="muted" style="font-size:11px">' + esc(c0.userAgent || '-') + '</td>' +
         '<td class="mono" style="font-size:11px">' + (reg ? esc(c0.ip + ':' + c0.port) : '-') + '</td>' +
@@ -127,7 +130,10 @@ async function loadExtensions() {
         '</td>' +
         '<td style="white-space:nowrap">' +
           (myRole === 'admin'
-            ? '<button class="act-btn" title="Regenerate password" onclick="regenOne(\'' + esc(e.extension) + '\',\'' + esc(e.name) + '\')">' +
+            ? '<button class="act-btn" title="Extension settings" onclick="openExtSettings(\'' + esc(e.extension) + '\')">' +
+                '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>' +
+              '</button>' +
+              '<button class="act-btn" title="Regenerate password" onclick="regenOne(\'' + esc(e.extension) + '\',\'' + esc(e.name) + '\')">' +
                 '<svg viewBox="0 0 24 24" stroke-width="2"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0115.36-6.36L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 01-15.36 6.36L3 16"/></svg>' +
               '</button>' +
               '<button class="act-btn" title="Delete" onclick="deleteExt(\'' + esc(e.extension) + '\')">' +
@@ -338,6 +344,149 @@ function showToast(msg, isError) {
 
 loadExtensions();
 setInterval(loadExtensions, 3000);
+</script>
+
+
+<!-- ── Extension settings modal ── -->
+<div id="ext-settings-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:200;align-items:center;justify-content:center" onclick="if(event.target===this)closeExtSettings()">
+  <div class="card" style="max-width:460px;width:90%;max-height:85vh;overflow-y:auto">
+    <div class="card-head">
+      <span class="card-title">Extension <span id="es-ext" class="mono"></span> settings</span>
+      <button class="act-btn" onclick="closeExtSettings()">
+        <svg viewBox="0 0 24 24" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">Agent name</label>
+      <input class="form-input" id="es-name" placeholder="e.g. Jane Doe">
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">SIP password</label>
+      <div style="display:flex;gap:8px">
+        <input class="form-input mono" id="es-password" style="flex:1" placeholder="leave blank to keep current" autocomplete="new-password">
+        <button class="btn btn-sm" type="button" onclick="genExtPassword()">Generate</button>
+      </div>
+      <span class="muted" style="font-size:11px">This is the phone's SIP secret. If web access is on, the login password is kept the same.</span>
+    </div>
+
+    <div style="border-top:1px solid var(--border,#333);margin:14px 0;padding-top:14px">
+      <div class="card-head" style="margin-bottom:8px"><span class="card-title" style="font-size:13px">Web access</span></div>
+      <div id="es-web-body">
+        <div class="muted">Checking…</div>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+      <button class="btn btn-primary btn-sm" onclick="saveExtSettings()">Save changes</button>
+      <button class="btn btn-sm" onclick="closeExtSettings()">Cancel</button>
+      <span class="muted" id="es-msg" style="font-size:12px"></span>
+    </div>
+  </div>
+</div>
+
+<script>
+var esCurrent = null;   // { extension, name }
+
+function openExtSettings(ext) {
+  esCurrent = { extension: ext };
+  document.getElementById('es-ext').textContent = ext;
+  document.getElementById('es-msg').textContent = '';
+  document.getElementById('es-password').value = '';
+  document.getElementById('es-web-body').innerHTML = '<div class="muted">Checking…</div>';
+  // name from the row we already loaded
+  var row = (window.__lastExts || []).find(function (e) { return e.extension === ext; });
+  document.getElementById('es-name').value = row ? (row.name || '') : '';
+  document.getElementById('ext-settings-modal').style.display = 'flex';
+  loadWebAccess(ext);
+}
+function closeExtSettings() { document.getElementById('ext-settings-modal').style.display = 'none'; }
+
+function genExtPassword() {
+  var c = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+  var p = '';
+  var a = new Uint32Array(16); (window.crypto || {}).getRandomValues && window.crypto.getRandomValues(a);
+  for (var i = 0; i < 16; i++) p += c[(a[i] || Math.floor(Math.random() * 1e9)) % c.length];
+  document.getElementById('es-password').value = p;
+}
+
+async function loadWebAccess(ext) {
+  var body = document.getElementById('es-web-body');
+  try {
+    var r = await fetch(API + '/extensions/' + encodeURIComponent(ext) + '/web-access', { headers: H, credentials: 'same-origin' });
+    var d = await r.json();
+    if (!d.success) { body.innerHTML = '<span class="muted">' + esc(d.error || 'unavailable') + '</span>'; return; }
+
+    if (d.attached && !d.managedHere) {
+      // Attached to a privileged / external account — cannot toggle here.
+      body.innerHTML =
+        '<div class="mc-row" style="margin-bottom:6px"><span class="pill p-hold">attached</span>' +
+        '<span style="font-size:12px">Linked to <b>' + esc(d.user.username) + '</b> (' + esc(d.user.role) + ')</span></div>' +
+        '<div class="muted" style="font-size:12px">This extension is tied to an existing account. To change or remove web access, detach it in ' +
+        '<a href="/settings#users">Settings → Users</a> first.</div>';
+    } else if (d.attached) {
+      body.innerHTML =
+        '<div class="mc-row" style="margin-bottom:8px"><span class="pill p-ok">enabled</span>' +
+        '<span style="font-size:12px">Agent login <b>' + esc(d.user.username) + '</b> — same password as SIP</span></div>' +
+        '<button class="btn btn-sm btn-danger" onclick="setWebAccess(false)">Disable web access</button>';
+    } else {
+      body.innerHTML =
+        '<div class="muted" style="font-size:12px;margin-bottom:8px">No web login. Enabling creates an agent account ' +
+        '(username = extension, password = the SIP password) so this agent can sign into the web UI.</div>' +
+        '<button class="btn btn-primary btn-sm" onclick="setWebAccess(true)">Enable web access</button>';
+    }
+  } catch (e) {
+    body.innerHTML = '<span class="muted">' + esc(e.message) + '</span>';
+  }
+}
+
+async function setWebAccess(enable) {
+  var ext = esCurrent.extension;
+  // If enabling and a new SIP password was typed but not yet saved, save it first
+  // so the mirrored web password matches what the admin intends.
+  if (enable && document.getElementById('es-password').value.trim()) {
+    await saveExtSettings(true);
+  }
+  try {
+    var r = await fetch(API + '/extensions/' + encodeURIComponent(ext) + '/web-access', {
+      method: enable ? 'POST' : 'DELETE', headers: H, credentials: 'same-origin'
+    });
+    var d = await r.json();
+    if (!d.success) {
+      document.getElementById('es-msg').textContent = d.error || 'Failed';
+      return;
+    }
+    loadWebAccess(ext);
+    loadExtensions();
+  } catch (e) {
+    document.getElementById('es-msg').textContent = e.message;
+  }
+}
+
+async function saveExtSettings(silent) {
+  var ext = esCurrent.extension;
+  var payload = { name: document.getElementById('es-name').value.trim() };
+  var pw = document.getElementById('es-password').value.trim();
+  if (pw) payload.password = pw;
+  try {
+    var r = await fetch(API + '/extensions/' + encodeURIComponent(ext), {
+      method: 'PUT', headers: Object.assign({ 'Content-Type': 'application/json' }, H),
+      credentials: 'same-origin', body: JSON.stringify(payload)
+    });
+    var d = await r.json();
+    if (!d.success) { document.getElementById('es-msg').textContent = d.error || 'Save failed'; return; }
+    document.getElementById('es-password').value = '';
+    if (!silent) {
+      document.getElementById('es-msg').textContent = 'Saved' + (payload.password ? ' — SIP' + (document.getElementById('es-web-body').innerHTML.indexOf('enabled') > -1 ? ' + web' : '') + ' password updated' : '');
+      loadExtensions();
+      loadWebAccess(ext);
+    }
+  } catch (e) {
+    document.getElementById('es-msg').textContent = e.message;
+  }
+}
+document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeExtSettings(); });
 </script>
 
 <%- include('../partials/foot') %>

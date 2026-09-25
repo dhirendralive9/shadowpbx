@@ -1,5 +1,6 @@
 const express = require('express');
-const { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, CDR } = require('../models');
+const { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, CDR, User } = require('../models');
+const bcrypt = require('bcryptjs');
 const logger = require('../utils/logger');
 const { safeResolve } = require('../utils/safe-path');
 
@@ -49,6 +50,16 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
           createdAt: ext.createdAt
         };
       });
+
+      // Web access: which extensions are attached to a login account, and to whom.
+      const linkedUsers = await User.find({ extension: { $ne: '' } }, 'username role extension name').lean();
+      const byExt = {};
+      for (const u of linkedUsers) if (u.extension) byExt[u.extension] = { username: u.username, role: u.role, userName: u.name || '' };
+      for (const r of result) {
+        const link = byExt[r.extension];
+        r.webAccess = !!link;
+        r.webUser = link || null;
+      }
       res.json({ success: true, extensions: result });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
@@ -58,6 +69,91 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
       const ext = await Extension.findOne({ extension: req.params.ext }, '-password');
       if (!ext) return res.status(404).json({ success: false, error: 'Not found' });
       res.json({ success: true, extension: ext });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // Web-access status for one extension: is it attached to a login account?
+  router.get('/extensions/:ext/web-access', async (req, res) => {
+    try {
+      const ext = await Extension.findOne({ extension: req.params.ext });
+      if (!ext) return res.status(404).json({ success: false, error: 'Not found' });
+      const user = await User.findOne({ extension: req.params.ext }, 'username role name enabled').lean();
+      res.json({
+        success: true,
+        extension: ext.extension,
+        attached: !!user,
+        // A login created by this panel uses the extension number as the
+        // username and is an agent. Anything else (an admin/supervisor whose
+        // extension field points here, or a manually-made account) must be
+        // detached from Settings -> Users first, not silently overwritten.
+        managedHere: !!user && user.username === ext.extension && user.role === 'agent',
+        user: user ? { username: user.username, role: user.role, name: user.name || '', enabled: user.enabled !== false } : null
+      });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // Enable web access: create (or re-sync) an agent login for this extension.
+  // Per configuration, the web login password MIRRORS the SIP password.
+  //
+  // NOTE: the SIP password is stored in plaintext (required for digest auth),
+  // while the web password is bcrypt-hashed. Mirroring means the web login is
+  // only as strong as the SIP secret — documented tradeoff, chosen deliberately.
+  router.post('/extensions/:ext/web-access', async (req, res) => {
+    try {
+      const ext = await Extension.findOne({ extension: req.params.ext });
+      if (!ext) return res.status(404).json({ success: false, error: 'Extension not found' });
+
+      const existing = await User.findOne({ extension: req.params.ext });
+      if (existing && !(existing.username === ext.extension && existing.role === 'agent')) {
+        // Attached to a different / privileged account — refuse to touch it.
+        return res.status(409).json({
+          success: false, conflict: true,
+          error: `Extension is already linked to user "${existing.username}" (${existing.role}). Detach it from Settings → Users first.`,
+          user: { username: existing.username, role: existing.role }
+        });
+      }
+
+      // Username = extension number; someone else must not already own it.
+      const nameClash = await User.findOne({ username: ext.extension });
+      if (nameClash && nameClash.extension !== ext.extension) {
+        return res.status(409).json({ success: false, conflict: true, error: `A user named "${ext.extension}" already exists. Choose a different account or detach it in Settings → Users.` });
+      }
+
+      const hash = await bcrypt.hash(ext.password, 10);   // mirror the SIP password
+      if (existing) {
+        existing.password = hash;
+        existing.name = ext.name;
+        existing.enabled = true;
+        await existing.save();
+        logger.info(`Web access re-synced for extension ${ext.extension} (user ${existing.username})`);
+        return res.json({ success: true, attached: true, resynced: true, user: { username: existing.username, role: 'agent' } });
+      }
+      const user = await User.create({
+        username: ext.extension, password: hash, role: 'agent',
+        name: ext.name, extension: ext.extension, enabled: true
+      });
+      logger.info(`Web access enabled for extension ${ext.extension} (agent login "${user.username}")`);
+      res.status(201).json({ success: true, attached: true, user: { username: user.username, role: 'agent', name: user.name } });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // Disable web access: remove the agent login this panel created. Refuses to
+  // delete a privileged or externally-managed account.
+  router.delete('/extensions/:ext/web-access', async (req, res) => {
+    try {
+      const ext = await Extension.findOne({ extension: req.params.ext });
+      if (!ext) return res.status(404).json({ success: false, error: 'Extension not found' });
+      const user = await User.findOne({ extension: req.params.ext });
+      if (!user) return res.json({ success: true, attached: false });
+      if (!(user.username === ext.extension && user.role === 'agent')) {
+        return res.status(409).json({
+          success: false, conflict: true,
+          error: `This extension is linked to "${user.username}" (${user.role}), which was not created here. Manage it in Settings → Users.`
+        });
+      }
+      await User.deleteOne({ _id: user._id });
+      logger.info(`Web access disabled for extension ${ext.extension} (removed agent login "${user.username}")`);
+      res.json({ success: true, attached: false });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
 
@@ -79,6 +175,17 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
       updates.updatedAt = new Date();
       const ext = await Extension.findOneAndUpdate({ extension: req.params.ext }, updates, { new: true, select: '-password' });
       if (!ext) return res.status(404).json({ success: false, error: 'Not found' });
+
+      // Keep a mirrored agent login in sync when the SIP password or name changes.
+      if (req.body.password !== undefined || req.body.name !== undefined) {
+        const agent = await User.findOne({ extension: req.params.ext, username: req.params.ext, role: 'agent' });
+        if (agent) {
+          if (req.body.password !== undefined) agent.password = await bcrypt.hash(req.body.password, 10);
+          if (req.body.name !== undefined) agent.name = req.body.name;
+          await agent.save();
+          logger.info(`Extension ${req.params.ext}: mirrored web login updated`);
+        }
+      }
       res.json({ success: true, extension: ext });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
@@ -117,7 +224,9 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
       ext.password = newPassword;
       ext.updatedAt = new Date();
       await ext.save();
-      logger.info(`Extension ${ext.extension}: password regenerated`);
+      const agent = await User.findOne({ extension: ext.extension, username: ext.extension, role: 'agent' });
+      if (agent) { agent.password = await bcrypt.hash(newPassword, 10); await agent.save(); }
+      logger.info(`Extension ${ext.extension}: password regenerated${agent ? ' (web login synced)' : ''}`);
       res.json({ success: true, extension: ext.extension, name: ext.name, password: newPassword });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
@@ -879,8 +988,21 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   // ============================================================
   // Users (RBAC)
   // ============================================================
-  const { User } = require('../models');
-  const bcrypt = require('bcryptjs');
+
+  // Extensions not yet attached to any login account — for the "add user"
+  // extension dropdown, so agents already linked don't show up.
+  router.get('/extensions-available', async (req, res) => {
+    try {
+      const [exts, users] = await Promise.all([
+        Extension.find({ enabled: true }, 'extension name').sort('extension').lean(),
+        User.find({ extension: { $ne: '' } }, 'extension').lean()
+      ]);
+      const taken = new Set(users.map(u => u.extension).filter(Boolean));
+      const available = exts.filter(e => !taken.has(e.extension))
+        .map(e => ({ extension: e.extension, name: e.name || '' }));
+      res.json({ success: true, extensions: available });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
 
   router.get('/users', async (req, res) => {
     try {

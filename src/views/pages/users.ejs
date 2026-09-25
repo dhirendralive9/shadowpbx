@@ -281,24 +281,40 @@ async function confirmReset() {
 // ─── Load reference data ───
 async function loadRefData() {
   try {
-    var [extR, rgR, qR, ivrR] = await Promise.all([
+    var [extR, availR, rgR, qR, ivrR] = await Promise.all([
       fetch(API + '/extensions', { headers: H }).then(function(r) { return r.json(); }),
+      fetch(API + '/extensions-available', { headers: H }).then(function(r) { return r.json(); }),
       fetch(API + '/ringgroups', { headers: H }).then(function(r) { return r.json(); }),
       fetch(API + '/queues', { headers: H }).then(function(r) { return r.json(); }),
       fetch(API + '/ivr', { headers: H }).then(function(r) { return r.json(); })
     ]);
     allExtensions = (extR.success && extR.extensions) || [];
+    // Only extensions not already attached to a login account, so linked agents
+    // don't appear twice. When editing, the user's own extension is re-added below.
+    availableExtensions = (availR.success && availR.extensions) || [];
     allRingGroups = (rgR.success && rgR.ringgroups) || [];
     allQueues = (qR.success && qR.queues) || [];
     allIVRs = (ivrR.success && ivrR.ivrs) || [];
 
-    // Populate extension dropdown
-    var sel = document.getElementById('u-ext');
-    sel.innerHTML = '<option value="">— none —</option>';
-    allExtensions.forEach(function(e) {
-      sel.innerHTML += '<option value="' + esc(e.extension) + '">' + esc(e.extension) + ' — ' + esc(e.name) + '</option>';
-    });
+    populateExtDropdown();
   } catch (e) { console.error('ref data', e); }
+}
+
+var availableExtensions = [];
+
+// Fill the linked-extension dropdown with available (unattached) extensions.
+// keepExt: an extension to include even if attached — the user's own, when editing.
+function populateExtDropdown(keepExt) {
+  var sel = document.getElementById('u-ext');
+  var list = availableExtensions.slice();
+  if (keepExt && !list.some(function (e) { return e.extension === keepExt; })) {
+    var full = allExtensions.find(function (e) { return e.extension === keepExt; });
+    list.push({ extension: keepExt, name: full ? full.name : '' });
+    list.sort(function (a, b) { return a.extension.localeCompare(b.extension); });
+  }
+  sel.innerHTML = '<option value="">— none —</option>' + list.map(function (e) {
+    return '<option value="' + esc(e.extension) + '">' + esc(e.extension) + ' — ' + esc(e.name || '') + '</option>';
+  }).join('');
 }
 
 function buildCheckboxes(containerId, items, selected) {
@@ -340,6 +356,7 @@ function showAdd() {
   document.getElementById('u-role').value = 'agent';
   document.getElementById('u-name').value = '';
   document.getElementById('u-email').value = '';
+  populateExtDropdown();               // available extensions only
   document.getElementById('u-ext').value = '';
   document.getElementById('u-submit-btn').textContent = 'Create';
   toggleRoleFields();
@@ -353,6 +370,7 @@ function showEdit(u) {
   document.getElementById('u-role').value = u.role;
   document.getElementById('u-name').value = u.name || '';
   document.getElementById('u-email').value = u.email || '';
+  populateExtDropdown(u.extension || '');   // keep the user's own linked extension in the list
   document.getElementById('u-ext').value = u.extension || '';
   document.getElementById('u-submit-btn').textContent = 'Update';
 
