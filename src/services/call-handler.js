@@ -113,16 +113,30 @@ class CallHandler {
       return res.send(404);
     }
 
-    const callerRegistered = await this.registrar.isRegistered(fromExt);
+    // Anti-spoofing: the caller must be registered FROM THIS SOURCE IP, not
+    // merely registered somewhere. An attacker who knows a valid extension
+    // number can otherwise send an INVITE with From: <ext> from anywhere and
+    // place outbound calls as that extension (toll fraud). We check the source
+    // IP against where the extension actually registered.
+    const callerRegistered = await this.registrar.isRegisteredFrom(fromExt, req.source_address);
     if (!callerRegistered) {
-      // Could be an external SIP call where the user part happens to be numeric
-      // e.g. 15551234567@sip2sip.info calling 2002@our-server
+      // Could be a genuine external SIP call where the user part happens to be
+      // numeric (e.g. 15551234567@sip2sip.info calling 2002@our-server). Those
+      // are handled separately and can only ever reach a local extension, never
+      // a trunk — so this path cannot be abused for outbound fraud.
       if (toExt && fromExt !== toExt) {
         const handled = await this._handleExternalSIP(req, res, fromUri, toExt, callId);
         if (handled) return;
       }
-      logger.warn(`INVITE rejected: caller ${fromExt} not registered`);
-      if (this.securityTracker) this.securityTracker.record(req.source_address, 'INVITE caller not registered', req.get('User-Agent'), toExt || '');
+      // Distinguish "not registered at all" from "registered elsewhere" (spoof)
+      const registeredSomewhere = await this.registrar.isRegistered(fromExt);
+      if (registeredSomewhere) {
+        logger.warn(`SECURITY: INVITE from ${req.source_address} spoofing extension ${fromExt} (registered from a different IP) -> ${toExt} — REJECTED`);
+        if (this.securityTracker) this.securityTracker.record(req.source_address, 'Spoofed extension in From header (possible toll fraud)', req.get('User-Agent'), `${fromExt}->${toExt}`);
+      } else {
+        logger.warn(`INVITE rejected: caller ${fromExt} not registered (from ${req.source_address})`);
+        if (this.securityTracker) this.securityTracker.record(req.source_address, 'INVITE caller not registered', req.get('User-Agent'), toExt || '');
+      }
       return res.send(403);
     }
 
@@ -720,6 +734,17 @@ class CallHandler {
   async _handleOutbound(req, res, fromExt, dialedNumber, callId) {
     logger.info(`OUTBOUND: ${fromExt} -> ${dialedNumber} [${callId}]`);
 
+    // Toll-fraud destination guard — applied before routing, so a permitted
+    // route can never carry a blocked/foreign destination.
+    if (this.outboundGuard) {
+      const g = await this.outboundGuard.check(dialedNumber);
+      if (!g.allowed) {
+        logger.warn(`SECURITY: OUTBOUND BLOCKED ${fromExt} -> ${dialedNumber} [${callId}]: ${g.reason}`);
+        if (this.securityTracker) this.securityTracker.record(req.source_address, `Outbound blocked: ${g.reason}`, req.get('User-Agent'), `${fromExt}->${dialedNumber}`);
+        return res.send(403);
+      }
+    }
+
     const route = await this.callRouter.findOutboundRoute(dialedNumber, fromExt);
     if (!route) {
       logger.warn(`OUTBOUND: no route for ${dialedNumber}`);
@@ -814,6 +839,14 @@ class CallHandler {
     if (!trunk) {
       logger.warn(`CLICK2CALL: trunk ${route.trunk} not available`);
       return { success: false, error: `Trunk ${route.trunk} is not available` };
+    }
+
+    if (this.outboundGuard) {
+      const g = await this.outboundGuard.check(number);
+      if (!g.allowed) {
+        logger.warn(`SECURITY: CLICK2CALL BLOCKED ${fromExt} -> ${number}: ${g.reason}`);
+        return { success: false, error: `This destination is not permitted: ${g.reason}` };
+      }
     }
 
     const processedNumber = this.callRouter.processOutboundNumber(number, route);

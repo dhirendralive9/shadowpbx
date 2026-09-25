@@ -550,6 +550,12 @@ const activeCallSchema = new mongoose.Schema({
 // System Settings (singleton — one document)
 // ============================================================
 const systemSettingsSchema = new mongoose.Schema({
+  // Outbound destination policy (toll-fraud guard). Overrides env when set.
+  outboundPolicy: {
+    allowedPrefixes: [String],   // dial prefixes permitted; empty = all (minus blocked)
+    blockedPrefixes: [String],   // always-blocked prefixes
+    maxLength: { type: Number }  // reject numbers longer than this
+  },
   _id: { type: String, default: 'system' },
 
   // Recording retention

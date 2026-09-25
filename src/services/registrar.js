@@ -307,6 +307,25 @@ class Registrar {
     return contacts.length > 0;
   }
 
+  // Anti-spoofing (toll-fraud defence): is this extension registered from the
+  // given source IP? An INVITE claiming From: <ext> must actually originate
+  // from where that extension registered. Without this, an attacker can send
+  // INVITEs with a spoofed From header and place outbound calls as any valid
+  // extension number — exactly the International Revenue Share Fraud pattern.
+  //
+  // Loopback is always trusted (internally-generated calls: IVR, dialer,
+  // click-to-call). WebRTC contacts all share the proxy's loopback address, so
+  // a browser-registered extension is matched on being a WebRTC contact rather
+  // than on IP.
+  async isRegisteredFrom(ext, sourceIp) {
+    if (!sourceIp) return false;
+    if (sourceIp === '127.0.0.1' || sourceIp === '::1' || sourceIp === '::ffff:127.0.0.1') return true;
+    const contacts = await this.getContacts(ext);
+    if (contacts.length === 0) return false;
+    return contacts.some(c => c.ip === sourceIp || c.webrtc === true ||
+      c.ip === '127.0.0.1' || c.ip === '::ffff:127.0.0.1');
+  }
+
   // Synchronous contact lookup from in-memory cache only (for dashboard)
   getContactsSync(ext) {
     const cached = this.contactCache.get(ext);

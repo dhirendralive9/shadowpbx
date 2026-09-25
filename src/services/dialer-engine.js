@@ -506,6 +506,17 @@ class DialerEngine {
     const password = trunk.password || '';
     const targetUri = `sip:${dialNumber}@${host}:${port}`;
 
+    // Toll-fraud destination guard
+    if (this.callHandler && this.callHandler.outboundGuard) {
+      const g = await this.callHandler.outboundGuard.check(dialNumber);
+      if (!g.allowed) {
+        logger.warn(`SECURITY: DIALER BLOCKED -> ${dialNumber} [${callId}]: ${g.reason}`);
+        this._incrementStat(campaignId, 'failed');
+        await this._callFailed(callId, campaignId, lead, agentExt, 'blocked', config, cdr).catch(() => {});
+        return;
+      }
+    }
+
     logger.info(`DIALER CALL [SIP]: ${config.callerId} -> ${dialNumber} via ${trunkName} [${callId}] agent=${agentExt}`);
 
     try {

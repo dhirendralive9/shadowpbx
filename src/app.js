@@ -167,6 +167,15 @@ async function main() {
   const callRouter = new CallRouter(timeConditionService);
   const callHandler = new CallHandler(srf, registrar, rtpengine, ringGroupHandler, trunkManager, callRouter);
 
+  // Toll-fraud destination guard — blocks high-risk/premium destinations and,
+  // when an allow-list is configured, everything outside the countries you call.
+  // Applied to dialled, click-to-call and dialer outbound alike.
+  const OutboundGuard = require('./services/outbound-guard');
+  const { SystemSettings } = require('./models');
+  const outboundGuard = new OutboundGuard(SystemSettings);
+  callHandler.outboundGuard = outboundGuard;
+  logger.info(`Outbound guard: ${JSON.stringify(outboundGuard.summary())}`);
+
   // Security tracker — monitors attacks, manages IP blocking
   const SecurityTracker = require('./services/security-tracker');
   const securityTracker = new SecurityTracker();
@@ -416,6 +425,7 @@ async function main() {
     // WebRTC bridge (Phase 1)
     try { checks.webrtc = rtpHelper.webrtcSummary(); } catch (e) { checks.webrtc = 'error'; }
     try { checks.webcall = guestManager.summary(); } catch (e) { checks.webcall = 'error'; }
+    try { checks.outboundGuard = outboundGuard.summary(); } catch (e) { checks.outboundGuard = 'error'; }
 
     const overall = (checks.mongodb === 'ok' && checks.rtpengine === 'ok') ? 'healthy' :
                     (checks.mongodb === 'ok' ? 'degraded' : 'unhealthy');
