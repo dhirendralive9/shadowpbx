@@ -414,7 +414,7 @@ function genExtPassword() {
 async function loadWebAccess(ext) {
   var body = document.getElementById('es-web-body');
   try {
-    var r = await fetch(API + '/extensions/' + encodeURIComponent(ext) + '/web-access', { headers: H, credentials: 'same-origin' });
+    var r = await fetch(API + '/extensions/' + encodeURIComponent(ext) + '/web-access', { headers: headers, credentials: 'same-origin' });
     var d = await r.json();
     if (!d.success) { body.innerHTML = '<span class="muted">' + esc(d.error || 'unavailable') + '</span>'; return; }
 
@@ -471,7 +471,7 @@ function genWebPassword() {
 
 async function setWebAccess(enable) {
   var ext = esCurrent.extension;
-  var opts = { method: enable ? 'POST' : 'DELETE', headers: Object.assign({ 'Content-Type': 'application/json' }, H), credentials: 'same-origin' };
+  var opts = { method: enable ? 'POST' : 'DELETE', headers: J, credentials: 'same-origin' };
   if (enable) {
     var passEl = document.getElementById('es-web-pass');
     var pw = passEl ? passEl.value.trim() : '';
@@ -497,7 +497,7 @@ async function saveExtSettings(silent) {
   if (pw) payload.password = pw;
   try {
     var r = await fetch(API + '/extensions/' + encodeURIComponent(ext), {
-      method: 'PUT', headers: Object.assign({ 'Content-Type': 'application/json' }, H),
+      method: 'PUT', headers: J,
       credentials: 'same-origin', body: JSON.stringify(payload)
     });
     var d = await r.json();
