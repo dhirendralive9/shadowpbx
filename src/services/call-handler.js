@@ -181,7 +181,7 @@ class CallHandler {
       return res.send(480);
     }
 
-    const cdr = await this._createCDR(fromExt, toExt, 'internal', callId, req.source_address);
+    const cdr = await this._createCDR(fromExt, toExt, 'internal', callId, req.source_address, req.get('User-Agent'));
 
     // BLF: both parties ringing
     this._emitPresence(fromExt, 'ringing', { callId, remoteParty: toExt, direction: 'initiator' });
@@ -236,7 +236,7 @@ class CallHandler {
 
   async _handleRingGroupCall(req, res, fromExt, ringGroup, callId) {
     logger.info(`CALL ${fromExt} -> RG:${ringGroup.number} (${ringGroup.name}) [${callId}]`);
-    const cdr = await this._createCDR(fromExt, `RG:${ringGroup.number}`, 'internal', callId, req.source_address);
+    const cdr = await this._createCDR(fromExt, `RG:${ringGroup.number}`, 'internal', callId, req.source_address, req.get('User-Agent'));
 
     // BLF: caller is ringing, all ring group members are ringing
     this._emitPresence(fromExt, 'ringing', { callId, remoteParty: 'RG:' + ringGroup.number, direction: 'initiator' });
@@ -295,7 +295,7 @@ class CallHandler {
       if (blocked) {
         logger.info(`INBOUND BLOCKED: ${callerID} is on blocklist (reason: ${blocked.reason || 'none'})`);
         // Create CDR for the blocked call
-        const cdr = await this._createCDR(callerID, did || 'unknown', 'inbound', callId, req.source_address);
+        const cdr = await this._createCDR(callerID, did || 'unknown', 'inbound', callId, req.source_address, req.get('User-Agent'));
         cdr.status = 'blocked';
         cdr.hangupCause = 'blocked';
         cdr.trunkUsed = trunkCheck.trunkName;
@@ -318,7 +318,7 @@ class CallHandler {
       return res.send(404);
     }
 
-    const cdr = await this._createCDR(callerID, did || 'unknown', 'inbound', callId, req.source_address);
+    const cdr = await this._createCDR(callerID, did || 'unknown', 'inbound', callId, req.source_address, req.get('User-Agent'));
     cdr.trunkUsed = trunkCheck.trunkName;
     cdr.didNumber = did;
     await cdr.save();
@@ -631,7 +631,7 @@ class CallHandler {
       // Try voicemail
       if (this.voicemailHandler) {
         const callerID = this._extractCallerFromUri(fromUri);
-        const cdr = await this._createCDR(callerID, toExt, 'inbound', callId, req.source_address);
+        const cdr = await this._createCDR(callerID, toExt, 'inbound', callId, req.source_address, req.get('User-Agent'));
         cdr.trunkUsed = `sip:${callerDomain}`;
         await cdr.save();
         const handled = await this.voicemailHandler.handleVoicemail(req, res, callerID, toExt, cdr);
@@ -657,7 +657,7 @@ class CallHandler {
     } catch (e) {}
 
     // Create CDR
-    const cdr = await this._createCDR(callerID, toExt, 'inbound', callId, req.source_address);
+    const cdr = await this._createCDR(callerID, toExt, 'inbound', callId, req.source_address, req.get('User-Agent'));
     cdr.trunkUsed = `sip:${callerDomain}`;
     await cdr.save();
 
@@ -760,7 +760,7 @@ class CallHandler {
     const processedNumber = this.callRouter.processOutboundNumber(dialedNumber, route);
     const callerId = route.callerIdNumber || fromExt;
 
-    const cdr = await this._createCDR(fromExt, dialedNumber, 'outbound', callId, req.source_address);
+    const cdr = await this._createCDR(fromExt, dialedNumber, 'outbound', callId, req.source_address, req.get('User-Agent'));
     cdr.trunkUsed = route.trunk;
     cdr.didNumber = callerId;
     await cdr.save();
@@ -938,8 +938,8 @@ class CallHandler {
     return { success: true, callId };
   }
 
-  async _createCDR(from, to, direction, sipCallId, fromIp) {
-    const cdr = new CDR({ callId: uuidv4(), sipCallId, from, to, direction, status: 'ringing', startTime: new Date(), fromIp });
+  async _createCDR(from, to, direction, sipCallId, fromIp, userAgent) {
+    const cdr = new CDR({ callId: uuidv4(), sipCallId, from, to, direction, status: 'ringing', startTime: new Date(), fromIp, userAgent });
     await cdr.save();
     return cdr;
   }
@@ -1242,7 +1242,7 @@ class CallHandler {
     if (dest.type === 'ringgroup') {
       const ringGroup = await this.ringGroupHandler.isRingGroup(dest.target);
       if (!ringGroup) { logger.warn(`WEBCALL: ring group ${dest.target} not found [${callId}]`); finish('destination missing'); return res.send(404); }
-      const cdr = await this._createCDR(callerLabel, `RG:${ringGroup.number}`, 'web-inbound', callId, req.source_address);
+      const cdr = await this._createCDR(callerLabel, `RG:${ringGroup.number}`, 'web-inbound', callId, req.source_address, req.get('User-Agent'));
       this._stampWebCdr(cdr, web);
       if (ringGroup.members) {
         ringGroup.members.forEach(m => {
@@ -1289,7 +1289,7 @@ class CallHandler {
         finish('agent offline');
         return res.send(480);
       }
-      const cdr = await this._createCDR(callerLabel, dest.target, 'web-inbound', callId, req.source_address);
+      const cdr = await this._createCDR(callerLabel, dest.target, 'web-inbound', callId, req.source_address, req.get('User-Agent'));
       this._stampWebCdr(cdr, web);
       this._emitPresence(dest.target, 'ringing', { callId, remoteParty: callerLabel, direction: 'recipient' });
       this._webScreenPop(dest.target, callId, web, guest);
@@ -1339,7 +1339,7 @@ class CallHandler {
     // IVR, queue and voicemail are handled by their own engines. They own the
     // dialog from here, so the guest identity is reclaimed by the call-ended
     // reconciliation in the guest manager rather than a destroy handler.
-    const cdr = await this._createCDR(callerLabel, `${dest.type}:${dest.target}`, 'web-inbound', callId, req.source_address);
+    const cdr = await this._createCDR(callerLabel, `${dest.type}:${dest.target}`, 'web-inbound', callId, req.source_address, req.get('User-Agent'));
     this._stampWebCdr(cdr, web);
 
     try {

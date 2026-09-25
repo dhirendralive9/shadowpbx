@@ -253,6 +253,7 @@ const cdrSchema = new mongoose.Schema({
   sipCallId: String,
   fromIp: String,
   toIp: String,
+  userAgent: String,   // SIP User-Agent of the caller's device (diagnostics / abuse triage)
   codec: String,
   trunkUsed: String,
   didNumber: String,

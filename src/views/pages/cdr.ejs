@@ -112,6 +112,7 @@ var currentRole = '<%= typeof role !== "undefined" ? role : "admin" %>';
 var agentExt = '<%= typeof userExt !== "undefined" ? userExt : "" %>';
 var dateFrom = '', dateTo = '';
 var lastResults = []; // store for CSV export
+var cdrById = {};     // callId -> CDR, for the details modal
 
 function dur(s) { if (!s) return '-'; return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'); }
 function fmtTime(t) { if (!t) return ''; var d = new Date(t); return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
@@ -218,6 +219,8 @@ async function loadCDR() {
   var b = document.getElementById('cdr-body');
   if (d.success && d.cdrs && d.cdrs.length) {
     lastResults = d.cdrs;
+    cdrById = {};
+    d.cdrs.forEach(function (c) { cdrById[c.callId] = c; });
     // Web dialer calls carry the widget and the page the visitor called from
     function webBadge(c) {
       if (c.direction !== 'web-inbound') return '';
@@ -245,7 +248,10 @@ async function loadCDR() {
             ? '<button class="act-btn" onclick="openRecPlayer(\'' + esc(c.callId) + '\',\'' + esc(c.from) + '\',\'' + esc(c.to) + '\')" title="Play recording"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg></button>'
             : '<span class="muted" style="font-size:10px">-</span>') +
         '</td>' +
-        '<td>' +
+        '<td style="white-space:nowrap">' +
+          '<button class="act-btn" onclick="openCallInfo(\'' + esc(c.callId) + '\')" title="Call details (IP, device, trunk)">' +
+            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>' +
+          '</button>' +
           '<button class="act-btn" onclick="openNotes(\'' + esc(c.callId) + '\')" title="Notes" style="position:relative">' +
             '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>' +
             (noteCount > 0 ? '<span style="position:absolute;top:-4px;right:-4px;background:var(--red);color:#fff;font-size:8px;min-width:14px;height:14px;border-radius:7px;display:flex;align-items:center;justify-content:center">' + noteCount + '</span>' : '') +
@@ -292,13 +298,15 @@ async function exportCSV() {
     }
 
     var allRecords = d.cdrs;
-    var csv = 'Call ID,Direction,From,To,DID,Duration (s),Talk Time (s),Status,Disposition,Trunk,Recorded,Hangup By,Hangup Cause,Start Time\n';
+    var csv = 'Call ID,Direction,From,To,DID,Source IP,Device (User-Agent),Duration (s),Talk Time (s),Status,Disposition,Trunk,Recorded,Hangup By,Hangup Cause,Start Time\n';
     allRecords.forEach(function(c) {
       csv += '"' + (c.callId || '') + '",' +
         '"' + (c.direction || '') + '",' +
         '"' + (c.from || '') + '",' +
         '"' + (c.to || '') + '",' +
         '"' + (c.didNumber || '') + '",' +
+        '"' + (c.fromIp || '') + '",' +
+        '"' + (c.userAgent || '').replace(/"/g, "''") + '",' +
         (c.duration || 0) + ',' +
         (c.talkTime || 0) + ',' +
         '"' + (c.status || '') + '",' +
@@ -572,5 +580,54 @@ setPreset('today');
     </button>
   </div>
 </div>
+
+
+<div id="info-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:200;align-items:center;justify-content:center" onclick="if(event.target===this)closeCallInfo()">
+  <div class="card" style="max-width:480px;width:90%;max-height:80vh;overflow-y:auto">
+    <div class="card-head">
+      <span class="card-title">Call details</span>
+      <button class="act-btn" onclick="closeCallInfo()">
+        <svg viewBox="0 0 24 24" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <table class="tbl" style="margin:0">
+      <tbody id="info-body"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+function infoRow(label, value, mono) {
+  if (value === undefined || value === null || value === '') value = '<span class="muted">—</span>';
+  else value = (mono ? '<span class="mono" style="font-size:12px">' : '<span>') + esc(String(value)) + '</span>';
+  return '<tr><td style="color:var(--text-secondary);white-space:nowrap">' + esc(label) + '</td><td>' + value + '</td></tr>';
+}
+
+function openCallInfo(callId) {
+  var c = cdrById[callId];
+  if (!c) return;
+  var dirLabel = { 'inbound': 'Inbound', 'outbound': 'Outbound', 'internal': 'Internal', 'web-inbound': 'Web (browser)' }[c.direction] || c.direction;
+  var rows =
+    infoRow('Direction', dirLabel) +
+    infoRow('From', c.from, true) +
+    infoRow('To', c.to, true) +
+    (c.didNumber ? infoRow('DID / Caller ID', c.didNumber, true) : '') +
+    infoRow('Source IP', c.fromIp, true) +
+    infoRow('Device (User-Agent)', c.userAgent, true) +
+    infoRow('Trunk', c.trunkUsed) +
+    infoRow('SIP Call-ID', c.sipCallId, true) +
+    infoRow('Status', c.status) +
+    (c.hangupBy ? infoRow('Hung up by', c.hangupBy) : '') +
+    (c.hangupCause ? infoRow('Hangup cause', c.hangupCause) : '') +
+    infoRow('Started', c.startTime ? new Date(c.startTime).toLocaleString() : '') +
+    (c.webSource && (c.webSource.widgetName || c.webSource.page)
+      ? infoRow('Web widget', c.webSource.widgetName || c.webSource.widgetId) + (c.webSource.page ? infoRow('Called from page', c.webSource.page, true) : '')
+      : '');
+  document.getElementById('info-body').innerHTML = rows;
+  document.getElementById('info-modal').style.display = 'flex';
+}
+function closeCallInfo() { document.getElementById('info-modal').style.display = 'none'; }
+document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeCallInfo(); });
+</script>
 
 <%- include('../partials/foot') %>
