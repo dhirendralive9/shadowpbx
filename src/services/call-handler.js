@@ -38,10 +38,25 @@ class CallHandler {
     // Try standard sip:NNN@host
     let match = uri.match(/sip:\+?(\d+)@/);
     if (match) return match[1];
-    // Try sip:user@host (non-numeric userpart — return null)
-    match = uri.match(/sip:([^@]+)@/);
-    if (match && /^\d+$/.test(match[1])) return match[1];
+    // Feature codes (monitor *11/*12/*13, park pickups, etc.) have a non-numeric
+    // userpart and must survive parsing — they are dispatched before generic
+    // extension handling. Return the raw userpart so the caller can classify it;
+    // _isFeatureCode() below decides what is a feature code vs. an unknown user.
+    match = uri.match(/sip:([^@;>]+)@/);
+    if (match) {
+      const user = match[1];
+      if (/^\d+$/.test(user)) return user;
+      if (this._isFeatureCode(user)) return user;
+    }
     return null;
+  }
+
+  // A dialled string that is a feature code rather than an extension or an
+  // external SIP user. Kept in one place so the parser and the dispatcher agree.
+  //   *11NNN listen · *12NNN whisper · *13NNN barge   (call monitoring)
+  _isFeatureCode(user) {
+    if (!user) return false;
+    return /^\*1[123]\d+$/.test(user);
   }
 
   async handleInvite(req, res) {
@@ -81,6 +96,23 @@ class CallHandler {
       return res.send(404);
     }
 
+    // Monitor feature codes: *11{ext} listen, *12{ext} whisper, *13{ext} barge.
+    // These must be handled before the numeric-extension checks below, or the
+    // "invalid to" guard rejects them (the To userpart starts with *, not a
+    // digit). The caller is verified as a registered extension first.
+    const toUser = (String(to.uri).match(/sip:([^@;>]+)@/) || [])[1];
+    if (this.monitorHandler && this._isFeatureCode(toUser)) {
+      const callerOk = await this.registrar.isRegistered(fromExt);
+      if (!callerOk) {
+        logger.warn(`MONITOR: caller ${fromExt} not registered, rejecting ${toUser}`);
+        return res.send(403);
+      }
+      logger.info(`MONITOR: ${fromExt} dialled feature code ${toUser}`);
+      const handled = await this.monitorHandler.handleMonitorDial(req, res, fromExt, toUser);
+      if (handled) return;
+      return res.send(404);
+    }
+
     const callerRegistered = await this.registrar.isRegistered(fromExt);
     if (!callerRegistered) {
       // Could be an external SIP call where the user part happens to be numeric
@@ -97,12 +129,6 @@ class CallHandler {
     if (!toExt) {
       logger.warn(`INVITE rejected: invalid to=${toExt}`);
       return res.send(404);
-    }
-
-    // Check if dialing monitor codes: *11{ext}=listen, *12{ext}=whisper, *13{ext}=barge
-    if (this.monitorHandler && toExt && /^\*1[123]\d+$/.test(toExt)) {
-      const handled = await this.monitorHandler.handleMonitorDial(req, res, fromExt, toExt);
-      if (handled) return;
     }
 
     // Check if dialing a park slot (pickup)

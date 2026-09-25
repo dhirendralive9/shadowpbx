@@ -399,6 +399,7 @@ proxies `/ws` to it.
 |-----|--------|
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | **Day-to-day running**: logs, live tailing, restarts, updates, troubleshooting, fresh-install checklist |
 | [docs/SECURITY.md](docs/SECURITY.md) | API authentication and per-role authorization model |
+| [docs/BUGFIXES-P1.md](docs/BUGFIXES-P1.md) | Feature-code routing, overnight time conditions, path-traversal hardening |
 | [docs/WEBRTC-PHASE1.md](docs/WEBRTC-PHASE1.md) | WebRTC foundations, media bridging, self-test, troubleshooting |
 | [docs/WEBCALL-PHASE2.md](docs/WEBCALL-PHASE2.md) | Guest identities, destination lockdown, web-call API |
 | [docs/WEBDIALER-PHASE3-4.md](docs/WEBDIALER-PHASE3-4.md) | Web-call routing and the embeddable widget |

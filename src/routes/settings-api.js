@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { safeResolve } = require('../utils/safe-path');
 const { execSync, exec } = require('child_process');
 const mongoose = require('mongoose');
 const logger = require('../utils/logger');
@@ -257,13 +258,12 @@ function registerSettingsRoutes(router) {
   // ============================================================
   router.get('/settings/backups/:name/download', async (req, res) => {
     try {
-      const filePath = path.join(BACKUP_DIR, req.params.name);
-      if (!filePath.startsWith(BACKUP_DIR)) return res.status(403).json({ success: false, error: 'Access denied' });
+      const filePath = safeResolve(BACKUP_DIR, req.params.name);
       if (!fs.existsSync(filePath)) return res.status(404).json({ success: false, error: 'Backup not found' });
       res.setHeader('Content-Type', 'application/gzip');
       res.setHeader('Content-Disposition', `attachment; filename="${req.params.name}"`);
       fs.createReadStream(filePath).pipe(res);
-    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+    } catch (err) { res.status(err.status || 500).json({ success: false, error: err.message }); }
   });
 
   // ============================================================
@@ -271,13 +271,12 @@ function registerSettingsRoutes(router) {
   // ============================================================
   router.delete('/settings/backups/:name', async (req, res) => {
     try {
-      const filePath = path.join(BACKUP_DIR, req.params.name);
-      if (!filePath.startsWith(BACKUP_DIR)) return res.status(403).json({ success: false, error: 'Access denied' });
+      const filePath = safeResolve(BACKUP_DIR, req.params.name);
       if (!fs.existsSync(filePath)) return res.status(404).json({ success: false, error: 'Backup not found' });
       fs.unlinkSync(filePath);
       logger.info(`Backup deleted: ${req.params.name}`);
       res.json({ success: true });
-    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+    } catch (err) { res.status(err.status || 500).json({ success: false, error: err.message }); }
   });
 }
 

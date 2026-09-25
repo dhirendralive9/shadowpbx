@@ -1,6 +1,7 @@
 const express = require('express');
 const { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, CDR } = require('../models');
 const logger = require('../utils/logger');
+const { safeResolve } = require('../utils/safe-path');
 
 function createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler, monitorHandler, timeConditionService, presenceHandler, queueHandler, appointmentHandler, dialerEngine, securityTracker) {
   const router = express.Router();
@@ -376,8 +377,9 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
       const files = fs.readdirSync(audioDir)
         .filter(f => f.match(/\.(wav|mp3)$/i))
         .map(f => {
-          const stat = fs.statSync(require('path').join(audioDir, f));
-          return { name: f, path: require('path').join(audioDir, f), size: stat.size, modified: stat.mtime };
+          const fp = require('path').join(audioDir, f);
+          const stat = fs.statSync(fp);
+          return { name: f, path: fp, size: stat.size, modified: stat.mtime };
         })
         .sort((a, b) => new Date(b.modified) - new Date(a.modified));
       res.json({ success: true, files });
@@ -388,13 +390,13 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   router.get('/audio/play/:filename', (req, res) => {
     try {
       const fs = require('fs');
-      const filePath = require('path').join(audioDir, req.params.filename);
+      const filePath = safeResolve(audioDir, req.params.filename);
       if (!fs.existsSync(filePath)) return res.status(404).json({ success: false, error: 'File not found' });
       const ext = req.params.filename.split('.').pop().toLowerCase();
       res.setHeader('Content-Type', ext === 'mp3' ? 'audio/mpeg' : 'audio/wav');
       res.setHeader('Content-Disposition', `inline; filename="${req.params.filename}"`);
       fs.createReadStream(filePath).pipe(res);
-    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+    } catch (err) { res.status(err.status || 500).json({ success: false, error: err.message }); }
   });
 
   // Rename audio file
@@ -407,26 +409,26 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
       const safeName = newName.replace(/[^a-zA-Z0-9._-]/g, '_');
       const ext = path.extname(oldName) || '.wav';
       const finalName = safeName.endsWith(ext) ? safeName : safeName + ext;
-      const oldPath = path.join(audioDir, oldName);
-      const newPath = path.join(audioDir, finalName);
+      const oldPath = safeResolve(audioDir, oldName);
+      const newPath = safeResolve(audioDir, finalName);
       if (!fs.existsSync(oldPath)) return res.status(404).json({ success: false, error: 'File not found' });
       if (fs.existsSync(newPath) && oldPath !== newPath) return res.status(409).json({ success: false, error: 'A file with that name already exists' });
       fs.renameSync(oldPath, newPath);
       logger.info(`Audio renamed: ${oldName} -> ${finalName}`);
       res.json({ success: true, oldName, newName: finalName, path: newPath });
-    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+    } catch (err) { res.status(err.status || 500).json({ success: false, error: err.message }); }
   });
 
   // Delete audio file
   router.delete('/audio/:filename', (req, res) => {
     try {
       const fs = require('fs');
-      const filePath = require('path').join(audioDir, req.params.filename);
+      const filePath = safeResolve(audioDir, req.params.filename);
       if (!fs.existsSync(filePath)) return res.status(404).json({ success: false, error: 'File not found' });
       fs.unlinkSync(filePath);
       logger.info(`Audio deleted: ${req.params.filename}`);
       res.json({ success: true, message: `${req.params.filename} deleted` });
-    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+    } catch (err) { res.status(err.status || 500).json({ success: false, error: err.message }); }
   });
 
   router.get('/ivr', async (req, res) => {

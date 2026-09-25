@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { safeResolve } = require('../utils/safe-path');
 const https = require('https');
 const http = require('http');
 const { v4: uuidv4 } = require('uuid');
@@ -251,11 +252,12 @@ class AppointmentHandler {
   // Serve audio files for Twilio <Play>
   // ============================================================
   serveAudioFile(req, res) {
-    const filename = req.params.filename.replace(/\.\./g, '');
     const audioDir = process.env.MOH_DIR || '/opt/shadowpbx/audio';
-    const filePath = path.join(audioDir, filename);
+    let filePath;
+    try { filePath = safeResolve(audioDir, req.params.filename); }
+    catch (e) { return res.status(400).send('Invalid path'); }
     if (!fs.existsSync(filePath)) return res.status(404).send('Not found');
-    const ext = filename.split('.').pop().toLowerCase();
+    const ext = path.basename(filePath).split('.').pop().toLowerCase();
     res.setHeader('Content-Type', ext === 'mp3' ? 'audio/mpeg' : 'audio/wav');
     fs.createReadStream(filePath).pipe(res);
   }

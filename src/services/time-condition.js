@@ -36,27 +36,40 @@ class TimeConditionService {
     }
 
     // Check schedule entries
-    const currentDay = now.getDay();       // 0=Sun ... 6=Sat
+    const currentDay = now.getDay();          // 0=Sun ... 6=Sat
+    const yesterday = (currentDay + 6) % 7;   // the day-of-week before today
     const currentMinutes = now.getHours() * 60 + now.getMinutes();
 
     for (const entry of tc.schedule) {
-      // Check if current day is in this schedule entry's dayOfWeek array
-      if (!entry.dayOfWeek || !entry.dayOfWeek.includes(currentDay)) continue;
+      if (!entry.dayOfWeek) continue;
 
       const startMinutes = this._parseTime(entry.startTime);
       const endMinutes = this._parseTime(entry.endTime);
-
       if (startMinutes === null || endMinutes === null) continue;
 
-      // Handle overnight ranges (e.g. 22:00 - 06:00)
-      if (endMinutes <= startMinutes) {
-        // Overnight: match if current >= start OR current < end
-        if (currentMinutes >= startMinutes || currentMinutes < endMinutes) {
+      if (endMinutes > startMinutes) {
+        // Same-day range (e.g. 09:00 - 17:00): the entry's day must be today.
+        if (entry.dayOfWeek.includes(currentDay) &&
+            currentMinutes >= startMinutes && currentMinutes < endMinutes) {
           return true;
         }
       } else {
-        // Normal: match if current >= start AND current < end
-        if (currentMinutes >= startMinutes && currentMinutes < endMinutes) {
+        // Overnight range (e.g. Mon 22:00 - 06:00) spans midnight. Treat it as
+        // two intervals so the correct calendar day owns each half:
+        //   evening [start, 24:00) belongs to the entry's own day (today)
+        //   morning [00:00, end)   belongs to the NEXT day, so at this hour the
+        //                          entry we honour is YESTERDAY's.
+        // A degenerate start==end (e.g. 00:00-00:00) means "all day".
+        if (startMinutes === endMinutes) {
+          if (entry.dayOfWeek.includes(currentDay)) return true;
+          continue;
+        }
+        // Evening half — today started this overnight window
+        if (entry.dayOfWeek.includes(currentDay) && currentMinutes >= startMinutes) {
+          return true;
+        }
+        // Morning half — yesterday's overnight window is still running
+        if (entry.dayOfWeek.includes(yesterday) && currentMinutes < endMinutes) {
           return true;
         }
       }

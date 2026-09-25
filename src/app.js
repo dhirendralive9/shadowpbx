@@ -48,6 +48,19 @@ async function main() {
   logger.info('  ShadowPBX v3.0 Starting...');
   logger.info('===========================================');
 
+  // Refuse to start without the service credential. Previously this was only
+  // a warning, and the old comparison (token !== process.env.ADMIN_SECRET)
+  // let an unauthenticated request through when both sides were undefined —
+  // a PBX that fails open is worse than one that does not start.
+  if (!process.env.ADMIN_SECRET || process.env.ADMIN_SECRET.length < 16) {
+    logger.error('ADMIN_SECRET is missing or shorter than 16 characters — refusing to start.');
+    logger.error('Set it in /opt/shadowpbx/.env, e.g.  ADMIN_SECRET=$(openssl rand -hex 32)');
+    process.exit(1);
+  }
+  if (!process.env.SESSION_SECRET && !process.env.ADMIN_PASSWORD) {
+    logger.warn('No ADMIN_PASSWORD set — the web UI may be unreachable until one is configured');
+  }
+
   // 1. MongoDB
   const mongoUri = process.env.MONGODB_URI || 'mongodb://localhost:27017/shadowpbx';
   try {
@@ -276,6 +289,7 @@ async function main() {
   const { CDR: CDRModel, VoicemailMessage: VMModel } = require('./models');
   const fs = require('fs');
   const webAuth = require('./routes/web');
+  const { safeResolve } = require('./utils/safe-path');
 
   function audioSession(req, res, next) {
     const session = webAuth.getSession(req.cookies && req.cookies.sid);
@@ -316,14 +330,13 @@ async function main() {
   const audioDir = process.env.MOH_DIR || '/opt/shadowpbx/audio';
   app.get('/api/audio/play/:filename', audioSession, (req, res) => {
     try {
-      const safeName = req.params.filename.replace(/\.\./g, '');
-      const filePath = require('path').join(audioDir, safeName);
+      const filePath = safeResolve(audioDir, req.params.filename);
       if (!fs.existsSync(filePath)) return res.status(404).json({ success: false, error: 'File not found' });
-      const ext = safeName.split('.').pop().toLowerCase();
+      const ext = require('path').basename(filePath).split('.').pop().toLowerCase();
       res.setHeader('Content-Type', ext === 'mp3' ? 'audio/mpeg' : 'audio/wav');
-      res.setHeader('Content-Disposition', `inline; filename="${safeName}"`);
+      res.setHeader('Content-Disposition', `inline; filename="${require('path').basename(filePath)}"`);
       fs.createReadStream(filePath).pipe(res);
-    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+    } catch (err) { res.status(err.status || 500).json({ success: false, error: err.message }); }
   });
 
   // Web-call token + widget config (PUBLIC — the browser widget calls these
@@ -454,29 +467,69 @@ async function main() {
   const screenPopHandler = new ScreenPopHandler(crmManager, io, socketUsers, callHandler);
   callHandler.screenPopHandler = screenPopHandler;
 
+  // ── Socket.IO authentication ──
+  //
+  // Sockets used to be accepted unauthenticated, and identity was taken from
+  // whatever the client sent (from / to / fromRole / username). Anyone who
+  // could reach the port received the dashboard feed — extensions,
+  // registrations, presence, trunks, recent CDRs, active calls, voicemail
+  // counts — and could send or read chat as any user.
+  //
+  // Now the handshake is authenticated with the same session cookie as the
+  // web UI, and the server decides who the caller is. The client may choose
+  // a recipient; it can never choose a sender.
+  io.use((socket, next) => {
+    try {
+      const raw = socket.handshake.headers.cookie || '';
+      const sid = raw.split(';')
+        .map(c => c.trim())
+        .find(c => c.startsWith('sid='));
+      const token = sid ? decodeURIComponent(sid.slice(4)) : null;
+      const session = token ? webRoutes.getSession(token) : null;
+      if (!session) {
+        logger.warn(`GUI: socket rejected (no valid session) from ${socket.handshake.address}`);
+        return next(new Error('unauthorized'));
+      }
+      socket.user = { username: session.user, role: session.role, extension: session.extension, name: session.name };
+      next();
+    } catch (e) {
+      next(new Error('unauthorized'));
+    }
+  });
+
   io.on('connection', (socket) => {
-    logger.debug(`GUI: socket connected ${socket.id}`);
+    logger.debug(`GUI: socket connected ${socket.id} as ${socket.user.username} (${socket.user.role})`);
     emitDashboardState(socket);
 
     // Register screen pop + click-to-call Socket.IO events
     screenPopHandler.registerSocket(socket);
 
-    // Chat: user registers their username
-    socket.on('chat:register', (username) => {
-      if (!username) return;
-      socket.chatUser = username;
-      if (!socketUsers.has(username)) socketUsers.set(username, new Set());
-      socketUsers.get(username).add(socket.id);
-      logger.debug(`Chat: ${username} registered (socket ${socket.id})`);
+    // Chat identity comes from the session, not the client. The event is kept
+    // for compatibility with existing pages, but its argument is ignored.
+    const chatUser = socket.user.username;
+    socket.chatUser = chatUser;
+    if (!socketUsers.has(chatUser)) socketUsers.set(chatUser, new Set());
+    socketUsers.get(chatUser).add(socket.id);
+    if (socket.user.extension) {
+      const ext = String(socket.user.extension);
+      if (!socketUsers.has(ext)) socketUsers.set(ext, new Set());
+      socketUsers.get(ext).add(socket.id);   // screen pops are addressed by extension
+    }
+
+    socket.on('chat:register', () => {
+      logger.debug(`Chat: ${chatUser} registered (socket ${socket.id})`);
     });
 
-    // Chat: send message
+    // Chat: send message. The sender is always the session user.
     socket.on('chat:send', async (data) => {
-      if (!data || !data.from || !data.to || !data.text) return;
+      if (!data || !data.to || !data.text) return;
+      if (data.from && data.from !== chatUser) {
+        logger.warn(`Chat: ${chatUser} tried to send as ${data.from} — using their own identity`);
+      }
       try {
         const msg = await ChatMessage.create({
-          from: data.from, to: data.to, text: data.text,
-          fromRole: data.fromRole || '', read: false
+          from: chatUser, to: String(data.to), text: String(data.text).slice(0, 4000),
+          fromRole: socket.user.role, read: false
         });
         // Deliver to recipient if online
         const recipientSockets = socketUsers.get(data.to);
@@ -486,7 +539,7 @@ async function main() {
           });
         }
         // Echo back to sender (for multi-tab)
-        const senderSockets = socketUsers.get(data.from);
+        const senderSockets = socketUsers.get(chatUser);
         if (senderSockets) {
           senderSockets.forEach(sid => {
             io.to(sid).emit('chat:message', msg.toObject());
@@ -495,19 +548,19 @@ async function main() {
       } catch (e) { logger.debug(`Chat send error: ${e.message}`); }
     });
 
-    // Chat: mark messages read
+    // Chat: mark messages read — only messages addressed to this user
     socket.on('chat:read', async (data) => {
-      if (!data || !data.from || !data.to) return;
+      if (!data || !data.from) return;
       try {
         await ChatMessage.updateMany(
-          { from: data.from, to: data.to, read: false },
+          { from: String(data.from), to: chatUser, read: false },
           { $set: { read: true, readAt: new Date() } }
         );
         // Notify sender that messages were read
-        const senderSockets = socketUsers.get(data.from);
+        const senderSockets = socketUsers.get(String(data.from));
         if (senderSockets) {
           senderSockets.forEach(sid => {
-            io.to(sid).emit('chat:read', { from: data.from, to: data.to });
+            io.to(sid).emit('chat:read', { from: String(data.from), to: chatUser });
           });
         }
       } catch (e) {}
@@ -516,19 +569,21 @@ async function main() {
     // Chat: typing indicator
     socket.on('chat:typing', (data) => {
       if (!data || !data.to) return;
-      const recipientSockets = socketUsers.get(data.to);
+      const recipientSockets = socketUsers.get(String(data.to));
       if (recipientSockets) {
         recipientSockets.forEach(sid => {
-          io.to(sid).emit('chat:typing', { from: data.from });
+          io.to(sid).emit('chat:typing', { from: chatUser });
         });
       }
     });
 
     socket.on('disconnect', () => {
       logger.debug(`GUI: socket disconnected ${socket.id}`);
-      if (socket.chatUser && socketUsers.has(socket.chatUser)) {
-        socketUsers.get(socket.chatUser).delete(socket.id);
-        if (socketUsers.get(socket.chatUser).size === 0) socketUsers.delete(socket.chatUser);
+      for (const key of [socket.chatUser, socket.user && socket.user.extension].filter(Boolean)) {
+        const set = socketUsers.get(String(key));
+        if (!set) continue;
+        set.delete(socket.id);
+        if (set.size === 0) socketUsers.delete(String(key));
       }
     });
   });
@@ -588,10 +643,38 @@ async function main() {
         presenceStats: presenceHandler ? { subscriptions: presenceHandler.subscriptions.size } : null
       };
 
-      if (target.emit) {
-        target.emit('dashboard', state);
+      // Agents get their own view: they have no business seeing trunk
+      // configuration or the whole CDR feed, both of which this used to
+      // broadcast to every connected socket.
+      const agentState = {
+        ...state,
+        trunks: [],
+        recentCDR: (recentCDR || []).filter(c =>
+          [c.from, c.to].some(v => v && String(v) === String(target.user && target.user.extension))),
+        activeCalls: (allActiveCalls || []).filter(c =>
+          [c.from, c.to].some(v => v && String(v) === String(target.user && target.user.extension)))
+      };
+
+      if (target.user) {
+        // Single socket (on connect)
+        target.emit('dashboard', target.user.role === 'agent' ? agentState : state);
       } else {
-        target.emit('dashboard', state);
+        // Periodic broadcast — split by role
+        for (const [, sock] of io.sockets.sockets) {
+          if (!sock.user) continue;
+          if (sock.user.role === 'agent') {
+            sock.emit('dashboard', {
+              ...state,
+              trunks: [],
+              recentCDR: (recentCDR || []).filter(c =>
+                [c.from, c.to].some(v => v && String(v) === String(sock.user.extension))),
+              activeCalls: (allActiveCalls || []).filter(c =>
+                [c.from, c.to].some(v => v && String(v) === String(sock.user.extension)))
+            });
+          } else {
+            sock.emit('dashboard', state);
+          }
+        }
       }
     } catch (err) {
       logger.debug(`Dashboard state error: ${err.message}`);
