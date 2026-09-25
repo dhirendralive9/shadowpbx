@@ -90,6 +90,9 @@
 <audio id="audio-player" style="display:none"></audio>
 
 <script>
+// Browser calls authenticate with the login session cookie, sent automatically
+// on same-origin requests. KEY stays empty: the server no longer puts a shared
+// secret in the page, and /api enforces the logged-in user's role per route.
 var API = '/api', KEY = '<%= apiKey %>', H = { 'X-API-Key': KEY };
 var J = { 'X-API-Key': KEY, 'Content-Type': 'application/json' };
 var audioFiles = [];
@@ -263,7 +266,7 @@ async function loadMessages(num, name) {
       '<th>Status</th><th>Caller ID</th><th>Duration</th><th>Received</th><th>Delivered</th><th>Tries</th><th style="text-align:right">Actions</th>' +
     '</tr></thead><tbody>' +
     d.messages.map(function(m) {
-      var audioUrl = API + '/appointments/messages/' + m.messageId + '/audio?apikey=' + KEY;
+      var audioUrl = API + '/appointments/messages/' + m.messageId + '/audio';
       return '<tr>' +
         '<td>' + statusPill(m.status) + '</td>' +
         '<td><span class="mono" style="font-size:13px;font-weight:600">' + esc(m.callerID) + '</span></td>' +
@@ -286,7 +289,7 @@ function hideMessages() { document.getElementById('msg-panel').style.display = '
 
 function playMsg(id) {
   var player = document.getElementById('audio-player');
-  player.src = API + '/appointments/messages/' + id + '/audio?apikey=' + KEY;
+  player.src = API + '/appointments/messages/' + id + '/audio';
   player.play().catch(function() { showToast('Playback failed', true); });
 }
 

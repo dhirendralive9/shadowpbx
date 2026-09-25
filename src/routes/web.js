@@ -64,9 +64,16 @@ function createWebRouter(apiKey) {
   const router = express.Router();
 
   // Helper: build template locals with session data
+  //
+  // `apiKey` is deliberately empty. It used to carry ADMIN_SECRET into every
+  // page, which meant any logged-in user could read the master API credential
+  // out of the HTML and call administrative endpoints directly, bypassing the
+  // role checks in the UI. Browser calls to /api now authenticate with the
+  // session cookie instead (see src/middleware/api-auth.js), and the template
+  // local is kept only so existing views keep rendering.
   function locals(req, extra) {
     return {
-      apiKey,
+      apiKey: '',
       role: req.session ? req.session.role : '',
       user: req.session ? req.session.user : '',
       userName: req.session ? req.session.name : '',
@@ -274,3 +281,15 @@ module.exports.authMiddleware = authMiddleware;
 module.exports.requireRole = requireRole;
 module.exports.adminOnly = adminOnly;
 module.exports.supervisorUp = supervisorUp;
+
+// Lets the API layer resolve a browser session from the same store, so
+// /api can be authenticated by cookie instead of a shared secret.
+module.exports.getSession = function getSession(token) {
+  if (!token || !sessions.has(token)) return null;
+  const session = sessions.get(token);
+  if (Date.now() - session.created > SESSION_TTL) {
+    sessions.delete(token);
+    return null;
+  }
+  return session;
+};

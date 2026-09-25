@@ -157,6 +157,8 @@ Call ends → RTPEngine flushes pcap + metadata to /var/spool/rtpengine/
 - Salesforce, HubSpot, Zoho, Freshsales and Pipedrive integration with screen pop and disposition sync
 
 ### Security
+- Session-based API authentication with per-route role enforcement (admin / supervisor / agent), deny-by-default
+- Service API key for machine-to-machine access only — never exposed to the browser, header-only
 - Nginx reverse proxy with Let's Encrypt SSL
 - API port locked to localhost
 - SIP rate limiting (20/min per IP)
@@ -396,6 +398,7 @@ proxies `/ws` to it.
 | Doc | Covers |
 |-----|--------|
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | **Day-to-day running**: logs, live tailing, restarts, updates, troubleshooting, fresh-install checklist |
+| [docs/SECURITY.md](docs/SECURITY.md) | API authentication and per-role authorization model |
 | [docs/WEBRTC-PHASE1.md](docs/WEBRTC-PHASE1.md) | WebRTC foundations, media bridging, self-test, troubleshooting |
 | [docs/WEBCALL-PHASE2.md](docs/WEBCALL-PHASE2.md) | Guest identities, destination lockdown, web-call API |
 | [docs/WEBDIALER-PHASE3-4.md](docs/WEBDIALER-PHASE3-4.md) | Web-call routing and the embeddable widget |

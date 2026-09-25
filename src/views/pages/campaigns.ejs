@@ -201,6 +201,9 @@
 </style>
 
 <script>
+// Browser calls authenticate with the login session cookie, sent automatically
+// on same-origin requests. KEY stays empty: the server no longer puts a shared
+// secret in the page, and /api enforces the logged-in user's role per route.
 var API='/api',KEY='<%= apiKey %>',H={'X-API-Key':KEY},J={'X-API-Key':KEY,'Content-Type':'application/json'};
 var myRole='<%= typeof role!=="undefined"?role:"admin" %>';
 var isAdmin=myRole==='admin',isSupervisor=myRole==='supervisor';

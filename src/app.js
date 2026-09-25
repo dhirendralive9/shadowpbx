@@ -267,11 +267,27 @@ async function main() {
   app.use(cookieParser());
   app.use(express.static(path.join(__dirname, 'public')));
 
-  // Public audio endpoints (no auth — shareable/downloadable links)
+  // ── Audio streaming endpoints ──
+  //
+  // These used to be public "shareable links": anyone who guessed or was
+  // handed a callId could download a call recording or a voicemail without
+  // logging in. They now require a session; recordings are restricted to
+  // admins and supervisors, and a voicemail box to its owner.
   const { CDR: CDRModel, VoicemailMessage: VMModel } = require('./models');
   const fs = require('fs');
+  const webAuth = require('./routes/web');
 
-  app.get('/api/cdr/:callId/recording', async (req, res) => {
+  function audioSession(req, res, next) {
+    const session = webAuth.getSession(req.cookies && req.cookies.sid);
+    if (!session) return res.status(401).json({ success: false, error: 'Unauthorized' });
+    req.session = session;
+    next();
+  }
+
+  app.get('/api/cdr/:callId/recording', audioSession, async (req, res) => {
+    if (!['admin', 'supervisor'].includes(req.session.role)) {
+      return res.status(403).json({ success: false, error: 'Forbidden' });
+    }
     try {
       const cdr = await CDRModel.findOne({ callId: req.params.callId });
       if (!cdr || !cdr.recordingPath) return res.status(404).json({ success: false, error: 'Recording not found' });
@@ -282,7 +298,10 @@ async function main() {
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
 
-  app.get('/api/voicemail/:ext/:messageId/audio', async (req, res) => {
+  app.get('/api/voicemail/:ext/:messageId/audio', audioSession, async (req, res) => {
+    if (req.session.role === 'agent' && String(req.session.extension) !== String(req.params.ext)) {
+      return res.status(403).json({ success: false, error: 'Forbidden' });
+    }
     try {
       const msg = await VMModel.findOne({ extension: req.params.ext, messageId: req.params.messageId });
       if (!msg || !msg.recordingPath) return res.status(404).json({ success: false, error: 'Message not found' });
@@ -293,9 +312,9 @@ async function main() {
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
 
-  // Public audio file playback (for settings page player)
+  // Prompt/MOH playback for the settings page player
   const audioDir = process.env.MOH_DIR || '/opt/shadowpbx/audio';
-  app.get('/api/audio/play/:filename', (req, res) => {
+  app.get('/api/audio/play/:filename', audioSession, (req, res) => {
     try {
       const safeName = req.params.filename.replace(/\.\./g, '');
       const filePath = require('path').join(audioDir, safeName);
@@ -318,14 +337,16 @@ async function main() {
   // Dialer webhook routes (PUBLIC — carriers must reach these for AMD)
   dialerEngine.registerWebhookRoutes(app);
 
-  // API auth middleware
-  app.use('/api', (req, res, next) => {
-    const token = req.headers['x-api-key'] || req.query.apikey;
-    if (token !== process.env.ADMIN_SECRET) {
-      return res.status(401).json({ success: false, error: 'Unauthorized' });
-    }
-    next();
-  });
+  // ── API authentication and authorization ──
+  //
+  // Browsers authenticate with their session cookie and are then held to
+  // their role on every route; machine-to-machine callers use X-API-Key.
+  // The master secret is no longer handed to the browser, and is no longer
+  // accepted from the query string.
+  const { createApiAuth, createApiRbac } = require('./middleware/api-auth');
+  const webRoutes = require('./routes/web');
+  app.use('/api', createApiAuth({ getSession: webRoutes.getSession, adminSecret: process.env.ADMIN_SECRET }));
+  app.use('/api', createApiRbac());
 
   app.use('/api', createApiRouter(registrar, callHandler, trunkManager, transferHandler, holdHandler, parkHandler, voicemailHandler, ivrHandler, monitorHandler, timeConditionService, presenceHandler, queueHandler, appointmentHandler, dialerEngine, securityTracker));
 
@@ -416,7 +437,7 @@ async function main() {
   app.use('/', require('./routes/updates').createUpdateRouter({ callHandler }));
 
   // Web GUI routes
-  app.use('/', createWebRouter(process.env.ADMIN_SECRET));
+  app.use('/', createWebRouter());
 
   const apiPort = parseInt(process.env.API_PORT) || 3000;
   const http = require('http');

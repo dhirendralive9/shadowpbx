@@ -25,6 +25,9 @@
 </div>
 
 <script>
+// Browser calls authenticate with the login session cookie, sent automatically
+// on same-origin requests. KEY stays empty: the server no longer puts a shared
+// secret in the page, and /api enforces the logged-in user's role per route.
 const API = '/api', KEY = '<%= apiKey %>', H = { 'X-API-Key': KEY };
 function dur(s) { if (!s) return '00:00'; return String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0'); }
 

@@ -27,6 +27,9 @@
   <tbody id="trunk-body"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody>
 </table>
 <script>
+// Browser calls authenticate with the login session cookie, sent automatically
+// on same-origin requests. KEY stays empty: the server no longer puts a shared
+// secret in the page, and /api enforces the logged-in user's role per route.
 const API='/api',KEY='<%= apiKey %>',H={'X-API-Key':KEY};
 async function load(){
   const d=await(await fetch(API+'/trunks',{headers:H})).json();

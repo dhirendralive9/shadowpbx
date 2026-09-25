@@ -13,6 +13,9 @@
   <tbody id="vm-body"><tr><td colspan="5" class="empty">Select an extension to view voicemail</td></tr></tbody>
 </table>
 <script>
+// Browser calls authenticate with the login session cookie, sent automatically
+// on same-origin requests. KEY stays empty: the server no longer puts a shared
+// secret in the page, and /api enforces the logged-in user's role per route.
 const API='/api',KEY='<%= apiKey %>',H={'X-API-Key':KEY};
 function dur(s){if(!s)return'-';return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0')}
 function fmtTime(t){if(!t)return'';const d=new Date(t);return d.toLocaleDateString([],{month:'short',day:'numeric'})+' '+d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}
