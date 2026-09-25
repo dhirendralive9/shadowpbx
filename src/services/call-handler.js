@@ -750,6 +750,135 @@ class CallHandler {
     }
   }
 
+  // ============================================================
+  // Click-to-call origination (CRM screen pop, and any UI "dial" button)
+  //
+  // There is no inbound INVITE to drive the call, so we originate BOTH legs:
+  // dial the trunk toward the number, dial the agent's phone, and bridge the
+  // two through RTPEngine — the same two-UAC pattern the predictive dialer
+  // uses. Both legs are RTPEngine-bridged and recorded like a normal call.
+  //
+  // Routing and authorization go through the SAME central service as a
+  // dialled call — callRouter.findOutboundRoute(number, fromExt), which
+  // enforces each route's allowedExtensions. Screen-pop cannot originate to a
+  // number, or via a route, the agent's normal outbound permissions forbid.
+  //
+  // @returns {Promise<{success, callId?, error?}>}
+  // ============================================================
+  async originate(extension, phone, opts = {}) {
+    if (!this.srf) return { success: false, error: 'PBX not ready' };
+    const rtpHelper = require('../utils/rtp-helper');
+    const fromExt = String(extension || '').trim();
+    const number = String(phone || '').trim();
+    if (!fromExt || !number) return { success: false, error: 'Extension and number are required' };
+
+    // 1. Agent must be registered
+    const agentContacts = await this.registrar.getContacts(fromExt);
+    if (!agentContacts || agentContacts.length === 0) {
+      return { success: false, error: `Extension ${fromExt} is not registered` };
+    }
+
+    // 2. Central outbound authorization + routing (enforces allowedExtensions)
+    const route = await this.callRouter.findOutboundRoute(number, fromExt);
+    if (!route) {
+      logger.warn(`CLICK2CALL: ${fromExt} not permitted to dial ${number} (no authorized outbound route)`);
+      return { success: false, error: 'You are not permitted to call this number' };
+    }
+    const trunk = this.trunkManager.getTrunk(route.trunk);
+    if (!trunk) {
+      logger.warn(`CLICK2CALL: trunk ${route.trunk} not available`);
+      return { success: false, error: `Trunk ${route.trunk} is not available` };
+    }
+
+    const processedNumber = this.callRouter.processOutboundNumber(number, route);
+    const callerId = route.callerIdNumber || fromExt;
+    const callId = uuidv4();
+    const bridgeTag = `c2c-${callId}`;
+    const externalIp = process.env.EXTERNAL_IP || '127.0.0.1';
+    const host = trunk.host || '';
+    const port = trunk.port || 5060;
+
+    const cdr = await this._createCDR(fromExt, number, 'outbound', callId, 'click2call');
+    cdr.trunkUsed = route.trunk;
+    cdr.didNumber = callerId;
+    await cdr.save();
+
+    logger.info(`CLICK2CALL: ${fromExt} -> ${number} via ${route.trunk} [${callId}]`);
+    this._emitPresence(fromExt, 'ringing', { callId, remoteParty: number, direction: 'initiator' });
+
+    // The origination runs after we return, so the click responds immediately.
+    (async () => {
+      let trunkUac = null, agentUac = null;
+      try {
+        // 3. Dial the trunk toward the number
+        const trunkUri = `sip:${processedNumber}@${host}:${port}`;
+        trunkUac = await this.srf.createUAC(trunkUri, {
+          headers: {
+            'From': `<sip:${trunk.username || callerId}@${host}>`,
+            'To': `<sip:${processedNumber}@${host}>`,
+            'P-Asserted-Identity': `<sip:${callerId}@${host}>`
+          },
+          auth: (trunk.username ? { username: trunk.username, password: trunk.password } : undefined),
+          timeout: (route.ringTimeout || 30) * 1000
+        });
+
+        // 4. Bridge the answered trunk leg out to the agent through RTPEngine
+        const trunkSdp = trunkUac.remote ? trunkUac.remote.sdp : '';
+        let offerSdp = trunkSdp;
+        const off = await rtpHelper.offer(this.rtpengine, callId, bridgeTag, trunkSdp, { 'record call': 'yes' });
+        if (off && off.sdp) offerSdp = off.sdp;
+
+        const contact = this._getLatestContact(agentContacts);
+        const target = this._contactTarget(fromExt, contact);
+
+        agentUac = await this.srf.createUAC(target.uri, {
+          localSdp: offerSdp,
+          headers: {
+            'From': `<sip:${number}@${externalIp}>`,
+            'To': `<sip:${fromExt}@${externalIp}>`,
+            'Contact': `<sip:${number}@${externalIp}>`
+          },
+          callingNumber: number
+        });
+
+        // 5. Answer the trunk with the agent's SDP, re-INVITE trunk to RTPEngine
+        if (agentUac.remote && agentUac.remote.sdp) {
+          const agentTag = agentUac.sip ? agentUac.sip.localTag : `at-${callId}`;
+          const ans = await rtpHelper.answer(this.rtpengine, callId, bridgeTag, agentTag, agentUac.remote.sdp,
+            { 'record call': 'yes' }, { offerer: target.media });
+          if (ans && ans.sdp) {
+            try { await trunkUac.modify(ans.sdp); } catch (e) { logger.warn(`CLICK2CALL: trunk re-INVITE failed [${callId}]: ${e.message}`); }
+          }
+        }
+
+        cdr.status = 'answered';
+        cdr.answerTime = new Date();
+        cdr.recorded = !!off;
+        cdr.rtpengineCallId = callId;
+        await cdr.save();
+
+        this._emitPresence(fromExt, 'confirmed', { callId, remoteParty: number, direction: 'initiator' });
+        this._trackCall(callId, agentUac, trunkUac, cdr, fromExt, number, bridgeTag);
+        logger.info(`CLICK2CALL ANSWERED: ${fromExt} <-> ${number} via ${route.trunk} [${callId}]`);
+      } catch (err) {
+        const sip = err.status || 0;
+        try { if (trunkUac) trunkUac.destroy(); } catch (e) {}
+        try { if (agentUac) agentUac.destroy(); } catch (e) {}
+        await rtpHelper.del(this.rtpengine, callId, bridgeTag).catch(() => {});
+        this._emitPresence(fromExt, 'idle');
+        if (sip === 486 || sip === 600) { cdr.status = 'busy'; }
+        else if (sip === 480 || sip === 408 || sip === 487) { cdr.status = 'missed'; }
+        else { cdr.status = 'failed'; }
+        cdr.hangupCause = `click2call_${sip || 'error'}`;
+        cdr.endTime = new Date();
+        await cdr.save().catch(() => {});
+        logger.warn(`CLICK2CALL FAILED: ${fromExt} -> ${number} [${callId}] sip=${sip}: ${err.message}`);
+      }
+    })();
+
+    return { success: true, callId };
+  }
+
   async _createCDR(from, to, direction, sipCallId, fromIp) {
     const cdr = new CDR({ callId: uuidv4(), sipCallId, from, to, direction, status: 'ringing', startTime: new Date(), fromIp });
     await cdr.save();

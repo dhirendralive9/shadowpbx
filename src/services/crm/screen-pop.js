@@ -19,7 +19,10 @@ const logger = require('../../utils/logger');
 // Click-to-Call (reverse):
 //   1. Agent clicks phone number in dashboard or screen pop
 //   2. Socket.IO emits 'crm:click2call' with { phone, extension }
-//   3. Server originates outbound call via call-handler
+//   3. Server calls callHandler.originate(), which applies the same central
+//      outbound authorization/routing as a dialled call and actually bridges
+//      the two SIP legs (trunk + agent). This handler no longer routes or
+//      "originates" on its own — the previous version only wrote a CDR.
 //
 // Dependencies: crmManager, Socket.IO (io), socketUsers map
 // ============================================================
@@ -212,10 +215,23 @@ class ScreenPopHandler {
    */
   registerSocket(socket) {
     socket.on('crm:click2call', async (data) => {
-      const { phone, extension } = data || {};
-      if (!phone || !extension) return;
+      const { phone } = data || {};
+      // The extension comes from the authenticated session, not the client.
+      // Agents may only originate from their own; supervisors and admins can
+      // name another extension.
+      const requested = data && data.extension;
+      const own = socket.user && socket.user.extension;
+      const privileged = socket.user && ['admin', 'supervisor'].includes(socket.user.role);
+      const extension = privileged && requested ? String(requested) : (own ? String(own) : null);
 
-      logger.info(`Click-to-Call: ext ${extension} → ${phone}`);
+      if (!phone || !extension) return;
+      if (requested && String(requested) !== extension) {
+        logger.warn(`Click-to-Call: ${socket.user && socket.user.username} asked to dial as ext ${requested} — using ${extension}`);
+        socket.emit('crm:click2call:error', { error: 'You can only place calls from your own extension' });
+        return;
+      }
+
+      logger.info(`Click-to-Call: ${socket.user && socket.user.username} — ext ${extension} → ${phone}`);
 
       try {
         // Verify extension is registered
@@ -224,15 +240,14 @@ class ScreenPopHandler {
           return;
         }
 
-        const contacts = await this.callHandler.registrar.getContacts(extension);
-        if (!contacts || contacts.length === 0) {
-          socket.emit('crm:click2call:error', { error: `Extension ${extension} not registered` });
+        // Real origination goes through the call handler, which applies the
+        // same central outbound authorization and routing as a dialled call
+        // (allowedExtensions included) and actually bridges the two SIP legs.
+        if (typeof this.callHandler.originate !== 'function') {
+          socket.emit('crm:click2call:error', { error: 'Origination is not available' });
           return;
         }
-
-        // Originate call via the call handler's outbound route
-        // The call will ring the agent's phone first, then bridge to the destination
-        const result = await this._originateCall(extension, phone);
+        const result = await this.callHandler.originate(extension, phone);
 
         if (result.success) {
           socket.emit('crm:click2call:started', {
@@ -322,93 +337,6 @@ class ScreenPopHandler {
   // ──────────────────────────────────────────────────────────
   // Call origination for click-to-call
   // ──────────────────────────────────────────────────────────
-
-  async _originateCall(extension, phone) {
-    // Find outbound route for the number
-    const { OutboundRoute, Trunk } = require('../../models');
-
-    const routes = await OutboundRoute.find({ enabled: true }).sort({ priority: 1 });
-    let matchedRoute = null;
-
-    for (const route of routes) {
-      for (const pattern of route.patterns) {
-        if (this._matchDialPattern(phone, pattern)) {
-          matchedRoute = route;
-          break;
-        }
-      }
-      if (matchedRoute) break;
-    }
-
-    if (!matchedRoute) {
-      return { success: false, error: 'No outbound route matches this number' };
-    }
-
-    // Apply strip/prepend
-    let dialNumber = phone;
-    if (matchedRoute.strip > 0) {
-      dialNumber = dialNumber.substring(matchedRoute.strip);
-    }
-    if (matchedRoute.prepend) {
-      dialNumber = matchedRoute.prepend + dialNumber;
-    }
-
-    // Find trunk
-    const trunk = await Trunk.findOne({ name: matchedRoute.trunk, enabled: true });
-    if (!trunk) {
-      return { success: false, error: `Trunk ${matchedRoute.trunk} not available` };
-    }
-
-    // Build the trunk URI
-    const trunkUri = `sip:${dialNumber}@${trunk.host}:${trunk.port || 5060}`;
-
-    // Get the agent's registered contact
-    const contacts = await this.callHandler.registrar.getContacts(extension);
-    if (!contacts || contacts.length === 0) {
-      return { success: false, error: `Extension ${extension} not registered` };
-    }
-
-    // Use SRF to originate: first ring agent, then bridge to trunk
-    // We use the existing call handler's SRF instance
-    try {
-      const { v4: uuidv4 } = require('uuid');
-      const callId = uuidv4();
-
-      // Create a CDR for this outbound call
-      const { CDR } = require('../../models');
-      const cdr = new CDR({
-        callId,
-        from: extension,
-        to: phone,
-        direction: 'outbound',
-        status: 'ringing',
-        startTime: new Date(),
-        trunkUsed: trunk.name,
-      });
-      await cdr.save();
-
-      logger.info(`Click-to-Call: originating ${extension} → ${phone} via ${trunk.name} (callId=${callId})`);
-
-      return { success: true, callId };
-    } catch (err) {
-      return { success: false, error: err.message };
-    }
-  }
-
-  /**
-   * Simple dial pattern matcher (same logic as call-router).
-   */
-  _matchDialPattern(number, pattern) {
-    if (!pattern || !number) return false;
-    if (pattern === '_X.' || pattern === '_x.') return number.length >= 1;
-    if (pattern === '_NXXXXXX') return /^\d{7}$/.test(number);
-    if (pattern === '_NXXNXXXXXX') return /^\d{10}$/.test(number);
-    if (pattern === '_1NXXNXXXXXX') return /^1\d{10}$/.test(number);
-    if (pattern.startsWith('+')) return number.startsWith(pattern);
-
-    // Literal match
-    return number === pattern || number.endsWith(pattern);
-  }
 
   // ──────────────────────────────────────────────────────────
   // Socket.IO helpers
