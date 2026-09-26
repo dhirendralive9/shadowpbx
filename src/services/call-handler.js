@@ -1442,6 +1442,23 @@ class CallHandler {
     return rtpHelper.del(this.rtpengine, callId, fromTag);
   }
 
+  // Is `extension` a participant in this active call? Used for object-level
+  // authorization: an agent may only control (hold/transfer/park/pickup) a call
+  // they are actually on. fromExt/toExt are recorded when the call is tracked.
+  // A park slot's held-by extension counts too, so the parker can retrieve it.
+  isCallParticipant(callId, extension) {
+    if (!callId || !extension) return false;
+    const call = this.activeCalls.get(callId);
+    if (!call) return false;
+    const ext = String(extension);
+    if (String(call.fromExt || '') === ext) return true;
+    if (String(call.toExt || '') === ext) return true;
+    // On hold: whoever put it on hold is still a participant
+    const hold = this.holdHandler ? this.holdHandler.holdState.get(callId) : null;
+    if (hold && String(hold.heldBy || '') === ext) return true;
+    return false;
+  }
+
   getActiveCalls() {
     const calls = [];
     for (const [id, call] of this.activeCalls) {

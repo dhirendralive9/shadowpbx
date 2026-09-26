@@ -66,11 +66,15 @@ const POLICY = [
   { m: 'DELETE', p: '/voicemail/:ext/:messageId', roles: ROLES, own: true },
 
   // ── Call control ──
+  // Role lets an agent reach these; the HANDLER then enforces object-level
+  // ownership (an agent may only control a call they are a participant in —
+  // see agentMayControlCall in routes/api.js). Route RBAC alone is not enough
+  // here because the object identity (the call) is in the path, not the role.
   { m: 'POST', p: '/calls/:callId/hold', roles: ROLES },
   { m: 'POST', p: '/calls/:callId/resume', roles: ROLES },
   { m: 'POST', p: '/calls/:callId/transfer', roles: ROLES },
   { m: 'POST', p: '/calls/:callId/park', roles: ROLES },
-  { m: 'POST', p: '/calls/pickup/:slot', roles: ROLES },
+  { m: 'POST', p: '/calls/pickup/:slot', roles: ROLES },     // pickup extension derived from session for agents
 
   // ── Agent participation: your own extension only ──
   { m: 'POST', p: '/queues/:number/agents/login', roles: ROLES },

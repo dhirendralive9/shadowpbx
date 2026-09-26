@@ -707,10 +707,34 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   });
 
   // Agent login/logout
+  // ── Object-level authorization for live calls ──
+  //
+  // Route RBAC answers "can this role use this endpoint". For call control it
+  // must also answer "is this specific call theirs". Admins/supervisors and
+  // machine callers keep broad authority; an agent may only act on a call they
+  // are a participant in. /calls/active exposes call ids, so without this an
+  // agent could hold/transfer/park another agent's live call.
+  function callerRole(req) { return (req.apiCaller && req.apiCaller.role) || (req.session && req.session.role) || null; }
+  function callerExtension(req) { return (req.session && req.session.extension) || (req.apiCaller && req.apiCaller.extension) || ''; }
+
+  function agentMayControlCall(req, callId) {
+    const role = callerRole(req);
+    if (role === 'service' || role === 'admin' || role === 'supervisor') return true;
+    return callHandler.isCallParticipant(callId, callerExtension(req));
+  }
+
+  // For agents, the acting extension is ALWAYS the session's own — never a value
+  // from the request body. Admins/supervisors/service may target another.
+  function effectiveExtension(req, requested) {
+    const role = callerRole(req);
+    if (role === 'agent') return callerExtension(req);
+    return requested || callerExtension(req);
+  }
+
   router.post('/queues/:number/agents/login', async (req, res) => {
     try {
       if (!queueHandler) return res.status(503).json({ success: false, error: 'Queue handler not available' });
-      const { extension } = req.body;
+      const extension = effectiveExtension(req, req.body.extension);
       if (!extension) return res.status(400).json({ success: false, error: 'extension required' });
       queueHandler.agentLogin(req.params.number, extension);
       res.json({ success: true, message: `Agent ${extension} logged into queue ${req.params.number}` });
@@ -720,7 +744,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   router.post('/queues/:number/agents/logout', async (req, res) => {
     try {
       if (!queueHandler) return res.status(503).json({ success: false, error: 'Queue handler not available' });
-      const { extension } = req.body;
+      const extension = effectiveExtension(req, req.body.extension);
       if (!extension) return res.status(400).json({ success: false, error: 'extension required' });
       queueHandler.agentLogout(req.params.number, extension);
       res.json({ success: true, message: `Agent ${extension} logged out of queue ${req.params.number}` });
@@ -740,7 +764,13 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   // ============================================================
   router.get('/calls/active', async (req, res) => {
     try {
-      const calls = callHandler.getActiveCalls();
+      let calls = callHandler.getActiveCalls();
+      // Agents see only calls they are on — they must not be able to enumerate
+      // other agents' live call ids (which would let them target those calls).
+      if (callerRole(req) === 'agent') {
+        const ext = String(callerExtension(req) || '');
+        calls = calls.filter(c => String(c.from) === ext || String(c.to) === ext || String(c.heldBy || '') === ext);
+      }
       res.json({ success: true, calls });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
@@ -750,6 +780,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
       const { target, type } = req.body;
       if (!target) return res.status(400).json({ success: false, error: 'target required' });
       if (!transferHandler) return res.status(503).json({ success: false, error: 'Transfer handler not available' });
+      if (!agentMayControlCall(req, req.params.callId)) return res.status(403).json({ success: false, error: 'Not your call' });
 
       const result = await transferHandler.apiTransfer(req.params.callId, target, type || 'blind');
       res.json(result);
@@ -761,6 +792,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   router.post('/calls/:callId/hold', async (req, res) => {
     try {
       if (!holdHandler) return res.status(503).json({ success: false, error: 'Hold handler not available' });
+      if (!agentMayControlCall(req, req.params.callId)) return res.status(403).json({ success: false, error: 'Not your call' });
       const result = await holdHandler.apiHold(req.params.callId);
       res.json(result);
     } catch (err) {
@@ -771,6 +803,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   router.post('/calls/:callId/resume', async (req, res) => {
     try {
       if (!holdHandler) return res.status(503).json({ success: false, error: 'Hold handler not available' });
+      if (!agentMayControlCall(req, req.params.callId)) return res.status(403).json({ success: false, error: 'Not your call' });
       const result = await holdHandler.apiResume(req.params.callId);
       res.json(result);
     } catch (err) {
@@ -792,6 +825,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   router.post('/calls/:callId/park', async (req, res) => {
     try {
       if (!parkHandler) return res.status(503).json({ success: false, error: 'Park handler not available' });
+      if (!agentMayControlCall(req, req.params.callId)) return res.status(403).json({ success: false, error: 'Not your call' });
       const result = await parkHandler.apiPark(req.params.callId, req.body.slot);
       res.json(result);
     } catch (err) {
@@ -802,7 +836,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   router.post('/calls/pickup/:slot', async (req, res) => {
     try {
       if (!parkHandler) return res.status(503).json({ success: false, error: 'Park handler not available' });
-      const { extension } = req.body;
+      const extension = effectiveExtension(req, req.body.extension);
       if (!extension) return res.status(400).json({ success: false, error: 'extension required' });
       const result = await parkHandler.apiPickup(req.params.slot, extension);
       res.json(result);

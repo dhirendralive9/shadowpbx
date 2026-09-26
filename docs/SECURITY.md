@@ -85,10 +85,29 @@ Worth being explicit about what this does *not* yet do:
 
 - **Row-level CDR scoping.** Agents can list CDRs, not only their own calls.
   Restricting that needs a query filter inside the CDR handler, not a route
-  policy.
-- **Call-ownership on control actions.** An agent can hold or transfer any
-  call id they know, not only calls they are on. The call ids are random and
-  not enumerable through the API, but this is not an authorization check.
+  policy. (Still open.)
+
+## Object-level authorization (call control)
+
+Route RBAC answers "can this role use this endpoint". For live-call control it
+is not enough — the object (the call) is named in the path, so the handler also
+enforces **participation**:
+
+- `POST /calls/:callId/{hold,resume,transfer,park}` — an agent may act only on a
+  call they are a participant in (`fromExt`, `toExt`, or the extension that put
+  it on hold). Admins, supervisors and machine (API-key) callers keep broad
+  authority. Enforced by `agentMayControlCall` in `routes/api.js`.
+- `GET /calls/active` — an agent sees only calls they are on; supervisors and
+  admins see all. This closes the enumeration path: an agent can no longer read
+  other agents' live call ids and then target them.
+- `POST /queues/:number/agents/{login,logout}` and `POST /calls/pickup/:slot` —
+  for agents the acting extension is taken from the **session**, never from the
+  request body. An agent cannot log another extension in/out of a queue or pick
+  up a parked call as someone else.
+
+  Earlier `SECURITY.md` said call ids were "random and not enumerable"; that
+  was wrong — `/calls/active` exposed them. The fix is proper object-level
+  authorization above, not obscurity.
 - **Sessions are in memory.** They clear on restart, so everyone is logged
   out by a restart or an update, and a second instance cannot share them.
 - **`ADMIN_SECRET` is still a single shared service credential.** Per-integration
