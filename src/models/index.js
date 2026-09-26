@@ -212,6 +212,7 @@ const userSchema = new mongoose.Schema({
   assignedQueues: [{ type: String }],                // supervisor: queues they manage
   assignedIVRs: [{ type: String }],                  // supervisor: IVRs they can view
   enabled: { type: Boolean, default: true },
+  mustChangePassword: { type: Boolean, default: false },  // force a change on next login (bootstrap admin)
   lastLogin: Date,
   createdAt: { type: Date, default: Date.now }
 });

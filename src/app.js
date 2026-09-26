@@ -76,9 +76,9 @@ async function main() {
     logger.error('Set it in /opt/shadowpbx/.env, e.g.  ADMIN_SECRET=$(openssl rand -hex 32)');
     process.exit(1);
   }
-  if (!process.env.SESSION_SECRET && !process.env.ADMIN_PASSWORD) {
-    logger.warn('No ADMIN_PASSWORD set — the web UI may be unreachable until one is configured');
-  }
+  // ADMIN_PASSWORD is optional: if unset, the first-run bootstrap generates a
+  // strong temporary password and prints it once (see the seed below). There
+  // is no default password.
 
   // 1. MongoDB
   const mongoUri = process.env.MONGODB_URI || 'mongodb://localhost:27017/shadowpbx';
@@ -98,17 +98,46 @@ async function main() {
       logger.warn(`Startup registration cleanup: ${cleanErr.message}`);
     }
 
-    // Seed default admin user if no users exist
+    // Bootstrap the first admin if the user table is empty.
+    //
+    // There is NO default password. If ADMIN_PASSWORD is set we use it;
+    // otherwise we generate a strong random one, print it ONCE to the log,
+    // and force a change at first login. "admin/admin" is never created —
+    // a predictable admin credential is worse than none.
     try {
       const { User } = require('./models');
       const bcrypt = require('bcryptjs');
+      const crypto = require('crypto');
       const userCount = await User.countDocuments();
       if (userCount === 0) {
         const adminUser = process.env.ADMIN_USER || 'admin';
-        const adminPass = process.env.ADMIN_PASSWORD || 'admin';
+        const provided = process.env.ADMIN_PASSWORD && process.env.ADMIN_PASSWORD.trim();
+        let adminPass, generated = false;
+        if (provided && provided.length >= 8) {
+          adminPass = provided;
+        } else {
+          if (provided) logger.warn('ADMIN_PASSWORD is set but shorter than 8 characters — ignoring it and generating a temporary password.');
+          // 24 url-safe chars, cryptographically random
+          adminPass = crypto.randomBytes(18).toString('base64').replace(/[+/=]/g, '').slice(0, 24);
+          generated = true;
+        }
         const hash = await bcrypt.hash(adminPass, 10);
-        await User.create({ username: adminUser, password: hash, role: 'admin', name: 'Administrator', enabled: true });
-        logger.info(`Startup: default admin user "${adminUser}" created`);
+        await User.create({
+          username: adminUser, password: hash, role: 'admin', name: 'Administrator',
+          enabled: true, mustChangePassword: generated
+        });
+        if (generated) {
+          logger.warn('============================================================');
+          logger.warn('  FIRST-RUN ADMIN ACCOUNT CREATED');
+          logger.warn(`  username: ${adminUser}`);
+          logger.warn(`  password: ${adminPass}`);
+          logger.warn('  This password is shown ONCE. Log in now and change it —');
+          logger.warn('  you will be required to set a new one on first login.');
+          logger.warn('  (Set ADMIN_PASSWORD in .env before first start to choose your own.)');
+          logger.warn('============================================================');
+        } else {
+          logger.info(`Startup: admin user "${adminUser}" created from ADMIN_PASSWORD`);
+        }
       }
     } catch (seedErr) {
       logger.warn(`Admin seed: ${seedErr.message}`);

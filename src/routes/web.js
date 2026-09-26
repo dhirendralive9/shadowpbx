@@ -65,6 +65,12 @@ function authMiddleware(req, res, next) {
     return res.redirect('/login');
   }
   req.session = session;
+  // A bootstrap admin (or any account flagged) must set a new password before
+  // using the app. Allow only the change-password page and logout until done.
+  if (session.mustChangePassword &&
+      req.path !== '/change-password' && req.path !== '/logout') {
+    return res.redirect('/change-password');
+  }
   next();
 }
 
@@ -199,6 +205,7 @@ function createWebRouter(apiKey) {
         name: user.name || user.username,
         extension: user.extension || '',
         userId: user._id.toString(),
+        mustChangePassword: !!user.mustChangePassword,
         created: Date.now()
       });
       res.cookie('sid', sid, cookieOpts(req));
@@ -227,6 +234,49 @@ function createWebRouter(apiKey) {
   }
   router.post('/logout', doLogout);
   router.get('/logout', doLogout);
+
+  // ─── Forced password change (bootstrap admin / flagged accounts) ───
+  router.get('/change-password', authMiddleware, (req, res) => {
+    res.render('pages/change-password', {
+      forced: !!req.session.mustChangePassword,
+      user: req.session.user,
+      error: null
+    });
+  });
+
+  router.post('/change-password', authMiddleware, async (req, res) => {
+    const { currentPassword, newPassword, confirmPassword } = req.body;
+    const render = (error) => res.render('pages/change-password', { forced: !!req.session.mustChangePassword, user: req.session.user, error });
+    try {
+      if (!newPassword || newPassword.length < 8) return render('New password must be at least 8 characters.');
+      if (newPassword !== confirmPassword) return render('Passwords do not match.');
+
+      const user = await User.findOne({ username: req.session.user });
+      if (!user) return res.redirect('/logout');
+
+      // A forced first-change skips the current-password check (the temp one
+      // was just used to log in); a voluntary change requires it.
+      if (!req.session.mustChangePassword) {
+        const ok = await bcrypt.compare(currentPassword || '', user.password);
+        if (!ok) return render('Current password is incorrect.');
+      }
+      if (await bcrypt.compare(newPassword, user.password)) {
+        return render('New password must be different from the current one.');
+      }
+
+      user.password = await bcrypt.hash(newPassword, 10);
+      user.mustChangePassword = false;
+      await user.save();
+
+      // Clear the flag on the live session so the app becomes usable.
+      req.session.mustChangePassword = false;
+      logger.info(`GUI: ${req.session.user} changed their password`);
+      res.redirect('/');
+    } catch (e) {
+      logger.error(`Change password error: ${e.message}`);
+      render('Could not change the password. Please try again.');
+    }
+  });
 
   // ─── All roles ───
   router.get('/', authMiddleware, (req, res) => {
