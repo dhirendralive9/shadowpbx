@@ -594,23 +594,51 @@ class CallHandler {
     if (callerDomain === ownDomain || callerDomain === ownIp) return false;
     if (sourceIp === ownIp) return false;
 
-    // Check 1: Is the domain OR source IP whitelisted?
+    // Check 1: authorize by SOURCE IP, not the claimed From domain.
+    //
+    // The From-URI domain is attacker-controllable: anyone can send
+    //   From: sip:x@trusted-domain.example
+    // from an unauthorized IP. So a whitelist entry only grants access when it
+    // matches the actual source of the packet:
+    //   - an 'ip' entry must equal the source IP;
+    //   - a 'domain' entry grants access only if the source IP resolves to that
+    //     domain (DNS A/AAAA), so the caller genuinely is that domain — not just
+    //     claiming to be. If DNS can't confirm it, the call is rejected.
+    // The From domain itself is informational metadata only.
     const { SIPDomain } = require('../models');
-    // Match against: the From-URI domain, OR the actual source IP of the packet
-    const allowedEntry = await SIPDomain.findOne({
-      enabled: true,
-      $or: [
-        { domain: callerDomain },
-        { domain: sourceIp }
-      ]
-    });
+    const entries = await SIPDomain.find({ enabled: true }).lean();
+
+    let allowedEntry = null;
+    // Strong match: an entry whose value IS the source IP.
+    allowedEntry = entries.find(e => e.domain === sourceIp);
+
+    // Otherwise, a domain entry the source IP actually resolves to.
     if (!allowedEntry) {
-      logger.info(`EXTERNAL SIP: ${callerDomain} (src=${sourceIp}) not in whitelist, rejecting`);
-      if (this.securityTracker) this.securityTracker.record(sourceIp, 'external SIP not whitelisted', req.get('User-Agent'), toExt || '');
+      const dns = require('dns').promises;
+      for (const e of entries) {
+        if (e.entryType === 'ip') continue;          // ip entries already checked above
+        if (!e.domain) continue;
+        try {
+          const addrs = await dns.resolve4(e.domain).catch(() => []);
+          const addrs6 = await dns.resolve6(e.domain).catch(() => []);
+          if (addrs.includes(sourceIp) || addrs6.includes(sourceIp)) { allowedEntry = e; break; }
+        } catch (err) { /* skip unresolvable entries */ }
+      }
+    }
+
+    if (!allowedEntry) {
+      // Note whether the From domain was whitelisted but the SOURCE IP wasn't —
+      // that is the spoofing signature and worth flagging distinctly.
+      const domainClaimed = entries.some(e => e.domain === callerDomain);
+      const reason = domainClaimed
+        ? `spoofed From domain ${callerDomain} from unauthorized IP ${sourceIp}`
+        : `${callerDomain} (src=${sourceIp}) not in whitelist`;
+      logger.warn(`EXTERNAL SIP REJECTED: ${reason}`);
+      if (this.securityTracker) this.securityTracker.record(sourceIp, `external SIP: ${domainClaimed ? 'spoofed whitelisted domain' : 'not whitelisted'}`, req.get('User-Agent'), toExt || '');
       return false;
     }
 
-    logger.info(`EXTERNAL SIP: matched whitelist entry "${allowedEntry.name || allowedEntry.domain}" (type=${allowedEntry.entryType || 'domain'}, pattern=${allowedEntry.domain})`);
+    logger.info(`EXTERNAL SIP: authorized by source IP ${sourceIp} -> whitelist entry "${allowedEntry.name || allowedEntry.domain}" (type=${allowedEntry.entryType || 'domain'})`);
 
     // Check 2: Does the target extension allow external calls?
     const targetExt = await Extension.findOne({ extension: toExt, enabled: true });
@@ -643,7 +671,7 @@ class CallHandler {
 
     // Extract a readable caller ID
     const callerID = this._extractCallerFromUri(fromUri);
-    logger.info(`EXTERNAL SIP: ${callerID}@${callerDomain} -> ${toExt} [${callId}] (domain: ${allowedDomain.name || callerDomain})`);
+    logger.info(`EXTERNAL SIP: ${callerID}@${callerDomain} -> ${toExt} [${callId}] (via: ${allowedEntry.name || allowedEntry.domain})`);
 
     // Check blocklist
     try {
