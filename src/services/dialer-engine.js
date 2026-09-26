@@ -739,19 +739,28 @@ class DialerEngine {
 
       this._incrementStat(activeCall.campaignId, 'machine');
 
-      if (campaign.amdAction === 'leave-message') {
-        // Leave message — carrier will play after beep detection
-        // For now, just log and hangup (Phase 5 adds pre-recorded message playback)
-        logger.info(`DIALER AMD: leave-message not yet implemented, hanging up [${callId}]`);
+      const config = campaign.toObject();
+
+      // Leave a pre-recorded message on the answering machine, if configured.
+      if (campaign.amdAction === 'leave-message' && campaign.amdMessageAudio) {
+        activeCall.status = 'leaving-message';   // not a bridge; distinct terminal path
+        const played = await this._leaveMachineMessage(callId, activeCall, campaign, callSid, carrier);
+        if (played) {
+          logger.info(`DIALER AMD: leaving message on answering machine [${callId}]`);
+          // The carrier plays the message then hangs up (TwiML ends with Hangup);
+          // the status webhook finalises the lead as 'machine-message'.
+          await this._callFailed(callId, activeCall.campaignId, activeCall.lead, activeCall.agentExt, 'machine-message', config);
+          return;
+        }
+        logger.warn(`DIALER AMD: could not redirect to leave-message, hanging up [${callId}]`);
+      } else if (campaign.amdAction === 'leave-message') {
+        logger.warn(`DIALER AMD: campaign set to leave-message but no amdMessageAudio configured — hanging up [${callId}]`);
       }
 
-      // Hangup the carrier call
+      // Default machine handling: hang up.
       const { getAdapter } = require('./carrier-adapters');
       const adapter = getAdapter(carrier);
       if (adapter && callSid) await adapter.hangupCall(callSid);
-
-      // Update lead
-      const config = campaign.toObject();
       await this._callFailed(callId, activeCall.campaignId, activeCall.lead, activeCall.agentExt, 'machine', config);
 
     } else {
@@ -969,6 +978,48 @@ class DialerEngine {
   // Register dialer webhook routes (called from app.js)
   // These are PUBLIC — carrier needs to reach them
   // ============================================================
+  // Redirect an in-progress carrier call to a new TwiML/instruction URL. Reused
+  // by the bridge flow and leave-message. Returns true on success.
+  async _redirectCarrierToTwiml(carrier, carrierSid, url) {
+    const { getAdapter } = require('./carrier-adapters');
+    const adapter = getAdapter(carrier);
+    if (!adapter || !carrierSid) return false;
+    try {
+      if (carrier === 'telnyx') {
+        // Telnyx: play an audio URL directly on the call, then hang up.
+        await adapter._request('POST', `/v2/calls/${carrierSid}/actions/playback_start`, { audio_url: url, stop: 'all' });
+        return true;
+      }
+      // Twilio / SignalWire: redirect the live call to fetch new TwiML.
+      const params = new URLSearchParams();
+      params.append('Url', url);
+      params.append('Method', 'POST');
+      const path = carrier === 'twilio'
+        ? `/2010-04-01/Accounts/${adapter.credentials.accountSid}/Calls/${carrierSid}.json`
+        : `/api/laml/2010-04-01/Accounts/${adapter.credentials.projectId}/Calls/${carrierSid}.json`;
+      await adapter._request('POST', path, params.toString());
+      return true;
+    } catch (e) {
+      logger.warn(`DIALER: redirect (${carrier}) failed: ${e.message}`);
+      return false;
+    }
+  }
+
+  // Redirect an answering machine to the leave-message TwiML (plays the
+  // campaign's audio, then hangs up). For Telnyx, plays the audio directly.
+  async _leaveMachineMessage(callId, activeCall, campaign, carrierSid, carrier) {
+    const path = require('path');
+    const baseUrl = process.env.WEBHOOK_BASE_URL || `http://127.0.0.1:${process.env.API_PORT || 3000}`;
+    const file = path.basename(campaign.amdMessageAudio);
+    if (carrier === 'telnyx') {
+      // Telnyx plays a direct audio URL.
+      const audioUrl = `${baseUrl}/webhook/dialer/audio/${encodeURIComponent(file)}`;
+      return this._redirectCarrierToTwiml('telnyx', carrierSid, audioUrl);
+    }
+    const twimlUrl = `${baseUrl}/webhook/dialer/${activeCall.campaignId}/leave-message?callId=${encodeURIComponent(callId)}`;
+    return this._redirectCarrierToTwiml(carrier, carrierSid, twimlUrl);
+  }
+
   registerWebhookRoutes(app) {
     // Voice webhook — call answered
     app.post('/webhook/dialer/:campaignId/voice', verifyWebhook, (req, res) => {
@@ -989,6 +1040,41 @@ class DialerEngine {
         logger.error(`DIALER WEBHOOK status: ${err.message}`);
         if (!res.headersSent) res.status(200).send('OK');
       });
+    });
+
+    // Leave-message TwiML — the answering machine is redirected here.
+    app.post('/webhook/dialer/:campaignId/leave-message', verifyWebhook, async (req, res) => {
+      try {
+        const { Campaign } = require('../models');
+        const campaign = await Campaign.findById(req.params.campaignId).lean();
+        const path = require('path');
+        const baseUrl = process.env.WEBHOOK_BASE_URL || `http://127.0.0.1:${process.env.API_PORT || 3000}`;
+        if (!campaign || !campaign.amdMessageAudio) {
+          return res.type('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>');
+        }
+        const audioUrl = `${baseUrl}/webhook/dialer/audio/${encodeURIComponent(path.basename(campaign.amdMessageAudio))}`;
+        res.type('text/xml').send(
+          `<?xml version="1.0" encoding="UTF-8"?><Response><Play>${audioUrl}</Play><Hangup/></Response>`
+        );
+      } catch (e) {
+        logger.error(`DIALER leave-message TwiML: ${e.message}`);
+        res.type('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>');
+      }
+    });
+
+    // Serve a campaign audio file to the carrier (public GET — a URL the carrier
+    // fetches). Constrained to the audio directory (no traversal).
+    app.get('/webhook/dialer/audio/:filename', (req, res) => {
+      try {
+        const fs = require('fs');
+        const { safeResolve } = require('../utils/safe-path');
+        const audioDir = process.env.MOH_DIR || '/opt/shadowpbx/audio';
+        const filePath = safeResolve(audioDir, req.params.filename);
+        if (!fs.existsSync(filePath)) return res.status(404).send('Not found');
+        const ext = require('path').basename(filePath).split('.').pop().toLowerCase();
+        res.set('Content-Type', ext === 'mp3' ? 'audio/mpeg' : 'audio/wav');
+        fs.createReadStream(filePath).pipe(res);
+      } catch (e) { res.status(e.status || 500).send('Error'); }
     });
 
     // Bridge TwiML — Twilio/SignalWire redirect here to bridge to agent SIP
@@ -1295,12 +1381,13 @@ class DialerEngine {
 
     // Update CDR
     if (cdr) {
-      cdr.status = outcome === 'busy' ? 'busy' : (outcome === 'machine' ? 'completed' : 'failed');
+      const completedOutcomes = ['machine', 'machine-message'];
+      cdr.status = outcome === 'busy' ? 'busy' : (completedOutcomes.includes(outcome) ? 'completed' : 'failed');
       cdr.endTime = new Date();
       cdr.duration = Math.round((cdr.endTime - cdr.startTime) / 1000);
       cdr.hangupCause = outcome;
       cdr.hangupBy = 'system';
-      if (outcome === 'machine') cdr.amdResult = 'machine';
+      if (completedOutcomes.includes(outcome)) cdr.amdResult = 'machine';
       await cdr.save();
     }
 

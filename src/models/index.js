@@ -330,6 +330,7 @@ const campaignSchema = new mongoose.Schema({
   // AMD
   amd: { type: Boolean, default: false },
   amdAction: { type: String, enum: ['hangup', 'leave-message'], default: 'hangup' },
+  amdMessageAudio: { type: String, default: '' },   // audio file played to an answering machine when amdAction='leave-message'
 
   // Pre-connect IVR / whisper message (played to lead before bridging to agent)
   preConnect: {

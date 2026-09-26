@@ -48,7 +48,10 @@
       <div class="form-group" id="amd-carrier-wrap" style="display:none"><label class="form-label">Carrier</label>
         <select class="form-select" id="c-carrier"><option value="telnyx">Telnyx</option><option value="signalwire">SignalWire</option><option value="twilio">Twilio</option></select></div>
       <div class="form-group" id="amd-action-wrap" style="display:none"><label class="form-label">On machine</label>
-        <select class="form-select" id="c-amdaction"><option value="hangup">Hang up</option><option value="leave-message">Leave message</option></select></div>
+        <select class="form-select" id="c-amdaction" onchange="toggleAmdMessage()"><option value="hangup">Hang up</option><option value="leave-message">Leave message</option></select></div>
+      <div class="form-group" id="amd-message-wrap" style="display:none"><label class="form-label">Message to leave</label>
+        <select class="form-select" id="c-amdmessage"><option value="">— select audio —</option></select>
+        <span class="muted" style="font-size:11px">Played to the answering machine, then the call hangs up. Upload files in Settings → Audio library.</span></div>
     </div>
 
     <!-- Pre-connect IVR settings -->
@@ -220,7 +223,9 @@ function fmtSec(s){if(!s)return '0s';var m=Math.floor(s/60);return m>0?m+'m '+(s
 
 // ─── Form toggles ───
 if(document.getElementById('c-strategy'))document.getElementById('c-strategy').addEventListener('change',function(){document.getElementById('predictive-settings').style.display=this.value==='predictive'?'block':'none'});
-function toggleAmd(){var o=document.getElementById('c-amd').checked;document.getElementById('amd-carrier-wrap').style.display=o?'block':'none';document.getElementById('amd-action-wrap').style.display=o?'block':'none'}
+function toggleAmd(){var o=document.getElementById('c-amd').checked;document.getElementById('amd-carrier-wrap').style.display=o?'block':'none';document.getElementById('amd-action-wrap').style.display=o?'block':'none';toggleAmdMessage()}
+function toggleAmdMessage(){var show=document.getElementById('c-amd').checked&&document.getElementById('c-amdaction').value==='leave-message';var w=document.getElementById('amd-message-wrap');if(w)w.style.display=show?'block':'none';if(show)loadAmdAudio()}
+async function loadAmdAudio(){try{var d=await(await fetch(API+'/audio/list',{headers:H})).json();if(!d.success||!d.files)return;var cur=document.getElementById('c-amdmessage').value;document.getElementById('c-amdmessage').innerHTML='<option value="">— select audio —</option>'+d.files.map(function(f){var n=f.name||f;return '<option value="'+esc(n)+'"'+(n===cur?' selected':'')+'>'+esc(n)+'</option>'}).join('')}catch(e){}}
 function togglePreConnect(){document.getElementById('preconnect-settings').style.display=document.getElementById('c-preconnect').checked?'block':'none';if(document.getElementById('c-preconnect').checked)loadPcAudio()}
 function togglePcMode(){document.getElementById('pc-press1-opts').style.display=document.getElementById('c-pc-mode').value==='press1'?'block':'none'}
 async function loadPcAudio(){
@@ -264,6 +269,7 @@ function showEdit(c){
   document.getElementById('c-retries').value=c.retryAttempts;document.getElementById('c-retrydelay').value=c.retryDelay;
   document.getElementById('c-amd').checked=c.amd;document.getElementById('c-dnc').checked=c.dncEnabled!==false;
   document.getElementById('c-carrier').value=c.carrier||'telnyx';document.getElementById('c-amdaction').value=c.amdAction||'hangup';
+  window.__amdMessageAudio=c.amdMessageAudio||'';toggleAmdMessage();if(document.getElementById('c-amdmessage'))document.getElementById('c-amdmessage').value=c.amdMessageAudio||'';
   toggleAmd();document.getElementById('c-submit-btn').textContent='Update';
   document.getElementById('predictive-settings').style.display=c.strategy==='predictive'?'block':'none';
   if(c.strategy==='predictive'){document.getElementById('c-dialratio').value=c.dialRatio||1.2;document.getElementById('c-maxabandoned').value=c.maxAbandoned||3}
@@ -417,7 +423,7 @@ async function saveCampaign(e){
     agents:getAgents(),maxConcurrent:parseInt(document.getElementById('c-maxconcurrent').value)||10,
     ringTimeout:parseInt(document.getElementById('c-ringtimeout').value)||30,wrapUpTime:parseInt(document.getElementById('c-wrapup').value)||10,
     retryAttempts:parseInt(document.getElementById('c-retries').value)||3,retryDelay:parseInt(document.getElementById('c-retrydelay').value)||30,
-    amd:document.getElementById('c-amd').checked,amdAction:document.getElementById('c-amdaction').value,
+    amd:document.getElementById('c-amd').checked,amdAction:document.getElementById('c-amdaction').value,amdMessageAudio:(document.getElementById('c-amdmessage')||{}).value||'',
     carrier:document.getElementById('c-amd').checked?document.getElementById('c-carrier').value:'',
     dncEnabled:document.getElementById('c-dnc').checked};
   if(document.getElementById('c-preconnect').checked){
