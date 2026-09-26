@@ -408,10 +408,20 @@
   <div class="card">
     <div class="grid-3">
       <div><span class="muted" style="font-size:11px">Version</span><div style="font-size:14px;font-weight:500" id="sys-version">ShadowPBX v3.0</div></div>
-      <div><span class="muted" style="font-size:11px">Uptime</span><div style="font-size:14px;font-weight:500" id="sys-uptime">—</div></div>
+      <div><span class="muted" style="font-size:11px">App uptime</span><div style="font-size:14px;font-weight:500" id="sys-uptime">—</div></div>
       <div><span class="muted" style="font-size:11px">Server time</span><div style="font-size:14px;font-weight:500" id="sys-time">—</div></div>
     </div>
   </div>
+
+  <!-- ── Server resources ── -->
+  <div style="margin-top:20px">
+    <div class="sec-head"><span class="sec-title">Server resources</span>
+      <button class="btn btn-sm" onclick="loadSysInfo()">Refresh</button></div>
+    <div class="card" id="sys-resources">
+      <div class="muted">Loading…</div>
+    </div>
+  </div>
+
   <!-- ── Software updates ── -->
   <div style="margin-top:20px">
     <div class="sec-head">
@@ -1248,7 +1258,60 @@ async function loadSystem() {
     }
     document.getElementById('sys-time').textContent = new Date().toLocaleString();
   } catch (e) {}
+  loadSysInfo();
   checkUpdates(true);
+}
+
+function fmtBytes(b) {
+  if (b == null) return '—';
+  var u = ['B', 'KB', 'MB', 'GB', 'TB']; var i = 0; var n = b;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i >= 2 ? n.toFixed(1) : Math.round(n)) + ' ' + u[i];
+}
+function fmtDuration(sec) {
+  var d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+  return (d > 0 ? d + 'd ' : '') + h + 'h ' + m + 'm';
+}
+function bar(pct, warnAt) {
+  var color = pct >= (warnAt || 90) ? 'var(--red,#e5484d)' : (pct >= 70 ? 'var(--amber,#f5a623)' : 'var(--green,#30a46c)');
+  return '<div style="background:var(--bg-surface,#222);border-radius:4px;height:6px;overflow:hidden;margin-top:4px">' +
+    '<div style="width:' + Math.min(100, pct) + '%;height:100%;background:' + color + '"></div></div>';
+}
+function resRow(label, value, pct, sub) {
+  return '<div style="margin-bottom:14px">' +
+    '<div style="display:flex;justify-content:space-between;align-items:baseline">' +
+    '<span class="muted" style="font-size:11px">' + esc(label) + '</span>' +
+    '<span style="font-size:13px;font-weight:500">' + value + '</span></div>' +
+    (pct != null ? bar(pct) : '') +
+    (sub ? '<div class="muted" style="font-size:11px;margin-top:3px">' + esc(sub) + '</div>' : '') + '</div>';
+}
+
+async function loadSysInfo() {
+  var box = document.getElementById('sys-resources');
+  try {
+    var d = await (await fetch('/system/api/info', { headers: H, credentials: 'same-origin' })).json();
+    if (!d.success) { box.innerHTML = '<div class="muted">' + esc(d.error || 'unavailable') + '</div>'; return; }
+    var i = d.info, c = i.cpu, m = i.memory, dk = i.disk;
+    box.innerHTML =
+      '<div class="grid-2">' +
+        '<div>' +
+          resRow('CPU', c.cores + ' core' + (c.cores === 1 ? '' : 's') + (c.speedMHz ? ' @ ' + (c.speedMHz / 1000).toFixed(1) + ' GHz' : ''), c.loadPct,
+                 c.model + '  ·  load ' + c.load1.toFixed(2) + ', ' + c.load5.toFixed(2) + ', ' + c.load15.toFixed(2)) +
+          resRow('Memory', fmtBytes(m.usedBytes) + ' / ' + fmtBytes(m.totalBytes) + ' (' + m.usedPct + '%)', m.usedPct,
+                 'app process using ' + fmtBytes(m.processRssBytes)) +
+        '</div>' +
+        '<div>' +
+          (dk ? resRow('Disk (' + esc(dk.mount) + ')', fmtBytes(dk.usedBytes) + ' / ' + fmtBytes(dk.totalBytes) + ' (' + dk.usedPct + '%)', dk.usedPct,
+                 fmtBytes(dk.freeBytes) + ' free')
+              : resRow('Disk', 'unavailable')) +
+          resRow('Host', esc(i.platform) + ' ' + esc(i.arch), null,
+                 esc(i.hostname) + '  ·  up ' + fmtDuration(i.uptimeHost)) +
+          resRow('Runtime', 'Node ' + esc(i.node), null, 'app up ' + fmtDuration(i.uptimeProcess)) +
+        '</div>' +
+      '</div>';
+  } catch (e) {
+    box.innerHTML = '<div class="muted">' + esc(e.message) + '</div>';
+  }
 }
 
 // ═══════════════════ SIP DOMAINS ═══════════════════
