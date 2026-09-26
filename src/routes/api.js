@@ -961,6 +961,51 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   // ============================================================
   // CDR + Stats
   // ============================================================
+  // Build a Mongo filter that CONFINES CDR access by role, regardless of any
+  // client-supplied filter:
+  //   agent      -> only calls involving their own extension
+  //   supervisor -> only calls involving their assigned extensions
+  //   admin/svc   -> everything (returns null = no restriction)
+  // The extension may appear as `from`, `to`, or in the dialer's "phone -> ext"
+  // form in `to`, so we match all three.
+  async function cdrScopeFilter(req) {
+    const role = (req.apiCaller && req.apiCaller.role) || (req.session && req.session.role);
+    if (role === 'service' || role === 'admin') return null;
+
+    let exts = [];
+    if (role === 'supervisor') {
+      const me = await User.findOne({ username: req.session.user }, 'assignedExtensions extension').lean();
+      exts = (me && me.assignedExtensions) || [];
+      if (me && me.extension) exts.push(me.extension);
+    } else { // agent
+      const ext = (req.session && req.session.extension) || '';
+      if (ext) exts = [ext];
+    }
+    exts = [...new Set(exts.filter(Boolean).map(String))];
+    // No assigned extensions -> can see nothing (a filter that matches nothing).
+    if (exts.length === 0) return { _id: null };
+
+    const clauses = [];
+    for (const e of exts) {
+      const esc = e.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      clauses.push({ from: e }, { to: e },
+        { to: { $regex: '(-> ?|> | )' + esc + '$' } });
+    }
+    return { $or: clauses };
+  }
+
+  // Can this caller read/modify a specific CDR? Same scope as the list.
+  async function mayAccessCdr(req, cdr) {
+    const scope = await cdrScopeFilter(req);
+    if (scope === null) return true;                 // admin/service
+    if (!cdr) return false;
+    const exts = [];
+    // Re-derive the allowed extensions cheaply from the scope's clauses.
+    (scope.$or || []).forEach(c => { if (c.from) exts.push(String(c.from)); });
+    const inField = (v) => exts.some(e => String(v) === e || new RegExp('(-> ?|> | )' + e.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + '$').test(String(v || '')));
+    return inField(cdr.from) || inField(cdr.to);
+  }
+
   router.get('/cdr', async (req, res) => {
     try {
       const limit = parseInt(req.query.limit) || 50;
@@ -987,9 +1032,16 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
       if (req.query.direction) filter.direction = req.query.direction;
       if (req.query.from) filter.startTime = { $gte: new Date(req.query.from) };
       if (req.query.to) { filter.startTime = filter.startTime || {}; filter.startTime.$lte = new Date(req.query.to); }
+
+      // Confine by role. $and combines the caller's own filters with the scope,
+      // so a client query can narrow the result but never reach calls outside
+      // the extensions they are allowed to see.
+      const scope = await cdrScopeFilter(req);
+      const finalFilter = scope ? { $and: [filter, scope] } : filter;
+
       const [records, total] = await Promise.all([
-        CDR.find(filter).sort({ startTime: -1 }).skip((page - 1) * limit).limit(limit),
-        CDR.countDocuments(filter)
+        CDR.find(finalFilter).sort({ startTime: -1 }).skip((page - 1) * limit).limit(limit),
+        CDR.countDocuments(finalFilter)
       ]);
       res.json({ success: true, cdrs: records, pagination: { total, page, limit, pages: Math.ceil(total / limit) } });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
@@ -1162,11 +1214,15 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   // Add note to a call
   router.post('/cdr/:callId/notes', async (req, res) => {
     try {
-      const { text, author, authorRole } = req.body;
-      if (!text || !author) return res.status(400).json({ success: false, error: 'text, author required' });
+      const { text } = req.body;
+      if (!text) return res.status(400).json({ success: false, error: 'text required' });
       const cdr = await CDR.findOne({ callId: req.params.callId });
       if (!cdr) return res.status(404).json({ success: false, error: 'Call not found' });
-      cdr.notes.push({ text, author, authorRole: authorRole || '', createdAt: new Date() });
+      if (!(await mayAccessCdr(req, cdr))) return res.status(403).json({ success: false, error: 'Not your call' });
+      // Author identity comes from the session, not the body (no spoofing).
+      const author = (req.session && req.session.user) || (req.apiCaller && req.apiCaller.user) || 'api';
+      const authorRole = (req.session && req.session.role) || (req.apiCaller && req.apiCaller.role) || '';
+      cdr.notes.push({ text, author, authorRole, createdAt: new Date() });
       await cdr.save();
       res.json({ success: true, notes: cdr.notes });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
@@ -1177,6 +1233,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
     try {
       const cdr = await CDR.findOne({ callId: req.params.callId });
       if (!cdr) return res.status(404).json({ success: false, error: 'Call not found' });
+      if (!(await mayAccessCdr(req, cdr))) return res.status(403).json({ success: false, error: 'Not your call' });
       res.json({ success: true, notes: cdr.notes || [], disposition: cdr.disposition || '' });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
@@ -1187,6 +1244,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
       const { disposition } = req.body;
       const cdr = await CDR.findOne({ callId: req.params.callId });
       if (!cdr) return res.status(404).json({ success: false, error: 'Call not found' });
+      if (!(await mayAccessCdr(req, cdr))) return res.status(403).json({ success: false, error: 'Not your call' });
       cdr.disposition = disposition || '';
       await cdr.save();
 
@@ -1257,9 +1315,24 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   // Send a message (also used by Socket.IO fallback)
   router.post('/chat/send', async (req, res) => {
     try {
-      const { from, to, text, fromRole } = req.body;
-      if (!from || !to || !text) return res.status(400).json({ success: false, error: 'from, to, text required' });
-      const msg = await ChatMessage.create({ from, to, text, fromRole: fromRole || '', read: false });
+      const { to, text } = req.body;
+      if (!to || !text) return res.status(400).json({ success: false, error: 'to, text required' });
+
+      // Sender identity comes from the SESSION, never the request body — the
+      // Socket.IO path already does this, and the two must match. A client that
+      // supplies req.body.from/fromRole is ignored: you can only send AS yourself.
+      // (Machine/API-key callers may still name a sender, for integrations.)
+      let from, fromRole;
+      if (req.apiCaller && req.apiCaller.kind === 'service') {
+        from = req.body.from;
+        fromRole = req.body.fromRole || '';
+        if (!from) return res.status(400).json({ success: false, error: 'from required for API callers' });
+      } else {
+        from = req.session.user;
+        fromRole = req.session.role || '';
+      }
+
+      const msg = await ChatMessage.create({ from, to, text, fromRole, read: false });
       res.json({ success: true, message: msg });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
@@ -1267,6 +1340,13 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   // Mark messages as read
   router.post('/chat/read/:from/:to', async (req, res) => {
     try {
+      // You can only mark messages read that were sent TO you. Admins/supervisors
+      // and service callers may act for anyone; an agent is held to their own
+      // username as the recipient.
+      const role = (req.apiCaller && req.apiCaller.role) || (req.session && req.session.role);
+      if (role === 'agent' && String(req.params.to) !== String(req.session.user)) {
+        return res.status(403).json({ success: false, error: 'You can only mark your own messages read' });
+      }
       await ChatMessage.updateMany(
         { from: req.params.from, to: req.params.to, read: false },
         { $set: { read: true, readAt: new Date() } }

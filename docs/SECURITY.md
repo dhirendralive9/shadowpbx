@@ -83,9 +83,28 @@ restricted to its owner.
 
 Worth being explicit about what this does *not* yet do:
 
-- **Row-level CDR scoping.** Agents can list CDRs, not only their own calls.
-  Restricting that needs a query filter inside the CDR handler, not a route
-  policy. (Still open.)
+### CDR access is role-scoped (fixed)
+
+CDR access is now confined by role inside the handler, not left to whatever
+filter the client sends:
+
+- **agent** — only calls involving their own extension
+- **supervisor** — only calls involving their assigned extensions
+- **admin / service** — everything
+
+The scope is `$and`-combined with any client filter, so a client can narrow the
+result but can never widen it beyond the extensions they're allowed to see.
+`GET /cdr/:callId/notes`, `POST /cdr/:callId/notes` and
+`POST /cdr/:callId/disposition` apply the same per-record check, and the note
+author is taken from the session (not a spoofable `author` field).
+
+### Chat sender identity is server-derived (fixed)
+
+Both the Socket.IO and REST chat paths now derive the sender from the session,
+never the request body. `POST /api/chat/send` ignores `from`/`fromRole` for
+logged-in users (service/API callers may still name a sender for integrations),
+and `POST /api/chat/read/:from/:to` only lets an agent mark messages that were
+sent to them.
 
 ## Object-level authorization (call control)
 
