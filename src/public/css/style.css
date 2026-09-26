@@ -132,11 +132,22 @@ a:hover { text-decoration: underline; }
 .tab svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
 .tab-sep { width: 1px; background: var(--border); margin: 6px 4px; align-self: stretch; opacity: 0.5; }
 /* Sub-tab bar (used by Settings, Call flow, Network) */
-.sub-tabs { display: flex; gap: 0; border-bottom: 0.5px solid var(--border); margin-bottom: 20px; }
+.sub-tabs {
+  display: flex; gap: 0;
+  border-bottom: 0.5px solid var(--border);
+  margin-bottom: 20px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+/* keep the scrollbar unobtrusive on the sub-nav */
+.sub-tabs::-webkit-scrollbar { height: 3px; }
+.sub-tabs::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 .sub-tab {
   padding: 10px 18px; font-size: 13px; color: var(--text-tertiary);
   cursor: pointer; border-bottom: 2px solid transparent;
   text-decoration: none; transition: color 0.15s; white-space: nowrap;
+  flex-shrink: 0;
 }
 .sub-tab:hover { color: var(--text-secondary); text-decoration: none; }
 .sub-tab.active { color: var(--text-primary); border-bottom-color: var(--accent); }
