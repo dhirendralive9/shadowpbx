@@ -5,14 +5,33 @@ const express = require('express');
 const logger = require('./utils/logger');
 
 // ============================================================
-// Crash prevention — catch unhandled errors so the PBX stays up
+// Fatal-error handling
 // ============================================================
-process.on('uncaughtException', (err) => {
-  logger.error(`Uncaught exception: ${err.message}`);
-  logger.error(err.stack || '');
-});
+// An uncaught exception can leave the call manager, registrar or media state
+// half-updated. Continuing on corrupt state is not recovery — for a SIP server
+// it risks stuck calls, wrong routing and leaked resources. So we log, then
+// exit non-zero and let the process supervisor (systemd/Docker) restart from a
+// clean state. Set CRASH_ON_UNCAUGHT=false only if you have a specific reason
+// to keep a possibly-inconsistent process alive.
+const CRASH_ON_UNCAUGHT = String(process.env.CRASH_ON_UNCAUGHT || 'true').toLowerCase() !== 'false';
+let _shuttingDown = false;
+
+function fatal(kind, err) {
+  logger.error(`${kind}: ${(err && err.message) || err}`);
+  if (err && err.stack) logger.error(err.stack);
+  if (!CRASH_ON_UNCAUGHT || _shuttingDown) return;
+  _shuttingDown = true;
+  logger.error('Exiting so the supervisor can restart from a clean state (set CRASH_ON_UNCAUGHT=false to override).');
+  // Give the logger a moment to flush, then exit non-zero.
+  setTimeout(() => process.exit(1), 250);
+}
+
+process.on('uncaughtException', (err) => fatal('Uncaught exception', err));
+// A rejected promise is usually a stray async error, not corrupt core state, so
+// log it but don't take the process down.
 process.on('unhandledRejection', (reason) => {
   logger.error(`Unhandled rejection: ${reason && reason.message ? reason.message : reason}`);
+  if (reason && reason.stack) logger.error(reason.stack);
 });
 
 const Registrar = require('./services/registrar');
@@ -377,17 +396,23 @@ async function main() {
   app.use('/api', webrtcRoutes.createWebrtcApiRouter({ rtpengine, registrar, guestManager }));
   app.use('/api', webcallRoutes.createWebcallApiRouter({ guestManager }));
   // ─── Health & Monitoring Endpoint ───
-  app.get('/health', async (req, res) => {
+  // Public liveness — intentionally minimal. A public endpoint must not reveal
+  // operational detail (DB/RTPEngine state, trunk status, extension counts,
+  // active calls, campaigns, memory). Load balancers and uptime checks only
+  // need to know the process is up. Full diagnostics live behind auth below.
+  app.get('/health', (req, res) => {
+    res.json({ status: 'ok' });
+  });
+
+  // Detailed diagnostics — admin session only (Settings and monitoring use this).
+  async function healthDetails(req, res) {
     const uptime = process.uptime();
     const mem = process.memoryUsage();
     const checks = { sip: 'ok', rtpengine: 'unknown', mongodb: 'ok', trunks: [] };
 
-    // MongoDB
-    try {
-      if (mongoose.connection.readyState !== 1) checks.mongodb = 'disconnected';
-    } catch (e) { checks.mongodb = 'error'; }
+    try { if (mongoose.connection.readyState !== 1) checks.mongodb = 'disconnected'; }
+    catch (e) { checks.mongodb = 'error'; }
 
-    // RTPEngine ping
     try {
       if (rtpengine) {
         const rtpConf = { host: process.env.RTPENGINE_HOST || '127.0.0.1', port: parseInt(process.env.RTPENGINE_PORT) || 22222 };
@@ -396,33 +421,21 @@ async function main() {
       } else { checks.rtpengine = 'not_configured'; }
     } catch (e) { checks.rtpengine = 'error'; }
 
-    // Trunk status
-    try {
-      checks.trunks = await trunkManager.getStatus();
-    } catch (e) { checks.trunks = []; }
+    try { checks.trunks = await trunkManager.getStatus(); } catch (e) { checks.trunks = []; }
 
-    // Extension count
     let extOnline = 0, extTotal = 0;
     try {
       const { Extension } = require('./models');
       const exts = await Extension.find({}, 'extension').lean();
       extTotal = exts.length;
-      for (const e of exts) {
-        if (await registrar.isRegistered(e.extension)) extOnline++;
-      }
+      for (const e of exts) { if (await registrar.isRegistered(e.extension)) extOnline++; }
     } catch (e) {}
 
-    // Active calls
     const activeCalls = callHandler.activeCalls ? callHandler.activeCalls.size : 0;
-
-    // Dialer campaigns
     const runningCampaigns = dialerEngine ? dialerEngine.getRunningCampaigns() : [];
     let dialerActiveCalls = 0;
-    if (dialerEngine) {
-      for (const [, c] of dialerEngine.activeCalls) dialerActiveCalls++;
-    }
+    if (dialerEngine) { for (const [, c] of dialerEngine.activeCalls) dialerActiveCalls++; }
 
-    // WebRTC bridge (Phase 1)
     try { checks.webrtc = rtpHelper.webrtcSummary(); } catch (e) { checks.webrtc = 'error'; }
     try { checks.webcall = guestManager.summary(); } catch (e) { checks.webcall = 'error'; }
     try { checks.outboundGuard = outboundGuard.summary(); } catch (e) { checks.outboundGuard = 'error'; }
@@ -450,7 +463,11 @@ async function main() {
         campaigns: runningCampaigns.map(c => ({ name: c.name, strategy: c.strategy, agents: c.agentCounts }))
       }
     });
-  });
+  }
+  {
+    const _web = require('./routes/web');
+    app.get('/health/details', _web.authMiddleware, _web.adminOnly, healthDetails);
+  }
 
   // WebRTC admin page + session-authenticated status/self-test
   app.use('/', webrtcRoutes.createWebrtcWebRouter({ rtpengine, registrar, guestManager }));
@@ -855,14 +872,8 @@ async function main() {
   };
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('uncaughtException', (err) => {
-    logger.error(`Uncaught exception: ${err.message}\n${err.stack}`);
-    // Don't exit on uncaught exceptions — log and continue
-    // Critical errors will be caught by systemd and restarted
-  });
-  process.on('unhandledRejection', (reason) => {
-    logger.error(`Unhandled rejection: ${reason}`);
-  });
+  // Note: uncaughtException / unhandledRejection are handled once at the top of
+  // this file (see fatal()), so they are not re-registered here.
 
   logger.info('===========================================');
   logger.info('  ShadowPBX v3.0 Ready!');
