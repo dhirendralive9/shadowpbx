@@ -1,6 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 const { safeResolve } = require('../utils/safe-path');
+const { downloadRecording } = require('../utils/safe-download');
+const { verifyWebhook } = require('../utils/webhook-verify');
 const https = require('https');
 const http = require('http');
 const { v4: uuidv4 } = require('uuid');
@@ -519,21 +521,21 @@ class AppointmentHandler {
   // Register webhook routes (PUBLIC — no auth)
   // ============================================================
   registerWebhookRoutes(app) {
-    app.post('/webhook/appointment/:number/voice', (req, res) => {
+    app.post('/webhook/appointment/:number/voice', verifyWebhook, (req, res) => {
       this.handleVoiceWebhook(req, res, req.params.number).catch(err => {
         logger.error(`APPT WEBHOOK voice: ${err.message}`);
         res.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?><Response><Say>An error occurred.</Say><Hangup/></Response>`);
       });
     });
 
-    app.post('/webhook/appointment/:number/action', (req, res) => {
+    app.post('/webhook/appointment/:number/action', verifyWebhook, (req, res) => {
       this.handleActionWebhook(req, res).catch(err => {
         logger.error(`APPT WEBHOOK action: ${err.message}`);
         res.type('text/xml').send(`<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>`);
       });
     });
 
-    app.post('/webhook/appointment/:number/recording', (req, res) => {
+    app.post('/webhook/appointment/:number/recording', verifyWebhook, (req, res) => {
       this.handleRecordingWebhook(req, res, req.params.number).catch(err => {
         logger.error(`APPT WEBHOOK recording: ${err.message}`);
         if (!res.headersSent) res.status(200).send('OK');
@@ -560,48 +562,35 @@ class AppointmentHandler {
   }
 
   _getBaseUrl(req) {
+    // Prefer the configured canonical URL. Callback URLs embedded in TwiML must
+    // not be derived from request headers an untrusted caller can set
+    // (x-forwarded-*, Host), or an attacker could point the carrier's follow-up
+    // callbacks at a URL of their choosing. Fall back to headers only when no
+    // WEBHOOK_BASE_URL is set, and warn — it should always be set in production.
     if (process.env.WEBHOOK_BASE_URL) return process.env.WEBHOOK_BASE_URL.replace(/\/$/, '');
+    if (!this._warnedNoBaseUrl) {
+      this._warnedNoBaseUrl = true;
+      logger.warn('WEBHOOK_BASE_URL is not set — callback URLs are being built from request headers, which an untrusted caller can spoof. Set WEBHOOK_BASE_URL=https://your-pbx-domain in .env.');
+    }
     const proto = req.headers['x-forwarded-proto'] || req.protocol || 'https';
     const host = req.headers['x-forwarded-host'] || req.headers.host;
     return `${proto}://${host}`;
   }
 
-  _downloadFile(url, destPath) {
-    return new Promise((resolve, reject) => {
-      const parsedUrl = new URL(url);
-      if (parsedUrl.hostname.includes('twilio')) {
+  // SSRF-safe recording download. The URL comes from a public webhook, so it is
+  // validated (https only, known carrier host, no private/link-local IPs, no
+  // arbitrary redirects) before any request is made — see utils/safe-download.
+  async _downloadFile(url, destPath) {
+    let auth = null;
+    try {
+      const host = new URL(url).hostname.toLowerCase();
+      if (host.endsWith('twilio.com')) {
         const sid = process.env.TWILIO_ACCOUNT_SID || '';
         const token = process.env.TWILIO_AUTH_TOKEN || '';
-        if (sid && token) { parsedUrl.username = sid; parsedUrl.password = token; }
+        if (sid && token) auth = { username: sid, password: token };
       }
-
-      const proto = parsedUrl.protocol === 'https:' ? https : http;
-      const file = fs.createWriteStream(destPath);
-      const options = {
-        hostname: parsedUrl.hostname, port: parsedUrl.port,
-        path: parsedUrl.pathname + parsedUrl.search, headers: {}
-      };
-      if (parsedUrl.username && parsedUrl.password) {
-        options.headers['Authorization'] = 'Basic ' + Buffer.from(`${parsedUrl.username}:${parsedUrl.password}`).toString('base64');
-      }
-
-      const request = proto.get(options, (response) => {
-        if (response.statusCode === 301 || response.statusCode === 302) {
-          file.close();
-          try { fs.unlinkSync(destPath); } catch (e) {}
-          return this._downloadFile(response.headers.location, destPath).then(resolve).catch(reject);
-        }
-        if (response.statusCode !== 200) {
-          file.close();
-          try { fs.unlinkSync(destPath); } catch (e) {}
-          return reject(new Error(`Download failed: HTTP ${response.statusCode}`));
-        }
-        response.pipe(file);
-        file.on('finish', () => file.close(resolve));
-      });
-      request.on('error', (err) => { file.close(); try { fs.unlinkSync(destPath); } catch (e) {} reject(err); });
-      request.setTimeout(30000, () => { request.destroy(); reject(new Error('Download timeout')); });
-    });
+    } catch (e) { /* validateUrl will reject a bad URL */ }
+    return downloadRecording(url, destPath, { auth });
   }
 
   _sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }

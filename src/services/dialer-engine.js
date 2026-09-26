@@ -1,5 +1,6 @@
 const { v4: uuidv4 } = require('uuid');
 const logger = require('../utils/logger');
+const { verifyWebhook } = require('../utils/webhook-verify');
 
 // ============================================================
 // Dialer Engine — Phase 1: Foundation
@@ -691,6 +692,16 @@ class DialerEngine {
       return;
     }
 
+    // Idempotency: carriers retry and duplicate webhooks, so two AMD callbacks
+    // can race to bridge the same call. The state machine allows the bridge
+    // transition exactly once. This check-and-set is atomic under Node's single
+    // thread, so only the first callback proceeds to bridge; later duplicates
+    // (or a status race) see 'bridging'/'connected'/'ended' and stop here.
+    if (['bridging', 'connected', 'ended'].includes(activeCall.status)) {
+      logger.info(`DIALER AMD: duplicate/late callback for ${callId} (status=${activeCall.status}) — ignored`);
+      return;
+    }
+
     const { Campaign, CDR: CDRModel } = require('../models');
     const campaign = await Campaign.findById(activeCall.campaignId);
     if (!campaign) return;
@@ -699,10 +710,10 @@ class DialerEngine {
     await CDRModel.findOneAndUpdate({ callId }, { amdResult });
 
     if (amdResult === 'human') {
-      // HUMAN — bridge to agent
+      // HUMAN — bridge to agent. Claim the bridge atomically (see above).
+      activeCall.status = 'bridging';
       logger.info(`DIALER AMD: human detected — bridging ${activeCall.lead.phone} to agent ${activeCall.agentExt} [${callId}]`);
 
-      activeCall.status = 'answered';
       this._incrementStat(activeCall.campaignId, 'answered');
 
       const cdr = await CDRModel.findOne({ callId });
@@ -744,9 +755,9 @@ class DialerEngine {
       await this._callFailed(callId, activeCall.campaignId, activeCall.lead, activeCall.agentExt, 'machine', config);
 
     } else {
-      // UNKNOWN — treat as human (conservative approach)
+      // UNKNOWN — treat as human (conservative). Claim the bridge atomically.
+      activeCall.status = 'bridging';
       logger.info(`DIALER AMD: unknown result — treating as human [${callId}]`);
-      activeCall.status = 'answered';
       this._incrementStat(activeCall.campaignId, 'answered');
 
       const cdr = await CDRModel.findOne({ callId });
@@ -960,12 +971,12 @@ class DialerEngine {
   // ============================================================
   registerWebhookRoutes(app) {
     // Voice webhook — call answered
-    app.post('/webhook/dialer/:campaignId/voice', (req, res) => {
+    app.post('/webhook/dialer/:campaignId/voice', verifyWebhook, (req, res) => {
       this.handleVoiceWebhook(req, res);
     });
 
     // AMD result webhook
-    app.post('/webhook/dialer/:campaignId/amd', (req, res) => {
+    app.post('/webhook/dialer/:campaignId/amd', verifyWebhook, (req, res) => {
       this.handleAmdWebhook(req, res).catch(err => {
         logger.error(`DIALER WEBHOOK amd: ${err.message}`);
         if (!res.headersSent) res.status(200).send('OK');
@@ -973,7 +984,7 @@ class DialerEngine {
     });
 
     // Call status webhook
-    app.post('/webhook/dialer/:campaignId/status', (req, res) => {
+    app.post('/webhook/dialer/:campaignId/status', verifyWebhook, (req, res) => {
       this.handleStatusWebhook(req, res).catch(err => {
         logger.error(`DIALER WEBHOOK status: ${err.message}`);
         if (!res.headersSent) res.status(200).send('OK');
@@ -981,7 +992,7 @@ class DialerEngine {
     });
 
     // Bridge TwiML — Twilio/SignalWire redirect here to bridge to agent SIP
-    app.post('/webhook/dialer/:campaignId/bridge', (req, res) => {
+    app.post('/webhook/dialer/:campaignId/bridge', verifyWebhook, (req, res) => {
       const agentExt = req.query.agent || '';
       const externalIp = process.env.EXTERNAL_IP || '127.0.0.1';
       const sipPort = process.env.SIP_PORT || 5060;
