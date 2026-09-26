@@ -10,10 +10,14 @@
 
 <!-- ═══════════════════ ADD / EDIT FORM ═══════════════════ -->
 <div id="add-form" style="display:none;margin-bottom:16px" class="card">
-  <form onsubmit="saveUser(event)">
+  <form onsubmit="saveUser(event)" autocomplete="off">
     <input type="hidden" id="u-edit-id" value="">
+    <!-- Decoys: Chrome autofills the first username/password pair it finds, so
+         these hidden fields absorb it and keep the real inputs clean. -->
+    <input type="text" id="u-decoy-user" style="position:absolute;opacity:0;height:0;width:0;pointer-events:none" tabindex="-1" autocomplete="username" aria-hidden="true">
+    <input type="password" id="u-decoy-pass" style="position:absolute;opacity:0;height:0;width:0;pointer-events:none" tabindex="-1" autocomplete="new-password" aria-hidden="true">
     <div class="grid-3" style="margin-bottom:0">
-      <div class="form-group"><label class="form-label">Username</label><input class="form-input" id="u-username" placeholder="john" required></div>
+      <div class="form-group"><label class="form-label">Username</label><input class="form-input" id="u-username" placeholder="john" required autocomplete="off"></div>
       <div class="form-group"><label class="form-label">Role</label>
         <select class="form-select" id="u-role" onchange="toggleRoleFields()">
           <option value="agent">Agent</option>
@@ -27,7 +31,7 @@
       </div>
     </div>
     <div class="grid-3" style="margin-bottom:0">
-      <div class="form-group"><label class="form-label">Display name</label><input class="form-input" id="u-name" placeholder="John Smith"></div>
+      <div class="form-group"><label class="form-label">Display name</label><input class="form-input" id="u-name" placeholder="John Smith" autocomplete="off"></div>
       <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="u-email" type="email" placeholder="john@example.com"></div>
       <div class="form-group"></div>
     </div>
