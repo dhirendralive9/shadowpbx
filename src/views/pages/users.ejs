@@ -23,6 +23,7 @@
       </div>
       <div class="form-group"><label class="form-label">Linked extension</label>
         <select class="form-select" id="u-ext"><option value="">— none —</option></select>
+        <span id="u-agent-note" class="muted" style="display:none;font-size:11px">Agents are the login for an extension — create and manage them from the <a href="/extensions">Extensions</a> page. Here you can only reset the password or disable the account.</span>
       </div>
     </div>
     <div class="grid-3" style="margin-bottom:0">
@@ -340,6 +341,7 @@ function collectCheckboxes(containerId) {
 function toggleRoleFields() {
   var role = document.getElementById('u-role').value;
   document.getElementById('supervisor-fields').style.display = role === 'supervisor' ? 'block' : 'none';
+  applyAgentLock(role);
   if (role === 'supervisor') {
     buildCheckboxes('u-assign-ext', allExtensions, []);
     buildCheckboxes('u-assign-rg', allRingGroups, []);
@@ -348,16 +350,31 @@ function toggleRoleFields() {
   }
 }
 
+// Agents are the login for an extension and are created/managed from the
+// Extensions page — here we only lock their extension so it can't be reassigned.
+function applyAgentLock(role) {
+  var editing = !!document.getElementById('u-edit-id').value;
+  var extSel = document.getElementById('u-ext');
+  var note = document.getElementById('u-agent-note');
+  var isAgent = role === 'agent';
+  // When editing an existing agent, the extension is fixed. When creating, we
+  // steer the admin to the Extensions page instead of making an agent here.
+  extSel.disabled = isAgent;
+  if (note) note.style.display = isAgent ? 'block' : 'none';
+}
+
 // ─── Form ───
 function showAdd() {
   document.getElementById('u-edit-id').value = '';
   document.getElementById('u-username').value = '';
   document.getElementById('u-username').disabled = false;
   document.getElementById('u-role').value = 'agent';
+  document.getElementById('u-role').disabled = false;
   document.getElementById('u-name').value = '';
   document.getElementById('u-email').value = '';
   populateExtDropdown();               // available extensions only
   document.getElementById('u-ext').value = '';
+  applyAgentLock('agent');
   document.getElementById('u-submit-btn').textContent = 'Create';
   toggleRoleFields();
   document.getElementById('add-form').style.display = 'block';
@@ -373,6 +390,9 @@ function showEdit(u) {
   populateExtDropdown(u.extension || '');   // keep the user's own linked extension in the list
   document.getElementById('u-ext').value = u.extension || '';
   document.getElementById('u-submit-btn').textContent = 'Update';
+  applyAgentLock(u.role);
+  // The role of an existing agent shouldn't be flipped here either.
+  document.getElementById('u-role').disabled = (u.role === 'agent');
 
   if (u.role === 'supervisor') {
     document.getElementById('supervisor-fields').style.display = 'block';

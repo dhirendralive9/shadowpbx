@@ -52,3 +52,29 @@ the list so you can keep it.
 
 Attach/detach refuse to act on a privileged or externally-managed account and
 return a 409 with the linked username.
+
+
+## Extension–user integrity rules (v3.0)
+
+The link between an extension and a login is now enforced on the server, not
+just in the dropdown:
+
+- **A user's linked extension must exist.** An invalid extension is rejected.
+- **An extension can belong to at most one login.** Assigning one that another
+  user already has is rejected with that user's name.
+- **An agent's extension is fixed.** It is the identity of the login created for
+  that extension, so it can't be reassigned from Settings → Users — only the
+  password (reset) and enabled/disabled state may change there. Manage the
+  agent from the Extensions page.
+- The Users page reflects this: the extension field is locked (and the role
+  frozen) when editing an agent, and the dropdown lists only unattached
+  extensions.
+
+### Cleaning up existing bad links
+
+Validation prevents new double-assignments but does not undo ones made before
+this fix. If an admin/supervisor account is wrongly linked to an extension that
+also has its own agent login, edit that admin/supervisor in Settings → Users and
+clear its *Linked extension* (set it to "— none —"). Admin and supervisor
+accounts generally should not have a linked extension unless that person also
+takes calls on it.

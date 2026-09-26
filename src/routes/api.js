@@ -1021,12 +1021,29 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
 
+  // Validate a user's linked extension: it must exist, and must not already be
+  // taken by a different user. Empty is allowed (no linked extension).
+  // Returns an error string, or null if OK.
+  async function validateUserExtension(extension, excludeUsername) {
+    if (extension === undefined || extension === null || extension === '') return null;
+    const ext = String(extension).trim();
+    const exists = await Extension.findOne({ extension: ext });
+    if (!exists) return `Extension ${ext} does not exist`;
+    const owner = await User.findOne({ extension: ext });
+    if (owner && owner.username !== excludeUsername) {
+      return `Extension ${ext} is already linked to user "${owner.username}". Detach it there first.`;
+    }
+    return null;
+  }
+
   router.post('/users', async (req, res) => {
     try {
       const { username, password, role, name, email, extension, assignedExtensions, assignedRingGroups, assignedQueues, assignedIVRs } = req.body;
       if (!username || !password || !role) return res.status(400).json({ success: false, error: 'username, password, role required' });
       if (!['admin', 'supervisor', 'agent'].includes(role)) return res.status(400).json({ success: false, error: 'role must be admin, supervisor, or agent' });
       if (await User.findOne({ username })) return res.status(409).json({ success: false, error: 'Username already exists' });
+      const extErr = await validateUserExtension(extension, null);
+      if (extErr) return res.status(409).json({ success: false, error: extErr });
       const hash = await bcrypt.hash(password, 10);
       const user = await User.create({
         username, password: hash, role, name, email, extension,
@@ -1043,6 +1060,12 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   router.put('/users/:id', async (req, res) => {
     try {
       const identifier = req.params.id;
+
+      // Look the user up first so we can apply role-aware rules.
+      let target = await User.findOne({ username: identifier });
+      if (!target && identifier.match(/^[0-9a-f]{24}$/i)) target = await User.findById(identifier);
+      if (!target) return res.status(404).json({ success: false, error: 'User not found' });
+
       const updates = {};
       ['name', 'email', 'role', 'extension', 'enabled', 'assignedExtensions', 'assignedRingGroups', 'assignedQueues', 'assignedIVRs'].forEach(k => {
         if (req.body[k] !== undefined) updates[k] = req.body[k];
@@ -1050,10 +1073,27 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
       if (req.body.password) {
         updates.password = await bcrypt.hash(req.body.password, 10);
       }
+
       // Protect admin from being disabled or role-changed
       if (identifier === 'admin' && (updates.enabled === false || (updates.role && updates.role !== 'admin'))) {
         return res.status(403).json({ success: false, error: 'Cannot disable or change role of the admin account' });
       }
+
+      // An agent's linked extension is fixed — it is the identity of the login
+      // created for that extension. Reassigning it would silently break the
+      // extension<->login pairing. Manage agent web access from the Extensions
+      // page instead. (Only password and enabled/disabled may change here.)
+      const isAgent = (updates.role || target.role) === 'agent';
+      if (isAgent && updates.extension !== undefined && String(updates.extension) !== String(target.extension || '')) {
+        return res.status(403).json({ success: false, error: "An agent's extension can't be changed here. Manage it from the extension's settings on the Extensions page." });
+      }
+
+      // Validate any extension change (exists + not taken by someone else)
+      if (updates.extension !== undefined) {
+        const extErr = await validateUserExtension(updates.extension, target.username);
+        if (extErr) return res.status(409).json({ success: false, error: extErr });
+      }
+
       // Try by username first, then by _id
       let user = await User.findOneAndUpdate({ username: identifier }, updates, { new: true, select: '-password' });
       if (!user && identifier.match(/^[0-9a-f]{24}$/i)) {
