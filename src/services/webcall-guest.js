@@ -254,7 +254,22 @@ class WebCallGuestManager {
   /** Origin/Referer check against the widget's allowedDomains. */
   originAllowed(widget, origin) {
     const list = (widget.allowedDomains || []).map(d => String(d).trim().toLowerCase()).filter(Boolean);
-    if (list.length === 0) return true;          // not restricted yet (Phase 5/7 tighten this)
+    if (list.length === 0) {
+      // A widget with no allowedDomains is globally embeddable — anyone can put
+      // it on any site and consume a real telephony line. That is a deliberate
+      // product choice, but a risky default for a PBX, so:
+      //   WEBCALL_REQUIRE_ALLOWED_DOMAINS=true  -> refuse widgets with no domains
+      // Otherwise we allow it but warn once per widget so it is not silent.
+      if (String(process.env.WEBCALL_REQUIRE_ALLOWED_DOMAINS || '').toLowerCase() === 'true') {
+        return false;
+      }
+      if (!this._warnedOpenWidgets) this._warnedOpenWidgets = new Set();
+      if (!this._warnedOpenWidgets.has(widget.widgetId)) {
+        this._warnedOpenWidgets.add(widget.widgetId);
+        logger.warn(`WEBCALL: widget ${widget.widgetId} has NO allowedDomains — it can be embedded from ANY site. Set allowed domains, or WEBCALL_REQUIRE_ALLOWED_DOMAINS=true to forbid open widgets.`);
+      }
+      return true;
+    }
     if (!origin) return false;
     let host;
     try { host = new URL(origin).hostname.toLowerCase(); } catch (e) { host = String(origin).toLowerCase(); }

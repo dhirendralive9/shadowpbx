@@ -10,6 +10,7 @@ const TURNSTILE_SITE_KEY = process.env.TURNSTILE_SITE_KEY || '';
 // Session store (in-memory, clears on restart)
 const sessions = new Map();
 const SESSION_TTL = 24 * 60 * 60 * 1000; // 24 hours
+const REVALIDATE_MS = (parseInt(process.env.SESSION_REVALIDATE_SECONDS) || 30) * 1000; // re-check user state at most this often
 
 // ── Login rate limiting ──
 // Always on, independent of Turnstile (which is optional): a deployment
@@ -56,7 +57,7 @@ function generateToken() {
 }
 
 // ─── Auth middleware: must be logged in ───
-function authMiddleware(req, res, next) {
+async function authMiddleware(req, res, next) {
   const token = req.cookies && req.cookies.sid;
   if (!token || !sessions.has(token)) return res.redirect('/login');
   const session = sessions.get(token);
@@ -64,6 +65,24 @@ function authMiddleware(req, res, next) {
     sessions.delete(token);
     return res.redirect('/login');
   }
+
+  // Revalidate against the user's current state so an admin's change takes
+  // effect immediately, not at session expiry. Cached for REVALIDATE_MS to
+  // avoid a DB read on every request; a securityStamp mismatch (bumped on
+  // disable / role / extension / password change) invalidates the session.
+  const now = Date.now();
+  if (!session._checkedAt || now - session._checkedAt > REVALIDATE_MS) {
+    try {
+      const user = await User.findOne({ username: session.user }, 'enabled role extension securityStamp').lean();
+      if (!user || user.enabled === false) { sessions.delete(token); return res.redirect('/login'); }
+      if ((session.securityStamp || '') !== (user.securityStamp || '')) { sessions.delete(token); return res.redirect('/login'); }
+      // Pick up a benign role/extension change without forcing re-login.
+      session.role = user.role;
+      session.extension = user.extension || '';
+      session._checkedAt = now;
+    } catch (e) { /* DB hiccup: fall through on the cached session rather than lock everyone out */ }
+  }
+
   req.session = session;
   // A bootstrap admin (or any account flagged) must set a new password before
   // using the app. Allow only the change-password page and logout until done.
@@ -206,6 +225,8 @@ function createWebRouter(apiKey) {
         extension: user.extension || '',
         userId: user._id.toString(),
         mustChangePassword: !!user.mustChangePassword,
+        securityStamp: user.securityStamp || '',
+        _checkedAt: Date.now(),
         created: Date.now()
       });
       res.cookie('sid', sid, cookieOpts(req));
@@ -266,10 +287,13 @@ function createWebRouter(apiKey) {
 
       user.password = await bcrypt.hash(newPassword, 10);
       user.mustChangePassword = false;
+      user.securityStamp = crypto.randomBytes(16).toString('hex');  // invalidate OTHER sessions
       await user.save();
 
-      // Clear the flag on the live session so the app becomes usable.
+      // Keep THIS session valid (it just set the new password) and clear the flag.
       req.session.mustChangePassword = false;
+      req.session.securityStamp = user.securityStamp;
+      req.session._checkedAt = Date.now();
       logger.info(`GUI: ${req.session.user} changed their password`);
       res.redirect('/');
     } catch (e) {

@@ -1,6 +1,17 @@
 const { Trunk } = require('../models');
 const logger = require('../utils/logger');
 const dns = require('dns').promises;
+const net = require('net');
+
+// Does an IPv4 address fall within a CIDR block (e.g. 203.0.113.0/24)?
+function ipv4InCidr(ip, cidr) {
+  const [range, bitsStr] = cidr.split('/');
+  const bits = parseInt(bitsStr, 10);
+  if (!net.isIPv4(ip) || !net.isIPv4(range) || isNaN(bits) || bits < 0 || bits > 32) return false;
+  const toInt = (a) => a.split('.').reduce((n, o) => (n << 8) + (parseInt(o, 10) & 255), 0) >>> 0;
+  const mask = bits === 0 ? 0 : (0xFFFFFFFF << (32 - bits)) >>> 0;
+  return (toInt(ip) & mask) === (toInt(range) & mask);
+}
 
 class TrunkManager {
   constructor(srf) {
@@ -10,7 +21,8 @@ class TrunkManager {
     // Source IPs that count as "genuinely this trunk". Resolved from each
     // trunk host, plus any explicit TRUNK_TRUSTED_IPS. Trust is decided on
     // this, NOT on From/User-Agent headers, which any endpoint can forge.
-    this.trustedIps = new Map();        // ip -> trunkName
+    this.trustedIps = new Map();        // exact ip -> trunkName
+    this.trustedCidrs = [];             // [{ cidr, name }] for subnet matches
     this._envTrusted = (process.env.TRUNK_TRUSTED_IPS || '')
       .split(',').map(s => s.trim()).filter(Boolean);
   }
@@ -34,14 +46,22 @@ class TrunkManager {
   // sends from IPs that don't match the host's DNS.
   async _resolveTrustedIps() {
     const next = new Map();
-    for (const ip of this._envTrusted) next.set(ip, 'env');
+    const cidrs = [];
+    const add = (value, name) => {
+      const v = String(value).trim();
+      if (!v) return;
+      if (v.includes('/')) cidrs.push({ cidr: v, name });   // subnet
+      else next.set(v, name);                               // exact ip
+    };
+
+    for (const v of this._envTrusted) add(v, 'env');
     for (const [name, trunk] of this.trunkEndpoints) {
       const host = trunk.host;
       if (!host) continue;
       // A host that is already an IP literal is trusted as-is.
       if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) { next.set(host, name); continue; }
-      // Also allow per-trunk trustedIps in the DB (array of IPs/CIDRs).
-      if (Array.isArray(trunk.trustedIps)) for (const ip of trunk.trustedIps) if (ip) next.set(String(ip).trim(), name);
+      // Per-trunk trustedIps in the DB (array of IPs/CIDRs).
+      if (Array.isArray(trunk.trustedIps)) for (const v of trunk.trustedIps) add(v, name);
       try {
         const addrs = await dns.resolve4(host);
         for (const ip of addrs) next.set(ip, name);
@@ -50,14 +70,20 @@ class TrunkManager {
       }
     }
     this.trustedIps = next;
-    logger.debug(`TrunkManager: trusted source IPs: ${[...next.keys()].join(', ') || '(none)'}`);
+    this.trustedCidrs = cidrs;
+    logger.debug(`TrunkManager: trusted IPs: ${[...next.keys()].join(', ') || '(none)'}${cidrs.length ? '; CIDRs: ' + cidrs.map(c => c.cidr).join(', ') : ''}`);
   }
 
-  // Is this source IP a known trunk endpoint?
+  // Is this source IP a known trunk endpoint? Exact match first, then CIDR.
   trunkForSourceIp(ip) {
     if (!ip) return null;
     const bare = ip.replace(/^::ffff:/, '');
-    return this.trustedIps.get(bare) || this.trustedIps.get(ip) || null;
+    const exact = this.trustedIps.get(bare) || this.trustedIps.get(ip);
+    if (exact) return exact;
+    for (const { cidr, name } of this.trustedCidrs) {
+      if (ipv4InCidr(bare, cidr)) return name;
+    }
+    return null;
   }
 
   async registerTrunk(trunk) {

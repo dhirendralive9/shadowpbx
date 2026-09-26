@@ -128,6 +128,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
         existing.password = hash;
         existing.name = ext.name;
         existing.enabled = true;
+        existing.securityStamp = require('crypto').randomBytes(16).toString('hex');  // invalidate active sessions
         await existing.save();
         logger.info(`Web login password reset for extension ${ext.extension} (user ${existing.username})`);
         return res.json({ success: true, attached: true, reset: true, user: { username: existing.username, role: 'agent' } });
@@ -1178,6 +1179,18 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
       if (updates.extension !== undefined) {
         const extErr = await validateUserExtension(updates.extension, target.username);
         if (extErr) return res.status(409).json({ success: false, error: extErr });
+      }
+
+      // If a security-relevant field changed, roll the securityStamp so any
+      // sessions already issued for this user stop working (a demoted agent
+      // must not keep admin rights until their session expires).
+      const securityFieldChanged =
+        (updates.role !== undefined && updates.role !== target.role) ||
+        (updates.extension !== undefined && String(updates.extension) !== String(target.extension || '')) ||
+        (updates.enabled === false) ||
+        (updates.password !== undefined);
+      if (securityFieldChanged) {
+        updates.securityStamp = require('crypto').randomBytes(16).toString('hex');
       }
 
       // Try by username first, then by _id

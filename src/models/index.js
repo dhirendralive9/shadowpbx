@@ -213,6 +213,7 @@ const userSchema = new mongoose.Schema({
   assignedIVRs: [{ type: String }],                  // supervisor: IVRs they can view
   enabled: { type: Boolean, default: true },
   mustChangePassword: { type: Boolean, default: false },  // force a change on next login (bootstrap admin)
+  securityStamp: { type: String, default: '' },           // bumped on role/extension/password/enabled change — invalidates existing sessions
   lastLogin: Date,
   createdAt: { type: Date, default: Date.now }
 });

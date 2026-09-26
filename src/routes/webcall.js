@@ -25,8 +25,10 @@ const { clientConfig } = require('./webrtc');
 // ============================================================
 
 function publicIp(req) {
-  const fwd = req.get('x-forwarded-for');
-  return (fwd ? fwd.split(',')[0].trim() : null) || req.ip || req.connection.remoteAddress;
+  // With Express 'trust proxy' configured (see app.js), req.ip is the real
+  // client IP derived from OUR nginx's X-Forwarded-For and cannot be spoofed by
+  // the remote client. Parsing the header by hand would re-introduce the spoof.
+  return req.ip || (req.connection && req.connection.remoteAddress) || '';
 }
 
 function requestOrigin(req) {

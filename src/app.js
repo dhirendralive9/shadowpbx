@@ -326,6 +326,12 @@ async function main() {
 
   // 8. Express API + Web GUI
   const app = express();
+  // Trust the reverse proxy (nginx on loopback) so req.ip and req.protocol
+  // reflect the real client, taken from X-Forwarded-For/Proto that OUR nginx
+  // sets — not from headers a remote client can forge. 'loopback' trusts only
+  // 127.0.0.1/::1, i.e. our own nginx; set TRUST_PROXY to a hop count or a
+  // subnet if you run additional trusted proxies in front.
+  app.set('trust proxy', process.env.TRUST_PROXY || 'loopback');
   const cookieParser = require('cookie-parser');
   const path = require('path');
   const createWebRouter = require('./routes/web');
