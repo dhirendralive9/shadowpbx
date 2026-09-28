@@ -2089,12 +2089,26 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
   // ============================================================
   // Security — attack tracking and IP blocking
   // ============================================================
-  router.get('/security/attackers', (req, res) => {
+  router.get('/security/attackers', async (req, res) => {
     if (!securityTracker) return res.json({ success: true, attackers: [], stats: {} });
+    const attackers = securityTracker.getAttackers(parseInt(req.query.limit) || 100);
+    // Enrich with proxy/VPN/datacenter/geo intel (cached, fail-open). If the
+    // service is unavailable or a lookup fails, the IP lists without an `intel`
+    // field and the page still renders.
+    try {
+      const ipIntel = require('../services/ip-intel');
+      if (ipIntel.available && attackers.length) {
+        const map = await ipIntel.lookupMany(attackers.map(a => a.ip));
+        for (const a of attackers) if (map[a.ip]) a.intel = map[a.ip];
+      }
+    } catch (e) { /* best-effort */ }
+    let intelSummary = { available: false };
+    try { intelSummary = require('../services/ip-intel').summary(); } catch (e) {}
     res.json({
       success: true,
-      attackers: securityTracker.getAttackers(parseInt(req.query.limit) || 100),
-      stats: securityTracker.getStats()
+      attackers,
+      stats: securityTracker.getStats(),
+      intel: intelSummary
     });
   });
 

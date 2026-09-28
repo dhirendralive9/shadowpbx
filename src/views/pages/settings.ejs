@@ -1479,6 +1479,22 @@ async function saveEditUser(e) {
 }
 
 // ═══════════════════ Security / Attack Monitor ═══════════════════
+function flagEmoji(iso) {
+  if (!iso || iso.length !== 2) return '';
+  return String.fromCodePoint(...[...iso.toUpperCase()].map(c => 0x1F1E6 + c.charCodeAt(0) - 65));
+}
+function intelCell(intel) {
+  if (!intel) return '<span class="muted">—</span>';
+  var verdictPill = { high: 'p-err', suspicious: 'p-warn', clean: 'p-ok' }[intel.verdict] || 'p-gray';
+  var geo = (intel.isocode ? flagEmoji(intel.isocode) + ' ' : '') + esc(intel.country || '');
+  var tagsHtml = (intel.tags || []).map(function (t) { return '<span class="pill p-gray" style="font-size:9px">' + esc(t) + '</span>'; }).join(' ');
+  var riskHtml = (intel.risk != null) ? ' <span class="muted" style="font-size:10px">risk ' + intel.risk + '</span>' : '';
+  var asnHtml = intel.provider ? '<div class="muted" style="font-size:10px">' + esc(String(intel.provider).slice(0, 28)) + (intel.asn ? ' (' + esc(intel.asn) + ')' : '') + '</div>' : '';
+  return '<span class="pill ' + verdictPill + '" style="font-size:9px">' + esc(intel.verdict) + '</span> ' +
+    tagsHtml + riskHtml +
+    '<div style="margin-top:2px">' + geo + '</div>' + asnHtml;
+}
+
 async function loadSecurity() {
   try {
     var d = await (await fetch(API + '/security/attackers?limit=100', { headers: H })).json();
@@ -1489,19 +1505,23 @@ async function loadSecurity() {
       '<div style="background:var(--bg-surface);border:0.5px solid var(--border);border-radius:var(--radius);padding:12px 16px"><div style="font-size:22px;font-weight:700;color:var(--color-warn)">' + (s.totalAttempts || 0) + '</div><div style="font-size:11px;color:var(--text-tertiary)">Total attempts</div></div>' +
       '<div style="background:var(--bg-surface);border:0.5px solid var(--border);border-radius:var(--radius);padding:12px 16px"><div style="font-size:22px;font-weight:700;color:var(--color-error)">' + (s.blockedCount || 0) + '</div><div style="font-size:11px;color:var(--text-tertiary)">Blocked IPs</div></div>';
 
-    document.getElementById('sec-summary').textContent = (d.attackers || []).length + ' IP(s) tracked';
+    var intelNote = (d.intel && d.intel.available)
+      ? ' · intel via ' + (d.intel.providers || []).join(' + ')
+      : ' · IP intel off (set PROXYCHECK_API_KEY / IPLOCATE_API_KEY)';
+    document.getElementById('sec-summary').textContent = (d.attackers || []).length + ' IP(s) tracked' + intelNote;
 
     if (!d.attackers || !d.attackers.length) {
       document.getElementById('sec-list').innerHTML = '<div class="card"><div class="empty">No attacks recorded yet</div></div>';
       return;
     }
 
-    document.getElementById('sec-list').innerHTML = '<table class="tbl"><thead><tr><th>IP Address</th><th>Attempts</th><th>Reasons</th><th>User-Agent</th><th>Targets</th><th>Last seen</th><th></th></tr></thead><tbody>' +
+    document.getElementById('sec-list').innerHTML = '<table class="tbl"><thead><tr><th>IP Address</th><th>Intel</th><th>Attempts</th><th>Reasons</th><th>User-Agent</th><th>Targets</th><th>Last seen</th><th></th></tr></thead><tbody>' +
       d.attackers.map(function(a) {
         var timeSince = Math.round((Date.now() - a.lastSeen) / 1000);
         var timeStr = timeSince < 60 ? timeSince + 's ago' : timeSince < 3600 ? Math.round(timeSince/60) + 'm ago' : Math.round(timeSince/3600) + 'h ago';
         return '<tr' + (a.blocked ? ' style="opacity:0.5"' : '') + '>' +
           '<td class="mono" style="font-weight:600">' + esc(a.ip) + (a.blocked ? ' <span class="pill p-err" style="font-size:9px">BLOCKED</span>' : '') + '</td>' +
+          '<td style="font-size:11px">' + intelCell(a.intel) + '</td>' +
           '<td><span class="pill ' + (a.count > 20 ? 'p-err' : a.count > 5 ? 'p-warn' : 'p-gray') + '">' + a.count + '</span></td>' +
           '<td style="font-size:11px">' + (a.reasons || []).map(esc).join(', ') + '</td>' +
           '<td style="font-size:11px" class="muted">' + (a.userAgents || []).map(esc).join(', ').substring(0, 40) + '</td>' +
