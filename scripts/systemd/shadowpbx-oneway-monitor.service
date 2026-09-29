@@ -1,0 +1,15 @@
+[Unit]
+Description=ShadowPBX RTP one-way audio monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/shadowpbx-rtpmon
+ExecStart=/usr/bin/python3 /opt/shadowpbx/scripts/rtp-oneway-monitor.py
+Restart=always
+RestartSec=3
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

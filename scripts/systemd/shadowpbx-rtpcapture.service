@@ -1,0 +1,15 @@
+[Unit]
+Description=ShadowPBX rolling RTP/SIP packet capture (ring buffer for one-way debugging)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/shadowpbx-rtpmon
+ExecStart=/opt/shadowpbx/scripts/rtp-capture.sh
+Restart=always
+RestartSec=3
+Nice=5
+
+[Install]
+WantedBy=multi-user.target
