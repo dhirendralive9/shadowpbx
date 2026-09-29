@@ -145,8 +145,36 @@ function consumeToken(presented) {
 }
 function markUsed() { if (active) active.used = true; }
 
+// ── rollback: list and restore the snapshots written before each apply ──
+function listSnapshots() {
+  try {
+    if (!fs.existsSync(BACKUP_DIR)) return [];
+    return fs.readdirSync(BACKUP_DIR)
+      .filter((f) => /^migration-backup-\d+\.json$/.test(f))
+      .map((f) => {
+        const st = fs.statSync(path.join(BACKUP_DIR, f));
+        return { file: f, sizeBytes: st.size, mtime: st.mtimeMs };
+      })
+      .sort((a, b) => b.mtime - a.mtime);
+  } catch (e) { return []; }
+}
+
+// Restore a snapshot by RE-APPLYING its config (brings overwritten items back to
+// their saved values). Items the migration newly ADDED are not removed. The file
+// name is validated to a bare migration-backup-*.json inside BACKUP_DIR — no
+// path traversal.
+async function restoreSnapshot(models, fileName) {
+  const base = path.basename(String(fileName || ''));
+  if (!/^migration-backup-\d+\.json$/.test(base)) throw new Error('invalid snapshot name');
+  const full = path.join(BACKUP_DIR, base);
+  if (!fs.existsSync(full)) throw new Error('snapshot not found');
+  const cfg = JSON.parse(fs.readFileSync(full, 'utf8'));
+  return applyConfig(models, cfg);
+}
+
 module.exports = {
   MIGRATE, NEVER,
   exportConfig, encrypt, decrypt, snapshot, applyConfig,
   newToken, tokenStatus, cancelToken, currentToken, consumeToken, markUsed,
+  listSnapshots, restoreSnapshot,
 };

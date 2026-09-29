@@ -504,6 +504,16 @@
       <div id="mig-send-result" style="margin-top:12px"></div>
     </div>
   </div>
+
+  <!-- Rollback -->
+  <div style="margin-top:20px">
+    <div class="sec-head"><span class="sec-title">Rollback</span>
+      <button class="btn btn-sm" onclick="loadSnapshots()">Refresh</button></div>
+    <div class="card">
+      <div class="muted" style="font-size:12px;margin-bottom:10px">Before each migration this server applies, it saves a snapshot of the config it is about to overwrite. Restore one to bring overwritten items back to their saved values. (Items a migration newly added are not removed.)</div>
+      <div id="mig-snapshots"><div class="muted">Loading…</div></div>
+    </div>
+  </div>
 </div>
 
 <!-- ═══════════════════ CRM INTEGRATIONS ═══════════════════ -->
@@ -1414,6 +1424,7 @@ function loadMigration() {
           '. Generate a new one to replace it.</div>';
       } else { box.innerHTML = ''; }
     }).catch(function(){});
+  loadSnapshots();
 }
 
 async function genAcceptCode() {
@@ -1459,6 +1470,35 @@ async function sendMigration() {
         (d.result && d.result.backup ? '<div class="muted" style="font-size:11px;margin-top:8px">Receiver saved a rollback snapshot: ' + esc(d.result.backup) + '</div>' : '') +
       '</div>';
   } catch (e) { out.innerHTML = '<div class="card" style="border-left:3px solid var(--red,#e5484d)">' + esc(e.message) + '</div>'; }
+}
+
+function fmtWhen(ms) {
+  try { return new Date(ms).toLocaleString(); } catch (e) { return '—'; }
+}
+async function loadSnapshots() {
+  var box = document.getElementById('mig-snapshots');
+  if (!box) return;
+  try {
+    var d = await (await fetch('/system/api/migration/snapshots', { headers: H, credentials: 'same-origin' })).json();
+    var snaps = (d && d.snapshots) || [];
+    if (!snaps.length) { box.innerHTML = '<div class="muted" style="font-size:12px">No snapshots yet — one is saved automatically each time this server receives a migration.</div>'; return; }
+    box.innerHTML = '<table class="tbl"><thead><tr><th>Saved</th><th>Size</th><th></th></tr></thead><tbody>' +
+      snaps.map(function(s){
+        return '<tr><td>' + esc(fmtWhen(s.mtime)) + '</td><td>' + Math.round((s.sizeBytes||0)/1024) + ' KB</td>' +
+          '<td><button class="btn btn-sm" onclick="restoreSnap(' + JSON.stringify(s.file) + ')">Restore</button></td></tr>';
+      }).join('') + '</tbody></table>';
+  } catch (e) { box.innerHTML = '<div class="muted">' + esc(e.message) + '</div>'; }
+}
+async function restoreSnap(file) {
+  if (!confirm('Restore config from this snapshot? Overwritten items will be reverted to their saved values.')) return;
+  try {
+    var d = await (await fetch('/system/api/migration/restore', {
+      method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, H),
+      credentials: 'same-origin', body: JSON.stringify({ file: file })
+    })).json();
+    if (!d.success) { showToast && showToast(d.error || 'Restore failed'); return; }
+    showToast && showToast('Snapshot restored');
+  } catch (e) { showToast && showToast(e.message); }
 }
 
 // ═══════════════════ SIP DOMAINS ═══════════════════

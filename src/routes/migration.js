@@ -90,6 +90,22 @@ function createMigrationRouter({ models }) {
     }
   });
 
+  // ── Rollback: list snapshots and restore one (admin) ──
+  router.get('/system/api/migration/snapshots', ...admin, (req, res) => {
+    res.json({ success: true, snapshots: migration.listSnapshots() });
+  });
+  router.post('/system/api/migration/restore', ...admin, async (req, res) => {
+    try {
+      const file = String((req.body && req.body.file) || '').trim();
+      if (!file) return res.status(400).json({ success: false, error: 'snapshot file is required' });
+      const applied = await migration.restoreSnapshot(models, file);
+      logger.info(`MIGRATION: restored snapshot ${file} by ${req.session ? req.session.user : 'admin'}`);
+      res.json({ success: true, restored: applied });
+    } catch (err) {
+      res.status(400).json({ success: false, error: err.message });
+    }
+  });
+
   return router;
 }
 
