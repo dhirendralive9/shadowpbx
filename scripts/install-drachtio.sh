@@ -747,8 +747,7 @@ logpath = ${LOG_DIR}/shadowpbx.log
 maxretry = 3
 bantime = 86400
 findtime = 300
-action = iptables-multiport[name=shadowpbx, port="5060,5061,3000", protocol=udp]
-         iptables-multiport[name=shadowpbx, port="5060,5061,3000", protocol=tcp]
+action = iptables-multiport[name=shadowpbx, port="5060,5061,3000", protocol="udp,tcp"]
 FBEOF
 
 cat > /etc/fail2ban/jail.d/shadowpbx-recidive.conf << 'FBEOF'
