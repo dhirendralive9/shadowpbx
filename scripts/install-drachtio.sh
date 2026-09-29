@@ -747,8 +747,7 @@ logpath = ${LOG_DIR}/shadowpbx.log
 maxretry = 3
 bantime = 86400
 findtime = 300
-action = iptables-multiport[name=shadowpbx, port="5060,5061,3000", protocol=udp]
-         iptables-multiport[name=shadowpbx, port="5060,5061,3000", protocol=tcp]
+action = iptables-multiport[name=shadowpbx, port="5060,5061,3000", protocol="udp,tcp"]
 FBEOF
 
 cat > /etc/fail2ban/jail.d/shadowpbx-recidive.conf << 'FBEOF'
@@ -766,15 +765,36 @@ cat > /etc/fail2ban/jail.d/sshd.conf << 'FBEOF'
 [sshd]
 enabled = true
 port = ssh
-logpath = /var/log/auth.log
+# Read SSH auth failures from the systemd journal rather than /var/log/auth.log.
+# Debian / journald-only boxes never create auth.log, and a missing logpath makes
+# fail2ban abort the ENTIRE daemon at startup. The systemd backend works on both
+# Debian and Ubuntu, so this is the portable choice.
+backend = systemd
 maxretry = 3
 bantime = 86400
 findtime = 600
 FBEOF
 
+# Ensure the log files the file-based jails watch exist BEFORE fail2ban starts.
+# fail2ban refuses to start if any jail's logpath is missing, so a first-boot race
+# (the app hasn't written its log yet) would otherwise abort the whole daemon.
+mkdir -p "${LOG_DIR}"
+touch "${LOG_DIR}/shadowpbx.log" /var/log/fail2ban.log
+
 systemctl enable fail2ban
 systemctl restart fail2ban
-log "fail2ban: SIP 3 fails = 24hr ban, repeat offenders = 7 day ban"
+
+# Verify fail2ban actually came up. It aborts silently on a bad jail/log/action,
+# which leaves the box unprotected with no obvious sign (this bit us for 3 days
+# once). Fail loudly at install time instead, with the exact diagnostic command.
+sleep 1
+if systemctl is-active --quiet fail2ban && fail2ban-client ping >/dev/null 2>&1; then
+  log "fail2ban: SIP 3 fails = 24hr ban, repeat offenders = 7 day ban"
+else
+  echo "  !! WARNING: fail2ban did NOT start -- brute-force protection is OFF."
+  echo "     Diagnose with:  fail2ban-client -t    and    journalctl -u fail2ban -n 30"
+  fail2ban-client -t 2>&1 | tail -6 || true
+fi
 
 # ============================================================
 step "9/10 - Creating helper scripts..."
