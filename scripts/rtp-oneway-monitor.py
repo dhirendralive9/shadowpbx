@@ -90,29 +90,27 @@ def scan():
             if now - ob["last"] > OUT_ACTIVE:
                 continue  # box not sending -> call not up on this leg
             ib = inbound.get(port)
-            established = (ib and ib["count"] >= MIN_PKTS) or ob["count"] >= MIN_PKTS
-            if not established:
+            # Only judge legs that actually ESTABLISHED two-way audio first. A leg the
+            # box is merely sending on during call setup -- before RTPEngine has wired
+            # the return path -- is NOT one-way; flagging it there was a false positive
+            # at connect time. Require real inbound (primary source established).
+            if not ib or ib["count"] < MIN_PKTS or ib["primary"] is None:
                 continue
             if last_event.get(port, 0) and now - last_event[port] < COOLDOWN:
                 continue
 
             remote = ob["dst"]
-            if not ib or now - ib["last"] >= SILENCE_SEC:
-                # nothing arriving at all -> remote stopped sending to us / return path dead
-                if ib:
-                    silent = now - ib["last"]
-                    log(f"ONE-WAY  box:{port} still sending to {remote[0]}:{remote[1]} but "
-                        f"INBOUND SILENT {silent:.1f}s (remote stopped / return path dead). "
-                        f"last heard from {ib['primary'][0]}:{ib['primary'][1]}"
-                        if ib["primary"] else
-                        f"ONE-WAY  box:{port} still sending to {remote[0]}:{remote[1]} but INBOUND SILENT {silent:.1f}s")
-                else:
-                    log(f"ONE-WAY  box:{port} sending to {remote[0]}:{remote[1]} but NEVER received inbound")
+            if now - ib["last"] >= SILENCE_SEC:
+                # inbound was established, then went silent while the box keeps sending
+                silent = now - ib["last"]
+                log(f"ONE-WAY  box:{port} still sending to {remote[0]}:{remote[1]} but "
+                    f"INBOUND SILENT {silent:.1f}s after being established "
+                    f"(was receiving from {ib['primary'][0]}:{ib['primary'][1]}).")
                 last_event[port] = now
             else:
-                # packets ARE arriving; has the source ip:port migrated from the established primary?
+                # packets ARE arriving; has the source ip:port migrated from the primary?
                 cur_src = max(ib["sources"].items(), key=lambda kv: kv[1])[0]
-                if ib["primary"] and cur_src != ib["primary"]:
+                if cur_src != ib["primary"]:
                     log(f"ONE-WAY(migration) box:{port} inbound source CHANGED "
                         f"{ib['primary'][0]}:{ib['primary'][1]} -> {cur_src[0]}:{cur_src[1]} "
                         f"(RTPEngine not re-latching to migrated source; caller NAT rebind). "

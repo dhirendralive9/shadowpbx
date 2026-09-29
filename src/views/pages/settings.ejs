@@ -422,6 +422,15 @@
     </div>
   </div>
 
+  <!-- ── Brute-force protection (fail2ban) ── -->
+  <div style="margin-top:20px">
+    <div class="sec-head"><span class="sec-title">Brute-force protection</span>
+      <button class="btn btn-sm" onclick="loadSysInfo()">Refresh</button></div>
+    <div class="card" id="sys-fail2ban">
+      <div class="muted">Loading…</div>
+    </div>
+  </div>
+
   <!-- ── Software updates ── -->
   <div style="margin-top:20px">
     <div class="sec-head">
@@ -1309,9 +1318,45 @@ async function loadSysInfo() {
           resRow('Runtime', 'Node ' + esc(i.node), null, 'app up ' + fmtDuration(i.uptimeProcess)) +
         '</div>' +
       '</div>';
+
+    renderFail2ban(i.fail2ban);
   } catch (e) {
     box.innerHTML = '<div class="muted">' + esc(e.message) + '</div>';
   }
+}
+
+function renderFail2ban(f) {
+  var fb = document.getElementById('sys-fail2ban');
+  if (!fb) return;
+  if (!f || !f.running) {
+    fb.innerHTML =
+      '<div style="display:flex;align-items:center;gap:10px">' +
+        '<span style="display:inline-block;padding:2px 10px;border-radius:10px;font-size:12px;font-weight:600;background:var(--red,#e5484d);color:#fff">● Not running</span>' +
+        '<span class="muted" style="font-size:12px">fail2ban is down — SIP / SSH brute-force and toll-fraud protection is OFF.</span>' +
+      '</div>';
+    return;
+  }
+  var jails = f.jails || [];
+  var totalCur = jails.reduce(function(a, j){ return a + (j.currentlyBanned || 0); }, 0);
+  var rows = jails.map(function(j){
+    if (j.error) return '<tr><td><b>' + esc(j.name) + '</b></td><td colspan="3" class="muted">unavailable</td></tr>';
+    var ips = j.bannedIps || [];
+    return '<tr>' +
+      '<td><b>' + esc(j.name) + '</b></td>' +
+      '<td>' + (j.currentlyBanned || 0) + '</td>' +
+      '<td>' + (j.totalBanned || 0) + '</td>' +
+      '<td class="mono" style="font-size:11px;word-break:break-all">' +
+        (ips.length ? ips.map(esc).join(', ') : '<span class="muted">none</span>') +
+      '</td></tr>';
+  }).join('');
+  fb.innerHTML =
+    '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">' +
+      '<span style="display:inline-block;padding:2px 10px;border-radius:10px;font-size:12px;font-weight:600;background:var(--green,#30a46c);color:#fff">● Active</span>' +
+      '<span class="muted" style="font-size:12px">' + totalCur + ' IP' + (totalCur === 1 ? '' : 's') +
+        ' currently banned across ' + jails.length + ' jail' + (jails.length === 1 ? '' : 's') + '</span>' +
+    '</div>' +
+    '<table class="tbl"><thead><tr><th>Jail</th><th>Banned now</th><th>Total banned</th><th>Banned IPs</th></tr></thead>' +
+    '<tbody>' + rows + '</tbody></table>';
 }
 
 // ═══════════════════ SIP DOMAINS ═══════════════════

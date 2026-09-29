@@ -39,7 +39,7 @@ filter="udp port $PORT"
 [ -n "$REMOTE" ] && filter="$filter and host $REMOTE"
 
 shopt -s nullglob
-pcaps=("$DIR"/rtp-*.pcap)
+pcaps=("$DIR"/rtp-*.pcap*)
 if [ ${#pcaps[@]} -eq 0 ]; then
   echo "No capture files in $DIR. Is shadowpbx-rtpcapture.service running?"
   exit 1

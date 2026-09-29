@@ -85,7 +85,8 @@ function createUpdateRouter(deps) {
           usedPct: totalMem ? Math.round(((totalMem - freeMem) / totalMem) * 100) : 0,
           processRssBytes: mem.rss
         },
-        disk: await diskUsage()
+        disk: await diskUsage(),
+        fail2ban: await fail2banStatus()
       };
       res.json({ success: true, info });
     } catch (err) {
@@ -119,6 +120,40 @@ function diskUsage() {
       } catch (e) { resolve(null); }
     });
   });
+}
+
+// Brute-force protection status via `fail2ban-client` (read-only). Reports
+// whether the daemon is up and, per jail, how many IPs are banned and which.
+// Returns { running: false } if the socket is down or the client is missing,
+// so the UI can show a clear red "not running" state. The command is fixed
+// (no user input), so there is no injection surface.
+function f2bClient(args) {
+  return new Promise((resolve) => {
+    execFile('fail2ban-client', args, { timeout: 5000 }, (err, stdout) => {
+      resolve({ err, out: (stdout || '').toString() });
+    });
+  });
+}
+
+async function fail2banStatus() {
+  const top = await f2bClient(['status']);
+  if (top.err) {
+    // socket down (daemon failed/stopped) or client not installed
+    return { running: false };
+  }
+  const jailsLine = (top.out.match(/Jail list:\s*(.*)/i) || [])[1] || '';
+  const jailNames = jailsLine.split(',').map((s) => s.trim()).filter(Boolean);
+  const jails = [];
+  for (const name of jailNames) {
+    const j = await f2bClient(['status', name]);
+    if (j.err) { jails.push({ name, error: true }); continue; }
+    const cur = parseInt((j.out.match(/Currently banned:\s*(\d+)/i) || [])[1] || '0', 10);
+    const tot = parseInt((j.out.match(/Total banned:\s*(\d+)/i) || [])[1] || '0', 10);
+    const ipLine = (j.out.match(/Banned IP list:\s*(.*)/i) || [])[1] || '';
+    const ips = ipLine.split(/\s+/).map((s) => s.trim()).filter(Boolean);
+    jails.push({ name, currentlyBanned: cur, totalBanned: tot, bannedIps: ips });
+  }
+  return { running: true, jails };
 }
 
 module.exports = { createUpdateRouter };
