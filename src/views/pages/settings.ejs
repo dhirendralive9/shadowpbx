@@ -12,6 +12,7 @@
   <a href="#backup" class="sub-tab" data-tab="backup" onclick="switchTab('backup')">Backup</a>
   <a href="#crm" class="sub-tab" data-tab="crm" onclick="switchTab('crm')">CRM</a>
   <a href="#system" class="sub-tab" data-tab="system" onclick="switchTab('system')">System</a>
+  <a href="#migration" class="sub-tab" data-tab="migration" onclick="switchTab('migration')">Migration</a>
 </div>
 
 <style>
@@ -465,6 +466,46 @@
   </div>
 </div>
 
+<!-- ═══════════════════ MIGRATION ═══════════════════ -->
+<div id="panel-migration" class="settings-panel">
+  <div class="sec-head"><span class="sec-title">Server migration</span></div>
+  <div class="card" style="border-left:3px solid var(--amber,#f5a623)">
+    <div class="muted" style="font-size:12px;line-height:1.6">
+      Copy <b>extensions, ring groups, queues, IVRs, time conditions, trunks, SIP domains, inbound/outbound routes and the blocklist</b> from one ShadowPBX server to another.
+      Items with the same identity are <b>overwritten</b> — a migrated extension keeps the <b>sender's</b> password. <b>Users and CDR are never touched.</b>
+      The payload is encrypted with the accept code, so it is safe even over plain HTTP. The receiver saves a rollback snapshot before applying.
+    </div>
+  </div>
+
+  <!-- Receive -->
+  <div style="margin-top:20px">
+    <div class="sec-head"><span class="sec-title">Receive — this server accepts data</span></div>
+    <div class="card">
+      <div class="muted" style="font-size:12px;margin-bottom:10px">Generate a one-time accept code and give it, with this server's IP, to the sender. Anyone with the IP + code can overwrite this server's config until the code is used once or expires.</div>
+      <button class="btn btn-primary btn-sm" onclick="genAcceptCode()">Generate accept code</button>
+      <div id="mig-recv" style="margin-top:12px"></div>
+    </div>
+  </div>
+
+  <!-- Send -->
+  <div style="margin-top:20px">
+    <div class="sec-head"><span class="sec-title">Send — push this server's config to another</span></div>
+    <div class="card">
+      <div class="grid-2">
+        <div><span class="muted" style="font-size:11px">Receiver IP or URL</span>
+          <input id="mig-target" class="form-input" placeholder="139.84.174.168  (or http://host:3000)"></div>
+        <div><span class="muted" style="font-size:11px">Accept code</span>
+          <input id="mig-code" class="form-input" placeholder="paste the code from the receiver"></div>
+      </div>
+      <div style="margin-top:12px">
+        <button class="btn btn-primary btn-sm" onclick="sendMigration()">Send configuration</button>
+        <span class="muted" style="font-size:12px;margin-left:8px">Overwrites matching items on the receiver.</span>
+      </div>
+      <div id="mig-send-result" style="margin-top:12px"></div>
+    </div>
+  </div>
+</div>
+
 <!-- ═══════════════════ CRM INTEGRATIONS ═══════════════════ -->
 <div id="panel-crm" class="settings-panel">
   <div class="sec-head">
@@ -603,6 +644,7 @@ function switchTab(tab) {
   if (tab === 'dnc') loadDnc();
   if (tab === 'security') loadSecurity();
   if (tab === 'users') loadUsers();
+  if (tab === 'migration') loadMigration();
   if (tab === 'maintenance') { loadSettings(); loadStorage(); }
   if (tab === 'backup') { loadDbStats(); loadBackups(); loadSettings(); }
   if (tab === 'system') loadSystem();
@@ -1359,6 +1401,66 @@ function renderFail2ban(f) {
     '<tbody>' + rows + '</tbody></table>';
 }
 
+// ═══════════════════ MIGRATION ═══════════════════
+function loadMigration() {
+  fetch('/system/api/migration/token', { headers: H, credentials: 'same-origin' })
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      var box = document.getElementById('mig-recv');
+      if (!box) return;
+      if (d && d.active) {
+        box.innerHTML = '<div class="muted" style="font-size:12px">An accept code is active until ' +
+          new Date(d.active.expiresAt).toLocaleTimeString() + (d.active.used ? ' (already used)' : '') +
+          '. Generate a new one to replace it.</div>';
+      } else { box.innerHTML = ''; }
+    }).catch(function(){});
+}
+
+async function genAcceptCode() {
+  var box = document.getElementById('mig-recv');
+  box.innerHTML = '<div class="muted">Generating…</div>';
+  try {
+    var d = await (await fetch('/system/api/migration/token', { method: 'POST', headers: H, credentials: 'same-origin' })).json();
+    if (!d.success) { box.innerHTML = '<div class="muted">' + esc(d.error || 'failed') + '</div>'; return; }
+    var mins = d.ttlMin || 30;
+    box.innerHTML =
+      '<div class="card" style="background:var(--bg-surface)">' +
+        '<div class="muted" style="font-size:11px">Accept code — valid ' + mins + ' min, one use. Share it with this server\'s IP.</div>' +
+        '<div class="mono" style="font-size:13px;word-break:break-all;margin:6px 0 10px">' + esc(d.token) + '</div>' +
+        '<button class="btn btn-sm" onclick="navigator.clipboard&&navigator.clipboard.writeText(' + JSON.stringify(d.token) + ');showToast&&showToast(\'Code copied\')">Copy code</button>' +
+      '</div>';
+  } catch (e) { box.innerHTML = '<div class="muted">' + esc(e.message) + '</div>'; }
+}
+
+async function sendMigration() {
+  var target = document.getElementById('mig-target').value.trim();
+  var code = document.getElementById('mig-code').value.trim();
+  var out = document.getElementById('mig-send-result');
+  if (!target || !code) { out.innerHTML = '<div class="muted">Enter the receiver IP/URL and the accept code.</div>'; return; }
+  if (!confirm('This overwrites matching extensions, call flows and network config on ' + target + '. Users and CDR are left alone. Continue?')) return;
+  out.innerHTML = '<div class="muted">Sending…</div>';
+  try {
+    var d = await (await fetch('/system/api/migration/send', {
+      method: 'POST',
+      headers: Object.assign({ 'Content-Type': 'application/json' }, H),
+      credentials: 'same-origin',
+      body: JSON.stringify({ target: target, token: code })
+    })).json();
+    if (!d.success) { out.innerHTML = '<div class="card" style="border-left:3px solid var(--red,#e5484d)">' + esc(d.error || 'failed') + '</div>'; return; }
+    var ap = (d.result && d.result.applied) || {};
+    var rows = Object.keys(ap).map(function(k){
+      var s = ap[k];
+      return '<tr><td><b>' + esc(k) + '</b></td><td>' + s.added + '</td><td>' + s.replaced + '</td><td>' + (s.skipped || 0) + '</td></tr>';
+    }).join('');
+    out.innerHTML =
+      '<div class="card" style="border-left:3px solid var(--green,#30a46c)">' +
+        '<div style="font-weight:600;margin-bottom:8px">Migration complete — ' + (d.sent || 0) + ' items sent.</div>' +
+        '<table class="tbl"><thead><tr><th>Type</th><th>Added</th><th>Replaced</th><th>Skipped</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+        (d.result && d.result.backup ? '<div class="muted" style="font-size:11px;margin-top:8px">Receiver saved a rollback snapshot: ' + esc(d.result.backup) + '</div>' : '') +
+      '</div>';
+  } catch (e) { out.innerHTML = '<div class="card" style="border-left:3px solid var(--red,#e5484d)">' + esc(e.message) + '</div>'; }
+}
+
 // ═══════════════════ SIP DOMAINS ═══════════════════
 function showSipDomainAdd() {
   document.getElementById('sd-domain').value = '';
@@ -1695,7 +1797,7 @@ var initTab = window.location.hash.replace('#', '') || 'blocklist';
 // Handle OAuth redirect: ?tab=crm
 var urlParams = new URLSearchParams(window.location.search);
 if (urlParams.get('tab') === 'crm') initTab = 'crm';
-if (['blocklist', 'audio', 'sipdomains', 'dnc', 'security', 'users', 'maintenance', 'backup', 'crm', 'system'].indexOf(initTab) === -1) initTab = 'blocklist';
+if (['blocklist', 'audio', 'sipdomains', 'dnc', 'security', 'users', 'maintenance', 'backup', 'crm', 'system', 'migration'].indexOf(initTab) === -1) initTab = 'blocklist';
 switchTab(initTab);
 </script>
 
