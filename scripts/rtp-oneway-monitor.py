@@ -27,7 +27,7 @@ import signal
 from datetime import datetime
 
 # ---- config (env-overridable) ----
-IFACE       = os.environ.get("RTPMON_IFACE", "eth0")
+IFACE       = os.environ.get("RTPMON_IFACE", "")  # empty = auto-detect the default-route NIC
 PORT_MIN    = int(os.environ.get("RTPMON_PORT_MIN", "10000"))
 PORT_MAX    = int(os.environ.get("RTPMON_PORT_MAX", "20000"))
 BOX_IP      = os.environ.get("RTPMON_BOX_IP", "")           # auto-detected if empty
@@ -64,7 +64,31 @@ def detect_box_ip():
     return ""
 
 
+def detect_iface():
+    # the NIC on the default route -- works on eth0 / enp1s0 / ens3 / etc.
+    # 1) /proc/net/route needs no external binary
+    try:
+        with open("/proc/net/route") as f:
+            for line in f.read().splitlines()[1:]:
+                p = line.split()
+                if len(p) > 1 and p[1] == "00000000":
+                    return p[0]
+    except Exception:
+        pass
+    # 2) fall back to `ip route`
+    try:
+        out = subprocess.check_output(["ip", "route", "get", "8.8.8.8"], text=True)
+        m = re.search(r"\bdev (\S+)", out)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    return "eth0"
+
+
 BOXIP = detect_box_ip()
+if not IFACE:
+    IFACE = detect_iface()
 
 
 def clock():

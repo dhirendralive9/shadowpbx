@@ -447,6 +447,21 @@ systemctl daemon-reload
 systemctl enable shadowpbx-recorder
 log "Recording worker service created"
 
+# ── RTP one-way audio monitor + rolling capture (diagnostics) ──
+# Needs tcpdump; the scripts auto-detect the NIC and box IP, so no config file
+# is required. Fresh clones may land the scripts without the exec bit, so set it.
+apt-get install -y -qq tcpdump
+chmod +x ${APP_DIR}/scripts/rtp-oneway-monitor.py ${APP_DIR}/scripts/rtp-capture.sh ${APP_DIR}/scripts/rtp-extract.sh 2>/dev/null || true
+mkdir -p ${LOG_DIR}/rtpcap
+if [ -f "${APP_DIR}/scripts/systemd/shadowpbx-oneway-monitor.service" ]; then
+  cp ${APP_DIR}/scripts/systemd/shadowpbx-oneway-monitor.service ${APP_DIR}/scripts/systemd/shadowpbx-rtpcapture.service /etc/systemd/system/
+  systemctl daemon-reload
+  systemctl enable --now shadowpbx-rtpcapture shadowpbx-oneway-monitor 2>/dev/null || true
+  log "RTP one-way monitor + capture services enabled"
+else
+  warn "RTP monitor unit files not found in ${APP_DIR}/scripts/systemd — skipping"
+fi
+
 # ============================================================
 step "7/10 - Setting up Nginx reverse proxy..."
 # ============================================================

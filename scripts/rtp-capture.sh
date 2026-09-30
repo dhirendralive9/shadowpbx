@@ -15,7 +15,10 @@
 # sensitive, same as your call recordings. The ring buffer self-purges.
 set -euo pipefail
 
-IFACE="${RTPMON_IFACE:-eth0}"
+IFACE="${RTPMON_IFACE:-}"
+[ -z "$IFACE" ] && IFACE="$(awk '$2=="00000000"{print $1; exit}' /proc/net/route 2>/dev/null)"
+[ -z "$IFACE" ] && IFACE="$(ip route get 8.8.8.8 2>/dev/null | grep -oP 'dev \K\S+' | head -1)"
+IFACE="${IFACE:-eth0}"
 PORT_MIN="${RTPMON_PORT_MIN:-10000}"
 PORT_MAX="${RTPMON_PORT_MAX:-20000}"
 DIR="${RTPMON_CAP_DIR:-/var/log/shadowpbx/rtpcap}"
