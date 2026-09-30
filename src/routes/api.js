@@ -301,15 +301,42 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
 
   router.post('/trunks', async (req, res) => {
     try {
-      const { name, provider, host, username, password, port, register } = req.body;
+      const { name, provider, host, username, password, port, register, transport, trustedIps } = req.body;
       if (!name || !host || !username || !password) return res.status(400).json({ success: false, error: 'name, host, username, password required' });
-      const trunk = await Trunk.create({ name, provider, host, username, password, port, register: register !== false });
-      logger.info(`Trunk ${name} created: ${host}`);
+      const ips = Array.isArray(trustedIps) ? trustedIps.map(s => String(s).trim()).filter(Boolean)
+        : (typeof trustedIps === 'string' ? trustedIps.split(/[\s,]+/).map(s => s.trim()).filter(Boolean) : []);
+      const trunk = await Trunk.create({ name, provider, host, username, password, port, register: register !== false, transport: transport || 'udp', trustedIps: ips });
+      logger.info(`Trunk ${name} created: ${host}${ips.length ? ` (trusted IPs: ${ips.join(', ')})` : ''}`);
 
       // Register immediately
       if (trunkManager) await trunkManager.registerTrunk(trunk);
 
       res.status(201).json({ success: true, trunk: { name, provider, host, registered: trunk.registered } });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // Update an existing trunk (used mainly to add provider source IPs/CIDRs to
+  // trustedIps — e.g. Twilio's origination gateways, which don't match the
+  // Termination FQDN's DNS). Re-registers and refreshes the trusted-IP map live.
+  router.patch('/trunks/:id', async (req, res) => {
+    try {
+      const b = req.body || {};
+      const upd = {};
+      for (const f of ['name', 'provider', 'host', 'username', 'password', 'port', 'register', 'transport']) {
+        if (b[f] !== undefined) upd[f] = b[f];
+      }
+      if (b.trustedIps !== undefined) {
+        upd.trustedIps = Array.isArray(b.trustedIps) ? b.trustedIps.map(s => String(s).trim()).filter(Boolean)
+          : String(b.trustedIps).split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+      }
+      const trunk = await Trunk.findByIdAndUpdate(req.params.id, upd, { new: true });
+      if (!trunk) return res.status(404).json({ success: false, error: 'trunk not found' });
+      if (trunkManager) {
+        try { await trunkManager.registerTrunk(trunk); } catch (e) {}
+        if (trunkManager._resolveTrustedIps) await trunkManager._resolveTrustedIps().catch(() => {});
+      }
+      logger.info(`Trunk ${trunk.name} updated${upd.trustedIps ? ` (trusted IPs: ${upd.trustedIps.join(', ') || 'none'})` : ''}`);
+      res.json({ success: true, trunk: { _id: trunk._id, name: trunk.name, host: trunk.host, trustedIps: trunk.trustedIps || [] } });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
 
