@@ -16,6 +16,10 @@
       <div class="form-group"><label class="form-label">Password</label><input class="form-input" id="t-pass" type="password" required></div>
       <div class="form-group"><label class="form-label">Port</label><input class="form-input" id="t-port" value="5060"></div>
     </div>
+    <div class="form-group" style="margin-bottom:0">
+      <label class="form-label">Trusted source IPs <span class="muted" style="font-weight:400">— optional. Extra IPs/CIDRs that count as this trunk, beyond the host's DNS (e.g. a provider's gateway ranges like Twilio's). Comma or space separated.</span></label>
+      <input class="form-input" id="t-trusted" placeholder="54.172.60.0/30, 54.244.51.0/30">
+    </div>
     <div style="display:flex;gap:8px;margin-top:8px">
       <button type="submit" class="btn btn-primary btn-sm">Create</button>
       <button type="button" class="btn btn-sm" onclick="document.getElementById('add-trunk').style.display='none'">Cancel</button>
@@ -39,17 +43,27 @@ async function load(){
       <td><span class="dot ${t.registered?'dot-green':'dot-red'}"></span></td>
       <td>${t.name}</td><td class="muted">${t.provider}</td><td class="mono" style="font-size:11px">${t.host}</td>
       <td><span class="pill ${t.registered?'p-ok':'p-err'}">${t.registered?'registered':'offline'}</span></td>
-      <td><button class="act-btn" title="Delete" onclick="del('${t._id}','${t.name}')"><svg viewBox="0 0 24 24" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg></button></td>
+      <td>
+        <button class="act-btn" title="Trusted source IPs" onclick='editIps("${t._id}","${t.name}",${JSON.stringify((t.trustedIps||[]).join(", "))})'><svg viewBox="0 0 24 24" stroke-width="2" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15 15 0 0 1 4 10 15 15 0 0 1-4 10 15 15 0 0 1-4-10 15 15 0 0 1 4-10z"/></svg></button>
+        <button class="act-btn" title="Delete" onclick="del('${t._id}','${t.name}')"><svg viewBox="0 0 24 24" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg></button>
+      </td>
     </tr>`).join('');
   }else{b.innerHTML='<tr><td colspan="6" class="empty">No trunks configured</td></tr>';}
 }
 async function addTrunk(e){
   e.preventDefault();
   await fetch(API+'/trunks',{method:'POST',headers:{...H,'Content-Type':'application/json'},
-    body:JSON.stringify({name:document.getElementById('t-name').value,provider:document.getElementById('t-provider').value,host:document.getElementById('t-host').value,username:document.getElementById('t-user').value,password:document.getElementById('t-pass').value,port:parseInt(document.getElementById('t-port').value)||5060})});
+    body:JSON.stringify({name:document.getElementById('t-name').value,provider:document.getElementById('t-provider').value,host:document.getElementById('t-host').value,username:document.getElementById('t-user').value,password:document.getElementById('t-pass').value,port:parseInt(document.getElementById('t-port').value)||5060,trustedIps:document.getElementById('t-trusted').value})});
   document.getElementById('add-trunk').style.display='none';load();
 }
 async function del(id,name){if(!confirm('Delete trunk "'+name+'"?'))return;var r=await fetch(API+'/trunks/'+encodeURIComponent(id),{method:'DELETE',headers:H});var d=await r.json();if(d.success){showToast('Trunk deleted');load()}else{showToast(d.error||'Delete failed',true)}}
+async function editIps(id,name,current){
+  var v=prompt('Trusted source IPs for "'+name+'"\n\nExtra IPs/CIDRs that should be accepted as this trunk (beyond the host DNS) — e.g. a provider\'s gateway ranges. Comma or space separated. Leave blank to clear.',current||'');
+  if(v===null)return;
+  var r=await fetch(API+'/trunks/'+encodeURIComponent(id),{method:'PATCH',headers:{...H,'Content-Type':'application/json'},body:JSON.stringify({trustedIps:v})});
+  var d=await r.json();
+  if(d.success){showToast('Trusted IPs updated');load()}else{showToast(d.error||'Update failed',true)}
+}
 load();
 </script>
 <%- include('../partials/foot') %>
