@@ -132,14 +132,23 @@ def scan():
                     f"(was receiving from {ib['primary'][0]}:{ib['primary'][1]}).")
                 last_event[port] = now
             else:
-                # packets ARE arriving; has the source ip:port migrated from the primary?
+                # Packets ARE arriving; has the source ip:port migrated from the primary?
                 cur_src = max(ib["sources"].items(), key=lambda kv: kv[1])[0]
                 if cur_src != ib["primary"]:
-                    log(f"ONE-WAY(migration) box:{port} inbound source CHANGED "
-                        f"{ib['primary'][0]}:{ib['primary'][1]} -> {cur_src[0]}:{cur_src[1]} "
-                        f"(RTPEngine not re-latching to migrated source; caller NAT rebind). "
-                        f"box still sending to {remote[0]}:{remote[1]}")
-                    last_event[port] = now
+                    # A migration alone is NOT a fault. RTPEngine's media-handover is
+                    # supposed to re-latch and follow the new source. It's only broken
+                    # if the box is STILL TRANSMITTING to the OLD source while the
+                    # audio now arrives from the new one -- that's the one-way case.
+                    if remote == ib["primary"]:
+                        log(f"ONE-WAY(migration) box:{port} inbound source CHANGED "
+                            f"{ib['primary'][0]}:{ib['primary'][1]} -> {cur_src[0]}:{cur_src[1]} "
+                            f"but box is STILL SENDING to the OLD source "
+                            f"{remote[0]}:{remote[1]} (re-latching failed).")
+                        last_event[port] = now
+                    else:
+                        # Handover worked: box already follows the new source. Adopt it
+                        # as the primary so we don't re-evaluate this same move forever.
+                        ib["primary"] = cur_src
 
         # prune ports idle beyond IDLE_RESET so reused ports start clean
         for tbl in (inbound, outbound):
