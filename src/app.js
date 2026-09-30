@@ -338,7 +338,7 @@ async function main() {
 
   app.set('view engine', 'ejs');
   app.set('views', path.join(__dirname, 'views'));
-  app.use(express.json());
+  app.use(express.json({ limit: '10mb' }));
   app.use(express.urlencoded({ extended: true }));
   app.use(cookieParser());
   app.use(express.static(path.join(__dirname, 'public')));
@@ -510,6 +510,7 @@ async function main() {
 
   // Self-update from Settings → System (admin session only)
   app.use('/', require('./routes/updates').createUpdateRouter({ callHandler }));
+  app.use('/', require('./routes/migration').createMigrationRouter({ models: require('./models') }));
 
   // Web GUI routes
   app.use('/', createWebRouter());

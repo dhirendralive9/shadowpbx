@@ -447,6 +447,21 @@ systemctl daemon-reload
 systemctl enable shadowpbx-recorder
 log "Recording worker service created"
 
+# ── RTP one-way audio monitor + rolling capture (diagnostics) ──
+# Needs tcpdump; the scripts auto-detect the NIC and box IP, so no config file
+# is required. Fresh clones may land the scripts without the exec bit, so set it.
+apt-get install -y -qq tcpdump
+chmod +x ${APP_DIR}/scripts/rtp-oneway-monitor.py ${APP_DIR}/scripts/rtp-capture.sh ${APP_DIR}/scripts/rtp-extract.sh 2>/dev/null || true
+mkdir -p ${LOG_DIR}/rtpcap
+if [ -f "${APP_DIR}/scripts/systemd/shadowpbx-oneway-monitor.service" ]; then
+  cp ${APP_DIR}/scripts/systemd/shadowpbx-oneway-monitor.service ${APP_DIR}/scripts/systemd/shadowpbx-rtpcapture.service /etc/systemd/system/
+  systemctl daemon-reload
+  systemctl enable --now shadowpbx-rtpcapture shadowpbx-oneway-monitor 2>/dev/null || true
+  log "RTP one-way monitor + capture services enabled"
+else
+  warn "RTP monitor unit files not found in ${APP_DIR}/scripts/systemd — skipping"
+fi
+
 # ============================================================
 step "7/10 - Setting up Nginx reverse proxy..."
 # ============================================================
@@ -765,15 +780,36 @@ cat > /etc/fail2ban/jail.d/sshd.conf << 'FBEOF'
 [sshd]
 enabled = true
 port = ssh
-logpath = /var/log/auth.log
+# Read SSH auth failures from the systemd journal rather than /var/log/auth.log.
+# Debian / journald-only boxes never create auth.log, and a missing logpath makes
+# fail2ban abort the ENTIRE daemon at startup. The systemd backend works on both
+# Debian and Ubuntu, so this is the portable choice.
+backend = systemd
 maxretry = 3
 bantime = 86400
 findtime = 600
 FBEOF
 
+# Ensure the log files the file-based jails watch exist BEFORE fail2ban starts.
+# fail2ban refuses to start if any jail's logpath is missing, so a first-boot race
+# (the app hasn't written its log yet) would otherwise abort the whole daemon.
+mkdir -p "${LOG_DIR}"
+touch "${LOG_DIR}/shadowpbx.log" /var/log/fail2ban.log
+
 systemctl enable fail2ban
 systemctl restart fail2ban
-log "fail2ban: SIP 3 fails = 24hr ban, repeat offenders = 7 day ban"
+
+# Verify fail2ban actually came up. It aborts silently on a bad jail/log/action,
+# which leaves the box unprotected with no obvious sign (this bit us for 3 days
+# once). Fail loudly at install time instead, with the exact diagnostic command.
+sleep 1
+if systemctl is-active --quiet fail2ban && fail2ban-client ping >/dev/null 2>&1; then
+  log "fail2ban: SIP 3 fails = 24hr ban, repeat offenders = 7 day ban"
+else
+  echo "  !! WARNING: fail2ban did NOT start -- brute-force protection is OFF."
+  echo "     Diagnose with:  fail2ban-client -t    and    journalctl -u fail2ban -n 30"
+  fail2ban-client -t 2>&1 | tail -6 || true
+fi
 
 # ============================================================
 step "9/10 - Creating helper scripts..."
