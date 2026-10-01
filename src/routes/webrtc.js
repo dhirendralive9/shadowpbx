@@ -150,6 +150,25 @@ function createWebrtcWebRouter(deps) {
     res.render('pages/phone', locals(req, { webrtcConfig: clientConfig(req, 'agent') }));
   });
 
+  // Extensions the signed-in user may sign the browser phone in as, with the
+  // SIP credential so they don't have to type it. Admins/supervisors get the
+  // full list (they can already read these on the Extensions page); an agent
+  // only ever gets their own extension.
+  router.get('/phone/api/extensions', auth, async (req, res) => {
+    try {
+      const { Extension } = require('../models');
+      const role = req.session ? req.session.role : '';
+      const mine = req.session ? req.session.extension : '';
+      const q = (role === 'admin' || role === 'supervisor') ? {} : { extension: mine || '__none__' };
+      const list = await Extension.find(q).sort('extension');
+      res.json({
+        success: true,
+        role,
+        extensions: list.map(e => ({ extension: e.extension, name: e.name, password: e.password }))
+      });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
   router.get('/webrtc/api/status', auth, admin, async (req, res) => {
     try { res.json(await buildStatus(deps, req)); }
     catch (err) { res.status(500).json({ success: false, error: err.message }); }
