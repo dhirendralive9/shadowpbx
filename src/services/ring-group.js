@@ -329,6 +329,8 @@ class RingGroupHandler {
       if (num) inviteHeaders['P-Asserted-Identity'] = `<sip:${num}@${process.env.EXTERNAL_IP || 'localhost'}>`;
     } catch (e) { /* fall through to drachtio defaults */ }
 
+    let callerGone = false;
+
     const targets = members.map(m => ({ m, t: this._memberTarget(m) }));
     logger.info(`SIMRING(per-leg): forking to ${targets.length} targets: ` +
       targets.map(x => `${x.t.uri}${x.t.webrtc ? ' [webrtc]' : ''}`).join(', '));
@@ -346,6 +348,17 @@ class RingGroupHandler {
       }
       pendingInvites.clear();
     };
+
+    // If the CALLER gives up before anyone answers, drachtio delivers a CANCEL
+    // on the inbound request. Without this every device keeps ringing after the
+    // caller has already hung up.
+    try {
+      req.on('cancel', () => {
+        callerGone = true;
+        logger.info('SIMRING(per-leg): caller cancelled — stopping all forks');
+        cancelOthers(null);
+      });
+    } catch (e) { /* older drachtio: fall back to ring timeout */ }
 
     const dialOne = async ({ m, t }) => {
       // One RTPEngine session per fork so each leg gets its own media type.
@@ -395,7 +408,8 @@ class RingGroupHandler {
 
         targets.forEach((x) => {
           dialOne(x).then((win) => {
-            if (settled) { try { win.uac.destroy(); } catch (e) {} return; }
+            // Caller already hung up, or another device won: drop this leg.
+            if (settled || callerGone) { try { win.uac.destroy(); } catch (e) {} return; }
             settled = true;
             clearTimeout(timer);
             // Someone answered — stop the other devices ringing immediately.
