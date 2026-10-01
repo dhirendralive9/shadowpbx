@@ -106,7 +106,16 @@ class Registrar {
     }
 
     // Verify credentials (digest auth)
-    const valid = this._verifyDigest(authParams, extension.password, req.method);
+    // A browser phone authenticates with a SHORT-LIVED TOKEN instead of the
+    // extension's real SIP password, so the password is never shipped to a web
+    // page (where devtools / an interception proxy could read it). Tokens are
+    // minted per signed-in user for their own extension only and expire.
+    let valid = this._verifyDigest(authParams, extension.password, req.method);
+    if (!valid) {
+      for (const tok of this._browserTokens(ext)) {
+        if (this._verifyDigest(authParams, tok, req.method)) { valid = true; break; }
+      }
+    }
     if (!valid) {
       this._recordFailure(banKey);
       logger.warn(`REGISTER rejected: bad credentials for ${ext} from ${req.source_address}${transport ? ' via ' + transport : ''}`);
@@ -516,6 +525,34 @@ class Registrar {
   // ============================================================
   // Cleanup tasks
   // ============================================================
+
+  // ── short-lived browser phone credentials ──────────────────────────────
+  // The web softphone never receives the extension's real SIP password. It is
+  // issued a random token, valid for a limited time, usable only as that one
+  // extension's REGISTER credential. Leaking it costs at most a short window
+  // on a single extension; the real password is never exposed.
+  issueBrowserToken(ext, ttlMs) {
+    if (!this.browserTokens) this.browserTokens = new Map(); // ext -> [{token, expires}]
+    const token = crypto.randomBytes(24).toString('base64url');
+    const expires = Date.now() + (ttlMs || 12 * 60 * 60 * 1000);
+    const list = (this.browserTokens.get(String(ext)) || []).filter(t => t.expires > Date.now());
+    list.push({ token, expires });
+    // keep a couple per extension (one per open tab), newest wins
+    this.browserTokens.set(String(ext), list.slice(-3));
+    return { token, expires };
+  }
+
+  _browserTokens(ext) {
+    if (!this.browserTokens) return [];
+    const now = Date.now();
+    const list = (this.browserTokens.get(String(ext)) || []).filter(t => t.expires > now);
+    this.browserTokens.set(String(ext), list);
+    return list.map(t => t.token);
+  }
+
+  revokeBrowserTokens(ext) {
+    if (this.browserTokens) this.browserTokens.delete(String(ext));
+  }
 
   _cleanNonces() {
     const cutoff = Date.now() - 300000;

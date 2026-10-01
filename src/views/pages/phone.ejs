@@ -112,17 +112,21 @@ function ringStart(){
     ringIv=setInterval(function(){
       on=!on;
       if(on){
-        var o=c.createOscillator(), g=c.createGain();
-        o.type='sine'; o.frequency.value=440; g.gain.value=0.10;
-        o.connect(g); g.connect(c.destination); o.start(); ringOsc={o:o,g:g};
-        setTimeout(function(){ try{o.stop();}catch(e){} },700);
+        // classic dual-tone ring (440 + 480 Hz), loud enough to notice
+        var o=c.createOscillator(), o2=c.createOscillator(), g=c.createGain();
+        o.type='sine'; o.frequency.value=440;
+        o2.type='sine'; o2.frequency.value=480;
+        g.gain.value=0.45;
+        o.connect(g); o2.connect(g); g.connect(c.destination);
+        o.start(); o2.start(); ringOsc={o:o,o2:o2,g:g};
+        setTimeout(function(){ try{o.stop();o2.stop();}catch(e){} },1000);
       }
     },1400);
   }catch(e){}
 }
 function ringStop(){
   if(ringIv){clearInterval(ringIv);ringIv=null;}
-  if(ringOsc){try{ringOsc.o.stop();}catch(e){} ringOsc=null;}
+  if(ringOsc){try{ringOsc.o.stop();}catch(e){} try{if(ringOsc.o2)ringOsc.o2.stop();}catch(e){} ringOsc=null;}
 }
 function tone(freq,ms,vol){
   try{
@@ -132,8 +136,8 @@ function tone(freq,ms,vol){
     setTimeout(function(){try{o.stop();}catch(e){}}, ms);
   }catch(e){}
 }
-function toneHangup(){ tone(400,180); setTimeout(function(){tone(300,260);},190); }
-function toneAnswer(){ tone(660,120,0.08); }
+function toneHangup(){ tone(400,200,0.30); setTimeout(function(){tone(300,300,0.30);},210); }
+function toneAnswer(){ tone(660,140,0.22); }
 
 function meterStart(pc){
   meterStop();
@@ -246,7 +250,8 @@ function loadCreds(){
     .then(function(d){
       creds=(d&&d.extensions)||[];
       var sel=el('ph-pick');
-      if(!creds.length){ sel.innerHTML='<option value="">no extension</option>'; note('No extension is assigned to you.'); return; }
+      if(d&&d.role&&d.role!=='admin'&&d.role!=='supervisor'){ sel.disabled=true; }
+      if(!creds.length){ sel.innerHTML='<option value="">no extension</option>'; note('No extension is assigned to your account.'); return; }
       sel.innerHTML=creds.map(function(c){
         return '<option value="'+c.extension+'">'+c.extension+(c.name?' \u00b7 '+c.name:'')+'</option>';
       }).join('');
@@ -255,17 +260,30 @@ function loadCreds(){
 
 function phConnect(){
   var ext=el('ph-pick').value;
-  var c=null;
-  for(var i=0;i<creds.length;i++){ if(creds[i].extension===ext) c=creds[i]; }
-  if(!c){ note('Pick an extension first.'); return; }
+  if(!ext){ note('Pick an extension first.'); return; }
   if(!CFG.wssUrl){ note('WebRTC is not configured on this server.'); return; }
   actxGet();
-  note('Connecting…'); log('Signing in as '+ext);
+  note('Connecting\u2026'); log('Requesting credential for '+ext);
 
+  // The real SIP password never reaches the browser. The server mints a
+  // short-lived token scoped to this extension; agents can only ever get
+  // their own.
+  fetch('/phone/api/token',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    credentials:'same-origin',
+    body:JSON.stringify({extension:ext})
+  }).then(function(r){return r.json();}).then(function(d){
+    if(!d||!d.success){ note(d&&d.error?d.error:'Could not get a credential'); log('Auth error: '+(d&&d.error)); return; }
+    startUA(d.extension, d.token);
+  }).catch(function(e){ note('Could not get a credential: '+e.message); });
+}
+
+function startUA(ext, secret){
   ua=new SIP.UserAgent({
     uri: SIP.UserAgent.makeURI('sip:'+ext+'@'+CFG.sipDomain),
     authorizationUsername: ext,
-    authorizationPassword: c.password,
+    authorizationPassword: secret,
     transportOptions:{ server: CFG.wssUrl },
     sessionDescriptionHandlerFactoryOptions:{ peerConnectionConfiguration:{ iceServers: CFG.iceServers||[] } },
     delegate:{
@@ -295,7 +313,7 @@ function phConnect(){
         el('ph-disconnect').style.display='';
         el('ph-pick').disabled=true;
         el('ph-ext-label').textContent=ext;
-        note('Ready to take calls.'); log('Registered');
+        note('Ready to take calls.'); log('Registered as '+ext);
       } else if(st===SIP.RegistererState.Unregistered){
         pill('ph-reg','offline','p-gray'); el('ph-call').disabled=true; log('Unregistered');
       }

@@ -88,8 +88,10 @@ function deviceBadges(contacts) {
   if (!contacts || !contacts.length) return '-';
   return contacts.map(function (c) {
     var web = isWebRTCContact(c);
-    return '<span class="pill ' + (web ? 'p-blue' : 'p-ok') + '" style="font-size:9px;margin-right:4px" title="' +
-      esc(c.userAgent || '') + '">' + (web ? 'WebRTC' : 'SIP') + '</span>';
+    // p-info/p-ok are real classes in style.css (p-blue is not, so a WebRTC
+    // badge rendered unstyled).
+    return '<span class="pill ' + (web ? 'p-info' : 'p-ok') + '" style="font-size:9px;margin-right:4px" title="' +
+      esc((c.userAgent || '') + ' @ ' + c.ip + ':' + c.port) + '">' + (web ? 'WebRTC' : 'SIP') + '</span>';
   }).join('') +
   '<div class="muted" style="font-size:10px;margin-top:2px">' + esc(contacts[0].userAgent || '') + '</div>';
 }

@@ -154,18 +154,52 @@ function createWebrtcWebRouter(deps) {
   // SIP credential so they don't have to type it. Admins/supervisors get the
   // full list (they can already read these on the Extensions page); an agent
   // only ever gets their own extension.
+  // Which extensions this user may sign the browser phone in as. NO passwords
+  // are ever returned here.
   router.get('/phone/api/extensions', auth, async (req, res) => {
     try {
       const { Extension } = require('../models');
       const role = req.session ? req.session.role : '';
       const mine = req.session ? req.session.extension : '';
       const q = (role === 'admin' || role === 'supervisor') ? {} : { extension: mine || '__none__' };
-      const list = await Extension.find(q).sort('extension');
+      const list = await Extension.find(q, 'extension name').sort('extension');
       res.json({
-        success: true,
-        role,
-        extensions: list.map(e => ({ extension: e.extension, name: e.name, password: e.password }))
+        success: true, role, mine,
+        extensions: list.map(e => ({ extension: e.extension, name: e.name }))
       });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // Mint a short-lived SIP credential for the browser phone. The extension's
+  // real password never leaves the server; this token works only for REGISTER
+  // on that one extension and expires. An agent can only ever request their
+  // OWN extension — the server decides, not the browser.
+  router.post('/phone/api/token', auth, async (req, res) => {
+    try {
+      const { Extension } = require('../models');
+      const role = req.session ? req.session.role : '';
+      const mine = req.session ? String(req.session.extension || '') : '';
+      const asked = String((req.body && req.body.extension) || '').trim();
+
+      let ext;
+      if (role === 'admin' || role === 'supervisor') ext = asked || mine;
+      else ext = mine;                                   // agents: own extension only
+      if (!ext) return res.status(400).json({ success: false, error: 'No extension assigned to your account' });
+      if (!(role === 'admin' || role === 'supervisor') && asked && asked !== mine) {
+        logger.warn(`PHONE: ${req.session && req.session.user} tried to sign in as ${asked} (own: ${mine}) — denied`);
+        return res.status(403).json({ success: false, error: 'You can only use your own extension' });
+      }
+
+      const row = await Extension.findOne({ extension: ext });
+      if (!row) return res.status(404).json({ success: false, error: 'Extension not found' });
+
+      const registrar = deps && deps.registrar;
+      if (!registrar || typeof registrar.issueBrowserToken !== 'function') {
+        return res.status(503).json({ success: false, error: 'Browser phone credentials unavailable' });
+      }
+      const { token, expires } = registrar.issueBrowserToken(ext);
+      logger.info(`PHONE: issued browser credential for ${ext} to ${req.session && req.session.user}`);
+      res.json({ success: true, extension: ext, token, expires });
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
 
