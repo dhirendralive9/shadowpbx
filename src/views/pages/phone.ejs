@@ -86,7 +86,7 @@
 var CFG = <%- JSON.stringify(webrtcConfig || {}) %>;
 
 var ua=null, registerer=null, session=null, incoming=null;
-var muted=false, timer=null, startedAt=0, statsTimer=null, meterTimer=null, ringGuard=null;
+var muted=false, timer=null, startedAt=0, statsTimer=null, meterTimer=null, ringGuard=null, wasEstablished=false;
 var actx=null, micAn=null, spkAn=null, micSrc=null, spkSrc=null, creds=[], micStream=null;
 
 function el(i){return document.getElementById(i);}
@@ -207,6 +207,8 @@ function callerOf(s){
 function pcOf(s){ try{ return s.sessionDescriptionHandler.peerConnection; }catch(e){ return null; } }
 
 function onEstablished(s){
+  wasEstablished=true;
+  try{ if(window.spDismiss) window.spDismiss(); }catch(e){}
   ringStop(); toneAnswer();
   el('ph-incoming').style.display='none';
   el('ph-peer').textContent=callerOf(s);
@@ -224,6 +226,7 @@ function onEstablished(s){
   log('Call established with '+callerOf(s));
 }
 function resetCall(why, playTone){
+  try{ if(window.spDismiss) window.spDismiss(); }catch(e){}
   if(ringGuard){ clearTimeout(ringGuard); ringGuard=null; }
   ringStop(); statsStop(); meterStop();
   if(playTone) toneHangup();
@@ -234,7 +237,7 @@ function resetCall(why, playTone){
   var f=['ph-codec','ph-ice','ph-pkts','ph-lost','ph-jit','ph-rtt'];
   f.forEach(function(i){ el(i).textContent='—'; });
   if(timer){clearInterval(timer);timer=null;}
-  session=null; incoming=null; muted=false;
+  session=null; incoming=null; muted=false; wasEstablished=false;
   if(why){ note(why); log(why); }
 }
 function bind(s){
@@ -313,14 +316,18 @@ function startUA(ext, secret){
         ringStart();
         bind(inv);
         inv.stateChange.addListener(function(st){
-          if(st===SIP.SessionState.Terminated && session!==inv) resetCall('Missed call.', false);
+          // Only a call that never connected is a missed call — an answered
+          // call is handled by bind()'s own Terminated branch.
+          if(st===SIP.SessionState.Terminated && session!==inv && !wasEstablished){
+            resetCall('Missed call.', false);
+          }
         });
         // Safety net: never ring forever. If the CANCEL never reaches the
         // browser (lost WebSocket, proxy hiccup), stop on our own instead of
         // ringing after the caller has long gone.
         if(ringGuard) clearTimeout(ringGuard);
         ringGuard=setTimeout(function(){
-          if(incoming===inv && session!==inv){
+          if(incoming===inv && session!==inv && !wasEstablished){
             try{ inv.reject(); }catch(e){}
             resetCall('Missed call.', false);
           }

@@ -228,12 +228,19 @@ function spWatchForRing() {
     tries++;
     if (spCanAnswer()) {
       clearInterval(spRingWatch); spRingWatch = null;
-      ['sp-actions', 'sp-unknown-actions'].forEach(function (id) {
-        var n = document.getElementById(id);
-        if (n && n.innerHTML.indexOf('sp-btn-answer') === -1) {
+      // Only the container that is actually on screen, and only once —
+      // injecting into both left a stray duplicate button.
+      var ids = ['sp-actions', 'sp-unknown-actions'];
+      for (var i = 0; i < ids.length; i++) {
+        var n = document.getElementById(ids[i]);
+        if (!n) continue;
+        var host = n.closest ? n.closest('#sp-body, #sp-unknown') : null;
+        var visible = !host || host.style.display !== 'none';
+        if (visible && n.innerHTML.indexOf('sp-btn-answer') === -1) {
           n.innerHTML = '<button class="sp-btn sp-btn-answer" onclick="spAnswer()">Answer</button>' + n.innerHTML;
+          break;
         }
-      });
+      }
     } else if (tries > 20) { clearInterval(spRingWatch); spRingWatch = null; }
   }, 300);
 }
@@ -245,6 +252,17 @@ function spAnswer() {
   } catch (e) {}
 }
 window.spAnswer = spAnswer;
+
+// Let the browser phone close the pop once the call is answered or ends —
+// leaving an "incoming call" card on screen during/after the call is wrong.
+function spDismiss() {
+  try {
+    if (spRingWatch) { clearInterval(spRingWatch); spRingWatch = null; }
+    var c = document.getElementById('sp-container');
+    if (c) { c.classList.remove('sp-visible'); c.classList.add('sp-hidden'); }
+  } catch (e) {}
+}
+window.spDismiss = spDismiss;
 
   // ── Create Contact from unknown caller ──
   window.spCreateContact = function(phone) {
