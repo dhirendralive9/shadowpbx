@@ -70,11 +70,25 @@ class RingGroupHandler {
     const availableMembers = [];
     for (const ext of members) {
       const contacts = await this.registrar.getContacts(ext);
-      if (contacts.length > 0) {
-        const latest = this._getLatestContact(contacts);
-        availableMembers.push({ extension: ext, contact: latest });
-        logger.debug(`RINGGROUP: ${ext} -> ${latest.ip}:${latest.port} (${contacts.length} contact(s), using newest)`);
+      if (!contacts.length) continue;
+
+      // Ring EVERY device the agent is logged in on, not just the newest
+      // registration. An agent may be on a desk phone and the browser softphone
+      // at the same time; picking only the latest meant whichever registered
+      // last silently swallowed the call. Each contact is forked separately so
+      // a browser leg gets WebRTC media and a SIP phone gets plain RTP.
+      //
+      // Parallel strategies fork them all; the sequential/round-robin
+      // strategies still take one device per member (the newest), since they
+      // ring members one at a time by design.
+      const fanOut = (strategy === 'ringall' || strategy === 'simultaneous' || !strategy);
+      const chosen = fanOut ? contacts : [this._getLatestContact(contacts)];
+
+      for (const c of chosen) {
+        if (c) availableMembers.push({ extension: ext, contact: c });
       }
+      logger.debug(`RINGGROUP: ${ext} -> ${chosen.length}/${contacts.length} contact(s) ` +
+        `[${chosen.filter(Boolean).map(c => `${c.ip}:${c.port}${this._isWebRTCMember({ contact: c }) ? '/webrtc' : ''}`).join(', ')}]`);
     }
 
     if (availableMembers.length === 0) {
