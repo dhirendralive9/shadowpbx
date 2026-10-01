@@ -156,7 +156,15 @@ class Registrar {
     }
 
     // Extract source info
-    const sourceIp = req.source_address;
+    // Browsers reach us through the nginx /ws proxy, so req.source_address is
+    // always 127.0.0.1 — useless for showing where an agent actually is.
+    // nginx forwards the real client address, so prefer that when present.
+    let sourceIp = req.source_address;
+    const fwd = req.get('X-Real-IP') || req.get('X-Forwarded-For') || '';
+    if (fwd && sdpUtil.isLoopback(sourceIp)) {
+      const real = String(fwd).split(',')[0].trim();
+      if (real) sourceIp = real;
+    }
     const sourcePort = req.source_port;
     const ua = req.get('User-Agent') || 'unknown';
     const source = `${sourceIp}:${sourcePort}`;
@@ -208,6 +216,14 @@ class Registrar {
     extension.registrations = extension.registrations.filter(r => {
       // Remove registration with same Contact URI (same device re-registering)
       if (r.contactUri && contactUri && r.contactUri === contactUri) {
+        return false;
+      }
+      // A browser invents a NEW random "*.invalid" Contact every time SIP.js
+      // starts, so a page reload / reconnect looks like a brand-new device and
+      // the dead registration (whose WebSocket is already gone) would pile up.
+      // One browser phone per extension: a new WS registration replaces the
+      // previous one. SIP phones are untouched by this.
+      if (isWebRTC && this.isWebRTCContact(r)) {
         return false;
       }
       // Fallback: if no contactUri stored (old data), match by IP + UA
