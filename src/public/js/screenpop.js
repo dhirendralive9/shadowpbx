@@ -112,7 +112,7 @@
       document.getElementById('sp-title').textContent = w.page ? shortUrl(w.page) : '';
       document.getElementById('sp-meta').textContent = 'Browser call';
 
-      var webActions = '';
+      var webActions = spAnswerBtn();
       if (w.page) webActions += '<a href="' + escHtml(w.page) + '" target="_blank" rel="noopener" class="sp-btn sp-btn-crm">Open their page</a>';
       if (w.number) webActions += '<button class="sp-btn sp-btn-create" onclick="spCreateContact(\'' + escHtml(w.number) + '\')">Create Contact</button>';
       document.getElementById('sp-actions').innerHTML = webActions;
@@ -123,7 +123,7 @@
       document.getElementById('sp-unknown-phone').textContent = data.callerPhone || 'Unknown number';
 
       // Offer to create contact (only if we have a CRM connection)
-      var unknownActions = '';
+      var unknownActions = spAnswerBtn();
       unknownActions += '<button class="sp-btn sp-btn-create" onclick="spCreateContact(\'' + escHtml(data.callerPhone || '') + '\')">Create Contact</button>';
       document.getElementById('sp-unknown-actions').innerHTML = unknownActions;
 
@@ -203,6 +203,27 @@
   socket.on('crm:click2call:error', function(data) {
     toast('Call failed: ' + (data.error || 'Unknown error'), 'error');
   });
+
+
+// ── Answer directly from the pop ────────────────────────────────────────
+// The browser phone (pages/phone.ejs) exposes phAnswer()/phHasIncoming() on
+// window when it is signed in. If it is, offer an Answer button here so the
+// agent does not have to switch to the Phone tab while it rings.
+function spCanAnswer() {
+  return typeof window.phHasIncoming === 'function' && window.phHasIncoming();
+}
+function spAnswerBtn() {
+  if (!spCanAnswer()) return '';
+  return '<button class="sp-btn sp-btn-answer" onclick="spAnswer()">Answer</button>';
+}
+function spAnswer() {
+  try {
+    if (typeof window.phAnswer === 'function') window.phAnswer();
+    var c = document.getElementById('sp-container');
+    if (c) { c.classList.remove('sp-visible'); c.classList.add('sp-hidden'); }
+  } catch (e) {}
+}
+window.spAnswer = spAnswer;
 
   // ── Create Contact from unknown caller ──
   window.spCreateContact = function(phone) {

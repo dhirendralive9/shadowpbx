@@ -87,7 +87,7 @@ var CFG = <%- JSON.stringify(webrtcConfig || {}) %>;
 
 var ua=null, registerer=null, session=null, incoming=null;
 var muted=false, timer=null, startedAt=0, statsTimer=null, meterTimer=null;
-var actx=null, micAn=null, spkAn=null, micSrc=null, spkSrc=null, creds=[];
+var actx=null, micAn=null, spkAn=null, micSrc=null, spkSrc=null, creds=[], micStream=null;
 
 function el(i){return document.getElementById(i);}
 function pill(i,t,c){var n=el(i);n.textContent=t;n.className='pill '+(c||'p-gray');}
@@ -263,7 +263,23 @@ function phConnect(){
   if(!ext){ note('Pick an extension first.'); return; }
   if(!CFG.wssUrl){ note('WebRTC is not configured on this server.'); return; }
   actxGet();
-  note('Connecting\u2026'); log('Requesting credential for '+ext);
+  note('Checking microphone\u2026');
+
+  // Ask for the microphone NOW, while the agent is clicking "Go online" —
+  // not when a call is already ringing. A permission prompt mid-ring is how
+  // calls get missed.
+  navigator.mediaDevices.getUserMedia({audio:true}).then(function(st){
+    micStream=st;
+    log('Microphone ready');
+    note('Connecting\u2026'); log('Requesting credential for '+ext);
+    getCredential(ext);
+  }).catch(function(e){
+    note('Microphone blocked — allow mic access for this site, then try again.');
+    log('Microphone denied: '+e.name);
+  });
+}
+
+function getCredential(ext){
 
   // The real SIP password never reaches the browser. The server mints a
   // short-lived token scoped to this extension; agents can only ever get
@@ -326,6 +342,7 @@ function phDisconnect(){
   try{ if(registerer) registerer.unregister(); }catch(e){}
   try{ if(ua) ua.stop(); }catch(e){}
   ua=null; registerer=null; resetCall('', false);
+  try{ if(micStream){ micStream.getTracks().forEach(function(t){t.stop();}); micStream=null; } }catch(e){}
   pill('ph-reg','offline','p-gray');
   el('ph-connect').style.display=''; el('ph-disconnect').style.display='none';
   el('ph-pick').disabled=false; el('ph-call').disabled=true;
@@ -368,6 +385,10 @@ function phCall(){
   note('Calling '+dest+'…'); log('Calling '+dest);
   inviter.invite().catch(function(e){ note('Call failed: '+e.message); resetCall('', false); });
 }
+
+// Let the screen-pop offer an Answer button while this phone is ringing.
+window.phAnswer = phAnswer;
+window.phHasIncoming = function(){ return !!incoming; };
 
 loadCreds();
 if(!CFG.wssUrl) note('WebRTC is not configured on this server yet.');
