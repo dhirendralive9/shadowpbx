@@ -32,7 +32,20 @@ class Registrar {
   // REGISTER handler
   // ============================================================
   async handleRegister(req, res) {
-    const from = req.getParsedHeader('From');
+    // Malformed REGISTERs (scanners, truncated messages) have no parseable
+    // From header — getParsedHeader throws and the stack ends up in error.log
+    // on every probe. Reject them quietly instead.
+    let from;
+    try {
+      from = req.getParsedHeader('From');
+    } catch (e) {
+      try { res.send(400); } catch (e2) {}
+      return;
+    }
+    if (!from || !from.uri) {
+      try { res.send(400); } catch (e2) {}
+      return;
+    }
     const uri = from.uri;
 
     // Web-call guests (Phase 2) register as web-xxxxxx with a one-shot
@@ -103,8 +116,16 @@ class Registrar {
     // Successful auth - clear any failure tracking
     this.failedAttempts.delete(banKey);
 
-    // Clean up used nonce
-    this.nonceMap.delete(authParams.nonce);
+    // Keep the nonce usable for its lifetime instead of consuming it here.
+    //
+    // Clients re-use a cached nonce for periodic re-REGISTER (SIP.js in the
+    // browser does this on every refresh). Deleting it on first use made every
+    // refresh fail with "invalid/expired nonce", forcing a re-challenge and a
+    // brand-new registration — so a browser's contact (and its WebSocket) kept
+    // changing and calls to it died with 503. _cleanNonces() still expires
+    // nonces after 5 minutes, which is what bounds replay.
+    const nonceRec = this.nonceMap.get(authParams.nonce);
+    if (nonceRec) nonceRec.lastUsed = Date.now();
 
     // Get contact and expires
     const contact = req.get('Contact');
