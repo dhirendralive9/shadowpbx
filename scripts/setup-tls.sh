@@ -186,6 +186,22 @@ fi
 # Update SIP_DOMAIN if needed
 sed -i "s/^SIP_DOMAIN=.*/SIP_DOMAIN=${DOMAIN}/" "$ENV_FILE"
 
+# WEB_DOMAIN / WSS_URL drive the browser phone: the web UI is served over
+# https://WEB_DOMAIN and SIP.js connects to WSS_URL. setup-webrtc.sh reads
+# WEB_DOMAIN from here, so leaving these blank made that script bail with no
+# domain and the browser phone could never be set up.
+if grep -q '^WEB_DOMAIN=' "$ENV_FILE" 2>/dev/null; then
+  sed -i "s|^WEB_DOMAIN=.*|WEB_DOMAIN=${DOMAIN}|" "$ENV_FILE"
+else
+  echo "WEB_DOMAIN=${DOMAIN}" >> "$ENV_FILE"
+fi
+if grep -q '^WSS_URL=' "$ENV_FILE" 2>/dev/null; then
+  sed -i "s|^WSS_URL=.*|WSS_URL=wss://${DOMAIN}/ws|" "$ENV_FILE"
+else
+  echo "WSS_URL=wss://${DOMAIN}/ws" >> "$ENV_FILE"
+fi
+log ".env: WEB_DOMAIN + WSS_URL set for ${DOMAIN}"
+
 log ".env updated (SRTP_MODE=offer)"
 
 # Open port 5061 in firewall
@@ -223,6 +239,7 @@ sleep 2
 echo ""
 echo -e "${BOLD}${GREEN}════════════════════════════════════════════════════════${NC}"
 echo -e "${BOLD}${GREEN}  TLS/SRTP Setup Complete${NC}"
+NEXT_STEPS=1
 echo -e "${BOLD}${GREEN}════════════════════════════════════════════════════════${NC}"
 echo ""
 echo -e "  ${BOLD}SIP/UDP${NC}  (unencrypted):  ${EXTERNAL_IP}:5060"
@@ -244,3 +261,13 @@ echo "    Then: systemctl restart shadowpbx"
 echo ""
 echo -e "${BOLD}${GREEN}════════════════════════════════════════════════════════${NC}"
 echo ""
+
+if [ "${NEXT_STEPS:-0}" = "1" ]; then
+  echo ""
+  echo -e "${BOLD}  Browser phone (WebRTC) — next steps${NC}"
+  echo "    1. sudo bash ${APP_DIR}/scripts/setup-webrtc.sh    # nginx HTTPS + /ws, Drachtio WSS"
+  echo "    2. sudo bash ${APP_DIR}/scripts/setup-turn.sh      # TURN relay (needed behind carrier NAT)"
+  echo ""
+  echo "  Then agents sign in at https://${DOMAIN}/phone"
+  echo ""
+fi
