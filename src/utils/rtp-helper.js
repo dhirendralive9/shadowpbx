@@ -51,6 +51,12 @@ const CODEC_POLICY = (process.env.WEBRTC_CODEC_POLICY || 'g711').toLowerCase();
 const DTLS_ANSWER = (process.env.WEBRTC_DTLS_ANSWER || 'passive').toLowerCase();
 
 const WEBRTC_PROTOCOL = 'UDP/TLS/RTP/SAVPF';
+// When a SIP endpoint's RTP source ip:port migrates mid-call (e.g. carrier-grade
+// NAT rebinding an agent's port), tell RTPEngine to RE-LEARN and move to the new
+// source instead of ignoring it and forwarding to the stale one — the classic
+// "caller can hear agent, agent can't hear caller" one-way symptom. Default on;
+// set RTP_MEDIA_HANDOVER=false to disable.
+const MEDIA_HANDOVER = String(process.env.RTP_MEDIA_HANDOVER || 'true').toLowerCase() !== 'false';
 const NON_G711_AUDIO = ['opus', 'G722', 'red', 'ISAC', 'ILBC', 'G729', 'CN'];
 
 // Per-call leg memory: callId -> { a: offererType, b: answererType, at }
@@ -87,6 +93,7 @@ function getConfig() {
  */
 function baseParams() {
   const flags = ['trust-address'];
+  if (MEDIA_HANDOVER) flags.push('media-handover');
   const params = {
     'replace': ['origin', 'session-connection'],
     'ICE': 'remove'
@@ -134,7 +141,7 @@ function codecParamsTowardSip(browserSdp) {
 function sipLegParams({ codecFromSdp } = {}) {
   const params = {
     'replace': ['origin', 'session-connection'],
-    'flags': ['trust-address'],
+    'flags': MEDIA_HANDOVER ? ['trust-address', 'media-handover'] : ['trust-address'],
     'transport-protocol': SRTP_MODE === 'require' ? 'RTP/SAVP' : 'RTP/AVP',
     'ICE': 'remove',
     'DTLS': 'off',

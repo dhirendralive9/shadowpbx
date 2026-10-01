@@ -112,7 +112,7 @@
       document.getElementById('sp-title').textContent = w.page ? shortUrl(w.page) : '';
       document.getElementById('sp-meta').textContent = 'Browser call';
 
-      var webActions = '';
+      var webActions = spAnswerBtn();
       if (w.page) webActions += '<a href="' + escHtml(w.page) + '" target="_blank" rel="noopener" class="sp-btn sp-btn-crm">Open their page</a>';
       if (w.number) webActions += '<button class="sp-btn sp-btn-create" onclick="spCreateContact(\'' + escHtml(w.number) + '\')">Create Contact</button>';
       document.getElementById('sp-actions').innerHTML = webActions;
@@ -123,7 +123,7 @@
       document.getElementById('sp-unknown-phone').textContent = data.callerPhone || 'Unknown number';
 
       // Offer to create contact (only if we have a CRM connection)
-      var unknownActions = '';
+      var unknownActions = spAnswerBtn();
       unknownActions += '<button class="sp-btn sp-btn-create" onclick="spCreateContact(\'' + escHtml(data.callerPhone || '') + '\')">Create Contact</button>';
       document.getElementById('sp-unknown-actions').innerHTML = unknownActions;
 
@@ -203,6 +203,66 @@
   socket.on('crm:click2call:error', function(data) {
     toast('Call failed: ' + (data.error || 'Unknown error'), 'error');
   });
+
+
+// ── Answer directly from the pop ────────────────────────────────────────
+// The browser phone (pages/phone.ejs) exposes phAnswer()/phHasIncoming() on
+// window when it is signed in. If it is, offer an Answer button here so the
+// agent does not have to switch to the Phone tab while it rings.
+function spCanAnswer() {
+  return typeof window.phHasIncoming === 'function' && window.phHasIncoming();
+}
+function spAnswerBtn() {
+  // Rendered immediately if the phone is already ringing; otherwise
+  // spWatchForRing() adds it as soon as SIP.js delivers the INVITE (the
+  // server-side pop event usually arrives a moment earlier).
+  if (!spCanAnswer()) { spWatchForRing(); return ''; }
+  return '<button class="sp-btn sp-btn-answer" onclick="spAnswer()">Answer</button>';
+}
+
+var spRingWatch = null;
+function spWatchForRing() {
+  if (spRingWatch) clearInterval(spRingWatch);
+  var tries = 0;
+  spRingWatch = setInterval(function () {
+    tries++;
+    if (spCanAnswer()) {
+      clearInterval(spRingWatch); spRingWatch = null;
+      // Only the container that is actually on screen, and only once —
+      // injecting into both left a stray duplicate button.
+      var ids = ['sp-actions', 'sp-unknown-actions'];
+      for (var i = 0; i < ids.length; i++) {
+        var n = document.getElementById(ids[i]);
+        if (!n) continue;
+        var host = n.closest ? n.closest('#sp-body, #sp-unknown') : null;
+        var visible = !host || host.style.display !== 'none';
+        if (visible && n.innerHTML.indexOf('sp-btn-answer') === -1) {
+          n.innerHTML = '<button class="sp-btn sp-btn-answer" onclick="spAnswer()">Answer</button>' + n.innerHTML;
+          break;
+        }
+      }
+    } else if (tries > 20) { clearInterval(spRingWatch); spRingWatch = null; }
+  }, 300);
+}
+function spAnswer() {
+  try {
+    if (typeof window.phAnswer === 'function') window.phAnswer();
+    var c = document.getElementById('sp-container');
+    if (c) { c.classList.remove('sp-visible'); c.classList.add('sp-hidden'); }
+  } catch (e) {}
+}
+window.spAnswer = spAnswer;
+
+// Let the browser phone close the pop once the call is answered or ends —
+// leaving an "incoming call" card on screen during/after the call is wrong.
+function spDismiss() {
+  try {
+    if (spRingWatch) { clearInterval(spRingWatch); spRingWatch = null; }
+    var c = document.getElementById('sp-container');
+    if (c) { c.classList.remove('sp-visible'); c.classList.add('sp-hidden'); }
+  } catch (e) {}
+}
+window.spDismiss = spDismiss;
 
   // ── Create Contact from unknown caller ──
   window.spCreateContact = function(phone) {

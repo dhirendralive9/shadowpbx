@@ -514,3 +514,12 @@ a:hover { text-decoration: underline; }
 @media (max-width: 600px) {
   .sp-container { width: calc(100vw - 20px); right: 10px; top: 10px; }
 }
+
+/* Answer directly from the screen-pop (shown only when the browser phone is ringing) */
+.sp-btn-answer {
+  background: #30a46c;
+  color: #fff;
+  border-color: #30a46c;
+  font-weight: 600;
+}
+.sp-btn-answer:hover { background: #2b935f; }

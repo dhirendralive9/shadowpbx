@@ -70,11 +70,25 @@ class RingGroupHandler {
     const availableMembers = [];
     for (const ext of members) {
       const contacts = await this.registrar.getContacts(ext);
-      if (contacts.length > 0) {
-        const latest = this._getLatestContact(contacts);
-        availableMembers.push({ extension: ext, contact: latest });
-        logger.debug(`RINGGROUP: ${ext} -> ${latest.ip}:${latest.port} (${contacts.length} contact(s), using newest)`);
+      if (!contacts.length) continue;
+
+      // Ring EVERY device the agent is logged in on, not just the newest
+      // registration. An agent may be on a desk phone and the browser softphone
+      // at the same time; picking only the latest meant whichever registered
+      // last silently swallowed the call. Each contact is forked separately so
+      // a browser leg gets WebRTC media and a SIP phone gets plain RTP.
+      //
+      // Parallel strategies fork them all; the sequential/round-robin
+      // strategies still take one device per member (the newest), since they
+      // ring members one at a time by design.
+      const fanOut = (strategy === 'ringall' || strategy === 'simultaneous' || !strategy);
+      const chosen = fanOut ? contacts : [this._getLatestContact(contacts)];
+
+      for (const c of chosen) {
+        if (c) availableMembers.push({ extension: ext, contact: c });
       }
+      logger.debug(`RINGGROUP: ${ext} -> ${chosen.length}/${contacts.length} contact(s) ` +
+        `[${chosen.filter(Boolean).map(c => `${c.ip}:${c.port}${this._isWebRTCMember({ contact: c }) ? '/webrtc' : ''}`).join(', ')}]`);
     }
 
     if (availableMembers.length === 0) {
@@ -112,6 +126,15 @@ class RingGroupHandler {
   // just like createB2BUA.
   // ============================================================
   async _ringSimultaneously(req, res, members, ringTime, cdr) {
+    // A browser (WebRTC) leg needs DTLS-SRTP/ICE media while a SIP phone needs
+    // plain RTP/AVP — and drachtio's simring offers ONE SDP to every fork, so it
+    // cannot serve both. When any member is a browser, fork them ourselves with
+    // a per-leg RTPEngine session. Pure-SIP groups keep the original simring
+    // path untouched.
+    if (members.some(m => this._isWebRTCMember(m))) {
+      return this._ringParallelPerLeg(req, res, members, ringTime, cdr);
+    }
+
     const uris = members.map(m => `sip:${m.extension}@${m.contact.ip}:${m.contact.port}`);
 
     logger.info(`SIMRING: forking to ${uris.length} targets: ${uris.join(', ')}`);
@@ -244,6 +267,208 @@ class RingGroupHandler {
   }
 
   // ============================================================
+  // ============================================================
+  // WebRTC-aware helpers
+  // ============================================================
+
+  // True when this member registered from a browser (SIP over WS/WSS).
+  _isWebRTCMember(m) {
+    const c = m && m.contact;
+    if (!c) return false;
+    if (c.webrtc) return true;
+    const t = String(c.transport || '').toLowerCase();
+    return t === 'ws' || t === 'wss';
+  }
+
+  // Request-URI + media type for one member. Browsers must carry
+  // ;transport=ws so drachtio re-uses their existing WebSocket; their media
+  // leg has to be built as WebRTC (DTLS-SRTP + ICE), not plain RTP.
+  _memberTarget(m) {
+    const webrtc = this._isWebRTCMember(m);
+    let uri = `sip:${m.extension}@${m.contact.ip}:${m.contact.port}`;
+    if (webrtc) {
+      // A browser's Contact host is an unroutable "*.invalid" name (a JS stack
+      // cannot know its own address), so we must target the source address the
+      // REGISTER arrived on and name the transport explicitly.
+      //
+      // Behind nginx the browser's WebSocket is terminated as TLS and proxied
+      // to drachtio's *wss* listener (5062), so the registration is recorded
+      // with transport "tcp" — asking for ";transport=ws" makes drachtio look
+      // for a plain-ws connection that does not exist and answer 503. Default
+      // to wss; set WEBRTC_CONTACT_TRANSPORT=ws if nginx proxies to the plain
+      // ws listener instead.
+      const want = String(process.env.WEBRTC_CONTACT_TRANSPORT || '').toLowerCase();
+      const t = want === 'ws' ? 'ws'
+        : (String(m.contact.transport || '').toLowerCase() === 'ws' ? 'ws' : 'wss');
+      uri += `;transport=${t}`;
+    }
+    return { uri, media: webrtc ? 'webrtc' : 'sip', webrtc };
+  }
+
+  // ============================================================
+  // PARALLEL with PER-LEG MEDIA (mixed WebRTC + SIP ring groups)
+  //
+  // Each member gets its OWN RTPEngine session, so a browser can be offered
+  // DTLS-SRTP/ICE while a desk phone is offered plain RTP in the same ring.
+  // All forks are INVITEd at once; the first to answer is bridged to the
+  // caller and the rest are cancelled.
+  // ============================================================
+  async _ringParallelPerLeg(req, res, members, ringTime, cdr) {
+    const rtpHelper = require('../utils/rtp-helper');
+    const { v4: uuidv4 } = require('uuid');
+    const fromTag = req.getParsedHeader('From').params.tag;
+
+    // Preserve the caller's identity across the fork. Prefer the display
+    // name/number the inbound INVITE carried; fall back to the From user.
+    const inviteHeaders = {};
+    try {
+      const pf = req.getParsedHeader('From');
+      const rawFrom = req.get('From');
+      if (rawFrom) inviteHeaders['From'] = rawFrom;
+      const num = (pf && pf.uri && (pf.uri.match(/sip:([^@;>]+)@/) || [])[1]) || '';
+      if (num) inviteHeaders['P-Asserted-Identity'] = `<sip:${num}@${process.env.EXTERNAL_IP || 'localhost'}>`;
+    } catch (e) { /* fall through to drachtio defaults */ }
+
+    let callerGone = false;
+
+    const targets = members.map(m => ({ m, t: this._memberTarget(m) }));
+    logger.info(`SIMRING(per-leg): forking to ${targets.length} targets: ` +
+      targets.map(x => `${x.t.uri}${x.t.webrtc ? ' [webrtc]' : ''}`).join(', '));
+
+    let settled = false;
+    const uacs = [];
+    const pendingInvites = new Map(); // uri -> in-flight INVITE (for CANCEL)
+
+    // CANCEL every fork that is still ringing, and tear down any that answered
+    // after the race was already won.
+    const cancelOthers = (winnerUri) => {
+      for (const [uri, inviteReq] of pendingInvites) {
+        if (uri === winnerUri) continue;
+        try { inviteReq.cancel(); } catch (e) {}
+      }
+      pendingInvites.clear();
+    };
+
+    // If the CALLER gives up before anyone answers, drachtio delivers a CANCEL
+    // on the inbound request. Without this every device keeps ringing after the
+    // caller has already hung up.
+    try {
+      req.on('cancel', () => {
+        callerGone = true;
+        logger.info('SIMRING(per-leg): caller cancelled — stopping all forks');
+        cancelOthers(null);
+      });
+    } catch (e) { /* older drachtio: fall back to ring timeout */ }
+
+    const dialOne = async ({ m, t }) => {
+      // One RTPEngine session per fork so each leg gets its own media type.
+      const legCallId = `${uuidv4()}`;
+      let legSdp = req.body;
+      if (this.rtpengine) {
+        try {
+          const o = await rtpHelper.offer(this.rtpengine, legCallId, fromTag, req.body,
+            { 'record call': 'yes' }, { target: t.media });
+          if (o && o.sdp) legSdp = o.sdp;
+        } catch (e) {
+          logger.warn(`SIMRING(per-leg): RTPEngine offer failed for ${m.extension}: ${e.message}`);
+          if (t.webrtc) throw new Error('webrtc media bridge unavailable'); // browser can't take raw SDP
+        }
+      } else if (t.webrtc) {
+        throw new Error('webrtc member requires RTPEngine');
+      }
+
+      // cbRequest hands us the outgoing INVITE while it is still ringing, so a
+      // fork that loses the race can be CANCELled (otherwise that device keeps
+      // ringing after someone else answers).
+      // Carry the ORIGINAL caller's identity onto each fork. Without this
+      // drachtio builds a default From from the server's own address, so the
+      // agent's phone shows the PBX IP (and a browser shows "undefined")
+      // instead of the person calling.
+      const uac = await this.srf.createUAC(t.uri, {
+        localSdp: legSdp,
+        headers: inviteHeaders
+      }, {
+        cbRequest: (err, inviteReq) => { if (!err && inviteReq) pendingInvites.set(t.uri, inviteReq); }
+      });
+      pendingInvites.delete(t.uri);
+      return { uac, m, t, legCallId };
+    };
+
+    try {
+      const winner = await new Promise((resolve, reject) => {
+        let pending = targets.length;
+        let lastErr = null;
+        const timer = setTimeout(() => {
+          if (!settled) {
+            settled = true;
+            cancelOthers(null); // stop every device ringing
+            reject(Object.assign(new Error('timeout'), { status: 408 }));
+          }
+        }, (parseInt(ringTime) || 30) * 1000);
+
+        targets.forEach((x) => {
+          dialOne(x).then((win) => {
+            // Caller already hung up, or another device won: drop this leg.
+            if (settled || callerGone) { try { win.uac.destroy(); } catch (e) {} return; }
+            settled = true;
+            clearTimeout(timer);
+            // Someone answered — stop the other devices ringing immediately.
+            cancelOthers(win.t.uri);
+            resolve(win);
+          }).catch((err) => {
+            lastErr = err;
+            logger.info(`SIMRING(per-leg): ${x.m.extension} failed (${err.status || err.message})`);
+            if (--pending === 0 && !settled) {
+              settled = true;
+              clearTimeout(timer);
+              reject(lastErr || new Error('no answer'));
+            }
+          });
+          uacs.push(x);
+        });
+      });
+
+      // Cancel the losing forks.
+      // (Each dialOne's own promise cleans itself up via the settled check.)
+
+      // Bridge the winner back to the caller: run its answer through the same
+      // RTPEngine session so the caller gets plain RTP regardless of leg type.
+      let answerSdp = winner.uac.remote && winner.uac.remote.sdp ? winner.uac.remote.sdp : '';
+      if (this.rtpengine && answerSdp) {
+        try {
+          const toTag = (winner.uac.sip && winner.uac.sip.remote && winner.uac.sip.remote.tag) || '';
+          const a = await rtpHelper.answer(this.rtpengine, winner.legCallId, fromTag, toTag, answerSdp,
+            { 'record call': 'yes' });
+          if (a && a.sdp) answerSdp = a.sdp;
+        } catch (e) {
+          logger.warn(`SIMRING(per-leg): RTPEngine answer failed: ${e.message}`);
+        }
+      }
+
+      const uas = await this.srf.createUAS(req, res, { localSdp: answerSdp });
+      uas._rtpCallId = winner.legCallId;
+      uas._rtpFromTag = fromTag;
+      winner.uac._rtpCallId = winner.legCallId;
+      winner.uac._rtpFromTag = fromTag;
+
+      uas.on('destroy', () => { try { winner.uac.destroy(); } catch (e) {} });
+      winner.uac.on('destroy', () => { try { uas.destroy(); } catch (e) {} });
+
+      logger.info(`SIMRING(per-leg): answered by ${winner.m.extension}${winner.t.webrtc ? ' [webrtc]' : ''}`);
+      cdr.status = 'answered';
+      cdr.answerTime = new Date();
+      cdr.to = winner.m.extension;
+      cdr.rtpCallId = winner.legCallId;
+      await cdr.save();
+      return { uas, uac: winner.uac, answeredBy: winner.m.extension };
+    } catch (err) {
+      logger.info(`SIMRING(per-leg): no answer - ${err.message || 'timeout'}`);
+      cdr.status = 'missed';
+      await cdr.save();
+      return null; // let call-handler try voicemail
+    }
+  }
+
   // SEQUENTIAL - Ring members one at a time using createB2BUA
   // Uses passFailure:false to try the next member on failure
   // ============================================================

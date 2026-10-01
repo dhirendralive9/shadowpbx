@@ -281,25 +281,74 @@ step "2/7 nginx /ws proxy"
 # ============================================================
 NGINX_FILE=$(grep -Rls 'proxy_pass https\?://127.0.0.1:506[12]' /etc/nginx/sites-enabled/ /etc/nginx/sites-available/ /etc/nginx/conf.d/ 2>/dev/null | head -1)
 if [ -z "$NGINX_FILE" ]; then
-  err "No nginx location proxies /ws to Drachtio"
-  info "Add this inside the 'listen 443 ssl' server block for ${WEB_DOMAIN:-your domain}, then: nginx -t && systemctl reload nginx"
-  cat << 'NGX'
+  if [ -z "$WEB_DOMAIN" ]; then
+    err "No /ws proxy and no WEB_DOMAIN in .env — set WEB_DOMAIN first (scripts/setup-tls.sh <domain>)"
+  elif [ ! -f "/etc/letsencrypt/live/${WEB_DOMAIN}/fullchain.pem" ]; then
+    err "No certificate for ${WEB_DOMAIN} — run: scripts/setup-tls.sh ${WEB_DOMAIN}"
+  else
+    # Write the HTTPS vhost ourselves rather than asking the operator to paste
+    # one in. Browsers need https:// for getUserMedia and wss:// for SIP, so
+    # there is nothing optional about this block.
+    info "Writing nginx HTTPS + /ws vhost for ${WEB_DOMAIN}"
+    # Deliberately inline the TLS options: certbot does not always drop
+    # options-ssl-nginx.conf / ssl-dhparams.pem, and including a missing file
+    # makes nginx refuse to start.
+    cat > /etc/nginx/sites-available/shadowpbx << NGXEOF
+server {
+    listen 80;
+    server_name ${WEB_DOMAIN};
+    return 301 https://\$host\$request_uri;
+}
 
-    # SIP over WebSocket (WebRTC) -> Drachtio WSS
+server {
+    listen 443 ssl;
+    server_name ${WEB_DOMAIN};
+
+    ssl_certificate /etc/letsencrypt/live/${WEB_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${WEB_DOMAIN}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
+    # SIP over WebSocket (WebRTC) -> Drachtio WSS. Must be the wss listener
+    # (5062): browsers send "Via: SIP/2.0/WSS" and sofia-sip silently drops
+    # messages whose Via transport has no matching listener.
     location /ws {
         proxy_pass https://127.0.0.1:5062;
         proxy_ssl_verify off;
         proxy_ssl_server_name on;
         proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
     }
-
-NGX
+}
+NGXEOF
+    ln -sf /etc/nginx/sites-available/shadowpbx /etc/nginx/sites-enabled/shadowpbx
+    if nginx -t >/dev/null 2>&1; then
+      systemctl reload nginx
+      log "nginx vhost written and reloaded (https://${WEB_DOMAIN} + /ws)"
+      NGINX_FILE=/etc/nginx/sites-available/shadowpbx
+      CHANGED=true
+      FAILURES=$((FAILURES-1))
+    else
+      err "nginx config test failed after writing the vhost — check: nginx -t"
+    fi
+  fi
 else
   log "WS proxy found in ${NGINX_FILE}"
   if grep -q 'proxy_pass http://127.0.0.1:5061' "$NGINX_FILE"; then

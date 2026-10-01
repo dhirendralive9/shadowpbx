@@ -32,7 +32,20 @@ class Registrar {
   // REGISTER handler
   // ============================================================
   async handleRegister(req, res) {
-    const from = req.getParsedHeader('From');
+    // Malformed REGISTERs (scanners, truncated messages) have no parseable
+    // From header — getParsedHeader throws and the stack ends up in error.log
+    // on every probe. Reject them quietly instead.
+    let from;
+    try {
+      from = req.getParsedHeader('From');
+    } catch (e) {
+      try { res.send(400); } catch (e2) {}
+      return;
+    }
+    if (!from || !from.uri) {
+      try { res.send(400); } catch (e2) {}
+      return;
+    }
     const uri = from.uri;
 
     // Web-call guests (Phase 2) register as web-xxxxxx with a one-shot
@@ -93,7 +106,16 @@ class Registrar {
     }
 
     // Verify credentials (digest auth)
-    const valid = this._verifyDigest(authParams, extension.password, req.method);
+    // A browser phone authenticates with a SHORT-LIVED TOKEN instead of the
+    // extension's real SIP password, so the password is never shipped to a web
+    // page (where devtools / an interception proxy could read it). Tokens are
+    // minted per signed-in user for their own extension only and expire.
+    let valid = this._verifyDigest(authParams, extension.password, req.method);
+    if (!valid) {
+      for (const tok of this._browserTokens(ext)) {
+        if (this._verifyDigest(authParams, tok, req.method)) { valid = true; break; }
+      }
+    }
     if (!valid) {
       this._recordFailure(banKey);
       logger.warn(`REGISTER rejected: bad credentials for ${ext} from ${req.source_address}${transport ? ' via ' + transport : ''}`);
@@ -103,8 +125,16 @@ class Registrar {
     // Successful auth - clear any failure tracking
     this.failedAttempts.delete(banKey);
 
-    // Clean up used nonce
-    this.nonceMap.delete(authParams.nonce);
+    // Keep the nonce usable for its lifetime instead of consuming it here.
+    //
+    // Clients re-use a cached nonce for periodic re-REGISTER (SIP.js in the
+    // browser does this on every refresh). Deleting it on first use made every
+    // refresh fail with "invalid/expired nonce", forcing a re-challenge and a
+    // brand-new registration — so a browser's contact (and its WebSocket) kept
+    // changing and calls to it died with 503. _cleanNonces() still expires
+    // nonces after 5 minutes, which is what bounds replay.
+    const nonceRec = this.nonceMap.get(authParams.nonce);
+    if (nonceRec) nonceRec.lastUsed = Date.now();
 
     // Get contact and expires
     const contact = req.get('Contact');
@@ -126,7 +156,15 @@ class Registrar {
     }
 
     // Extract source info
-    const sourceIp = req.source_address;
+    // Browsers reach us through the nginx /ws proxy, so req.source_address is
+    // always 127.0.0.1 — useless for showing where an agent actually is.
+    // nginx forwards the real client address, so prefer that when present.
+    let sourceIp = req.source_address;
+    const fwd = req.get('X-Real-IP') || req.get('X-Forwarded-For') || '';
+    if (fwd && sdpUtil.isLoopback(sourceIp)) {
+      const real = String(fwd).split(',')[0].trim();
+      if (real) sourceIp = real;
+    }
     const sourcePort = req.source_port;
     const ua = req.get('User-Agent') || 'unknown';
     const source = `${sourceIp}:${sourcePort}`;
@@ -178,6 +216,14 @@ class Registrar {
     extension.registrations = extension.registrations.filter(r => {
       // Remove registration with same Contact URI (same device re-registering)
       if (r.contactUri && contactUri && r.contactUri === contactUri) {
+        return false;
+      }
+      // A browser invents a NEW random "*.invalid" Contact every time SIP.js
+      // starts, so a page reload / reconnect looks like a brand-new device and
+      // the dead registration (whose WebSocket is already gone) would pile up.
+      // One browser phone per extension: a new WS registration replaces the
+      // previous one. SIP phones are untouched by this.
+      if (isWebRTC && this.isWebRTCContact(r)) {
         return false;
       }
       // Fallback: if no contactUri stored (old data), match by IP + UA
@@ -495,6 +541,34 @@ class Registrar {
   // ============================================================
   // Cleanup tasks
   // ============================================================
+
+  // ── short-lived browser phone credentials ──────────────────────────────
+  // The web softphone never receives the extension's real SIP password. It is
+  // issued a random token, valid for a limited time, usable only as that one
+  // extension's REGISTER credential. Leaking it costs at most a short window
+  // on a single extension; the real password is never exposed.
+  issueBrowserToken(ext, ttlMs) {
+    if (!this.browserTokens) this.browserTokens = new Map(); // ext -> [{token, expires}]
+    const token = crypto.randomBytes(24).toString('base64url');
+    const expires = Date.now() + (ttlMs || 12 * 60 * 60 * 1000);
+    const list = (this.browserTokens.get(String(ext)) || []).filter(t => t.expires > Date.now());
+    list.push({ token, expires });
+    // keep a couple per extension (one per open tab), newest wins
+    this.browserTokens.set(String(ext), list.slice(-3));
+    return { token, expires };
+  }
+
+  _browserTokens(ext) {
+    if (!this.browserTokens) return [];
+    const now = Date.now();
+    const list = (this.browserTokens.get(String(ext)) || []).filter(t => t.expires > now);
+    this.browserTokens.set(String(ext), list);
+    return list.map(t => t.token);
+  }
+
+  revokeBrowserTokens(ext) {
+    if (this.browserTokens) this.browserTokens.delete(String(ext));
+  }
 
   _cleanNonces() {
     const cutoff = Date.now() - 300000;

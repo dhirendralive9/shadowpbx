@@ -76,6 +76,32 @@ function presencePill(p, remote) {
   return '<span class="pill p-gray">' + esc(p) + '</span>';
 }
 
+// An agent can be registered on several devices at once (desk phone + browser
+// softphone). Show each one rather than only the first contact.
+function isWebRTCContact(c) {
+  if (!c) return false;
+  if (c.webrtc) return true;
+  var t = String(c.transport || '').toLowerCase();
+  return t === 'ws' || t === 'wss';
+}
+function deviceBadges(contacts) {
+  if (!contacts || !contacts.length) return '-';
+  return contacts.map(function (c) {
+    var web = isWebRTCContact(c);
+    // p-info/p-ok are real classes in style.css (p-blue is not, so a WebRTC
+    // badge rendered unstyled).
+    return '<span class="pill ' + (web ? 'p-info' : 'p-ok') + '" style="font-size:9px;margin-right:4px" title="' +
+      esc((c.userAgent || '') + ' @ ' + c.ip + ':' + c.port) + '">' + (web ? 'WebRTC' : 'SIP') + '</span>';
+  }).join('') +
+  '<div class="muted" style="font-size:10px;margin-top:2px">' + esc(contacts[0].userAgent || '') + '</div>';
+}
+function deviceAddrs(contacts) {
+  if (!contacts || !contacts.length) return '-';
+  return contacts.map(function (c) {
+    return '<div>' + esc(c.ip + ':' + c.port) + '</div>';
+  }).join('');
+}
+
 function statusDot(reg, presence) {
   if (!reg) return '<span class="dot dot-gray" title="Offline"></span>';
   if (presence === 'ringing') return '<span class="dot dot-amber" title="Ringing" style="animation:pulse 0.6s infinite"></span>';
@@ -121,8 +147,8 @@ async function loadExtensions() {
           (e.webAccess ? ' <span class="pill p-ok" style="font-size:9px" title="Web access: ' + esc((e.webUser && e.webUser.username) || '') + ' (' + esc((e.webUser && e.webUser.role) || '') + ')">web</span>' : '') +
         '</td>' +
         '<td>' + (reg ? presencePill(p, e.presenceRemote) : '<span class="pill p-gray">offline</span>') + '</td>' +
-        '<td class="muted" style="font-size:11px">' + esc(c0.userAgent || '-') + '</td>' +
-        '<td class="mono" style="font-size:11px">' + (reg ? esc(c0.ip + ':' + c0.port) : '-') + '</td>' +
+        '<td class="muted" style="font-size:11px">' + deviceBadges(e.contacts) + '</td>' +
+        '<td class="mono" style="font-size:11px">' + (reg ? deviceAddrs(e.contacts) : '-') + '</td>' +
         '<td class="muted">' + (c0.expires ? formatExpires(c0.expires) : '-') + '</td>' +
         '<td data-sip-ext="' + esc(e.extension) + '">' + (myRole === 'admin'
           ? sipToggleHtml(e.extension, e.allowExternalCalls)
