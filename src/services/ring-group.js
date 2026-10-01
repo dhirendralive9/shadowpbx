@@ -324,6 +324,17 @@ class RingGroupHandler {
 
     let settled = false;
     const uacs = [];
+    const pendingInvites = new Map(); // uri -> in-flight INVITE (for CANCEL)
+
+    // CANCEL every fork that is still ringing, and tear down any that answered
+    // after the race was already won.
+    const cancelOthers = (winnerUri) => {
+      for (const [uri, inviteReq] of pendingInvites) {
+        if (uri === winnerUri) continue;
+        try { inviteReq.cancel(); } catch (e) {}
+      }
+      pendingInvites.clear();
+    };
 
     const dialOne = async ({ m, t }) => {
       // One RTPEngine session per fork so each leg gets its own media type.
@@ -342,10 +353,16 @@ class RingGroupHandler {
         throw new Error('webrtc member requires RTPEngine');
       }
 
+      // cbRequest hands us the outgoing INVITE while it is still ringing, so a
+      // fork that loses the race can be CANCELled (otherwise that device keeps
+      // ringing after someone else answers).
       const uac = await this.srf.createUAC(t.uri, {
         localSdp: legSdp,
         headers: {}
+      }, {
+        cbRequest: (err, inviteReq) => { if (!err && inviteReq) pendingInvites.set(t.uri, inviteReq); }
       });
+      pendingInvites.delete(t.uri);
       return { uac, m, t, legCallId };
     };
 
@@ -354,7 +371,11 @@ class RingGroupHandler {
         let pending = targets.length;
         let lastErr = null;
         const timer = setTimeout(() => {
-          if (!settled) { settled = true; reject(Object.assign(new Error('timeout'), { status: 408 })); }
+          if (!settled) {
+            settled = true;
+            cancelOthers(null); // stop every device ringing
+            reject(Object.assign(new Error('timeout'), { status: 408 }));
+          }
         }, (parseInt(ringTime) || 30) * 1000);
 
         targets.forEach((x) => {
@@ -362,6 +383,8 @@ class RingGroupHandler {
             if (settled) { try { win.uac.destroy(); } catch (e) {} return; }
             settled = true;
             clearTimeout(timer);
+            // Someone answered — stop the other devices ringing immediately.
+            cancelOthers(win.t.uri);
             resolve(win);
           }).catch((err) => {
             lastErr = err;
