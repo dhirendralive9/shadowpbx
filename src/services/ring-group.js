@@ -318,6 +318,17 @@ class RingGroupHandler {
     const { v4: uuidv4 } = require('uuid');
     const fromTag = req.getParsedHeader('From').params.tag;
 
+    // Preserve the caller's identity across the fork. Prefer the display
+    // name/number the inbound INVITE carried; fall back to the From user.
+    const inviteHeaders = {};
+    try {
+      const pf = req.getParsedHeader('From');
+      const rawFrom = req.get('From');
+      if (rawFrom) inviteHeaders['From'] = rawFrom;
+      const num = (pf && pf.uri && (pf.uri.match(/sip:([^@;>]+)@/) || [])[1]) || '';
+      if (num) inviteHeaders['P-Asserted-Identity'] = `<sip:${num}@${process.env.EXTERNAL_IP || 'localhost'}>`;
+    } catch (e) { /* fall through to drachtio defaults */ }
+
     const targets = members.map(m => ({ m, t: this._memberTarget(m) }));
     logger.info(`SIMRING(per-leg): forking to ${targets.length} targets: ` +
       targets.map(x => `${x.t.uri}${x.t.webrtc ? ' [webrtc]' : ''}`).join(', '));
@@ -356,9 +367,13 @@ class RingGroupHandler {
       // cbRequest hands us the outgoing INVITE while it is still ringing, so a
       // fork that loses the race can be CANCELled (otherwise that device keeps
       // ringing after someone else answers).
+      // Carry the ORIGINAL caller's identity onto each fork. Without this
+      // drachtio builds a default From from the server's own address, so the
+      // agent's phone shows the PBX IP (and a browser shows "undefined")
+      // instead of the person calling.
       const uac = await this.srf.createUAC(t.uri, {
         localSdp: legSdp,
-        headers: {}
+        headers: inviteHeaders
       }, {
         cbRequest: (err, inviteReq) => { if (!err && inviteReq) pendingInvites.set(t.uri, inviteReq); }
       });
