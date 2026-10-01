@@ -1390,25 +1390,54 @@ function renderFail2ban(f) {
   }
   var jails = f.jails || [];
   var totalCur = jails.reduce(function(a, j){ return a + (j.currentlyBanned || 0); }, 0);
+  // Keep the raw lists in memory for export rather than printing them — a busy
+  // sshd jail runs to dozens of addresses and makes the card unreadable.
+  F2B_BANS = {};
   var rows = jails.map(function(j){
-    if (j.error) return '<tr><td><b>' + esc(j.name) + '</b></td><td colspan="3" class="muted">unavailable</td></tr>';
+    if (j.error) return '<tr><td><b>' + esc(j.name) + '</b></td><td colspan="4" class="muted">unavailable</td></tr>';
     var ips = j.bannedIps || [];
+    F2B_BANS[j.name] = ips;
+    var action = ips.length
+      ? '<button class="btn btn-sm" onclick="f2bExport(' + JSON.stringify(j.name) + ')">Export CSV</button>'
+      : '<span class="muted" style="font-size:11px">none</span>';
     return '<tr>' +
       '<td><b>' + esc(j.name) + '</b></td>' +
       '<td>' + (j.currentlyBanned || 0) + '</td>' +
       '<td>' + (j.totalBanned || 0) + '</td>' +
-      '<td class="mono" style="font-size:11px;word-break:break-all">' +
-        (ips.length ? ips.map(esc).join(', ') : '<span class="muted">none</span>') +
-      '</td></tr>';
+      '<td>' + action + '</td></tr>';
   }).join('');
+  var allBtn = totalCur
+    ? '<button class="btn btn-sm" onclick="f2bExport()">Export all (CSV)</button>'
+    : '';
   fb.innerHTML =
-    '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">' +
+    '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">' +
       '<span style="display:inline-block;padding:2px 10px;border-radius:10px;font-size:12px;font-weight:600;background:var(--green,#30a46c);color:#fff">● Active</span>' +
       '<span class="muted" style="font-size:12px">' + totalCur + ' IP' + (totalCur === 1 ? '' : 's') +
         ' currently banned across ' + jails.length + ' jail' + (jails.length === 1 ? '' : 's') + '</span>' +
+      '<span style="margin-left:auto">' + allBtn + '</span>' +
     '</div>' +
     '<table class="tbl"><thead><tr><th>Jail</th><th>Banned now</th><th>Total banned</th><th>Banned IPs</th></tr></thead>' +
     '<tbody>' + rows + '</tbody></table>';
+}
+
+// Banned IPs held for export (not rendered inline).
+var F2B_BANS = {};
+function f2bExport(jail) {
+  var rows = [['jail', 'ip']];
+  Object.keys(F2B_BANS).forEach(function (name) {
+    if (jail && name !== jail) return;
+    (F2B_BANS[name] || []).forEach(function (ip) { rows.push([name, ip]); });
+  });
+  if (rows.length === 1) { showToast && showToast('No banned IPs to export'); return; }
+  var csv = rows.map(function (r) { return r.join(','); }).join('\n');
+  var blob = new Blob([csv], { type: 'text/csv' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  var stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  a.href = url;
+  a.download = 'banned-ips-' + (jail || 'all') + '-' + stamp + '.csv';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
 }
 
 // ═══════════════════ MIGRATION ═══════════════════
