@@ -1,0 +1,276 @@
+<%- include('../partials/head', { title: 'Phone', active: 'phone' }) %>
+
+<div style="max-width:560px;margin:0 auto">
+
+  <!-- Connection -->
+  <div class="card" style="margin-bottom:14px">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <div>
+        <div style="font-weight:600">Browser phone</div>
+        <div class="muted" style="font-size:12px">Extension <span class="mono" id="ph-ext-label">—</span></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span class="pill p-gray" id="ph-reg">offline</span>
+        <button class="btn btn-sm btn-primary" id="ph-connect" onclick="phConnect()">Go online</button>
+        <button class="btn btn-sm" id="ph-disconnect" onclick="phDisconnect()" style="display:none">Go offline</button>
+      </div>
+    </div>
+    <div id="ph-setup" style="margin-top:12px">
+      <div class="grid-2">
+        <div><span class="muted" style="font-size:11px">Extension</span>
+          <input class="form-input" id="ph-ext" placeholder="2001"></div>
+        <div><span class="muted" style="font-size:11px">SIP password</span>
+          <input class="form-input" id="ph-pass" type="password" placeholder="••••••••"></div>
+      </div>
+      <label class="muted" style="font-size:11px;display:block;margin-top:8px">
+        <input type="checkbox" id="ph-remember" checked> Remember on this browser
+      </label>
+    </div>
+  </div>
+
+  <!-- Incoming call -->
+  <div class="card" id="ph-incoming" style="display:none;border-left:3px solid var(--amber,#f5a623);margin-bottom:14px">
+    <div class="muted" style="font-size:11px">Incoming call</div>
+    <div style="font-size:22px;font-weight:600;margin:4px 0 12px" id="ph-caller">—</div>
+    <button class="btn btn-sm btn-primary" onclick="phAnswer()">Answer</button>
+    <button class="btn btn-sm" style="color:var(--red,#e5484d)" onclick="phReject()">Decline</button>
+  </div>
+
+  <!-- Active call -->
+  <div class="card" id="ph-active" style="display:none;border-left:3px solid var(--green,#30a46c);margin-bottom:14px">
+    <div class="muted" style="font-size:11px">On call with</div>
+    <div style="font-size:20px;font-weight:600;margin:4px 0" id="ph-peer">—</div>
+    <div class="muted mono" style="font-size:12px;margin-bottom:12px" id="ph-timer">00:00</div>
+    <button class="btn btn-sm" id="ph-mute" onclick="phMute()">Mute</button>
+    <button class="btn btn-sm" style="color:var(--red,#e5484d)" onclick="phHangup()">Hang up</button>
+  </div>
+
+  <!-- Dial -->
+  <div class="card">
+    <div class="muted" style="font-size:11px">Dial</div>
+    <div style="display:flex;gap:8px;margin-top:6px">
+      <input class="form-input" id="ph-dial" placeholder="extension or number" style="flex:1">
+      <button class="btn btn-sm btn-primary" id="ph-call" onclick="phCall()" disabled>Call</button>
+    </div>
+  </div>
+
+  <div class="muted" id="ph-note" style="font-size:12px;margin-top:10px"></div>
+</div>
+
+<audio id="ph-audio" autoplay playsinline></audio>
+
+<script src="/vendor/sip-0.21.2.min.js"></script>
+<script>
+var CFG = <%- JSON.stringify(webrtcConfig || {}) %>;
+var MY_EXT = <%- JSON.stringify(userExt || '') %>;
+
+var ua = null, registerer = null, session = null, incoming = null;
+var muted = false, timer = null, startedAt = 0, ring = null;
+
+function el(id) { return document.getElementById(id); }
+function pill(id, text, cls) { var n = el(id); n.textContent = text; n.className = 'pill ' + (cls || 'p-gray'); }
+function note(t) { el('ph-note').textContent = t || ''; }
+
+// ── ringtone (WebAudio: no asset file needed) ──
+function ringStart() {
+  ringStop();
+  try {
+    var ctx = new (window.AudioContext || window.webkitAudioContext)();
+    var on = false;
+    ring = { ctx: ctx, iv: null, osc: null, gain: null };
+    ring.iv = setInterval(function () {
+      on = !on;
+      if (on) {
+        var o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = 'sine'; o.frequency.value = 440;
+        g.gain.value = 0.12;
+        o.connect(g); g.connect(ctx.destination); o.start();
+        ring.osc = o; ring.gain = g;
+      } else if (ring.osc) { try { ring.osc.stop(); } catch (e) {} ring.osc = null; }
+    }, 900);
+  } catch (e) { /* audio blocked until user gesture — not fatal */ }
+}
+function ringStop() {
+  if (!ring) return;
+  try { clearInterval(ring.iv); } catch (e) {}
+  try { if (ring.osc) ring.osc.stop(); } catch (e) {}
+  try { ring.ctx.close(); } catch (e) {}
+  ring = null;
+}
+
+function tick() {
+  var s = Math.floor((Date.now() - startedAt) / 1000);
+  el('ph-timer').textContent = String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+}
+
+function showIncoming(name) { el('ph-caller').textContent = name; el('ph-incoming').style.display = ''; }
+function hideIncoming() { el('ph-incoming').style.display = 'none'; }
+function showActive(name) {
+  el('ph-peer').textContent = name; el('ph-active').style.display = '';
+  startedAt = Date.now(); tick(); timer = setInterval(tick, 1000);
+}
+function resetCall(why) {
+  ringStop(); hideIncoming();
+  el('ph-active').style.display = 'none';
+  if (timer) { clearInterval(timer); timer = null; }
+  session = null; incoming = null; muted = false;
+  el('ph-mute').textContent = 'Mute';
+  if (why) note(why);
+}
+
+function callerOf(inv) {
+  try {
+    var u = inv.remoteIdentity.uri.user;
+    var d = inv.remoteIdentity.displayName;
+    return d ? (d + ' (' + u + ')') : (u || 'Unknown');
+  } catch (e) { return 'Unknown'; }
+}
+
+function bind(s) {
+  s.stateChange.addListener(function (st) {
+    if (st === SIP.SessionState.Established) {
+      ringStop(); hideIncoming();
+      attachAudio(s);
+      showActive(callerOf(s));
+      note('');
+    }
+    if (st === SIP.SessionState.Terminated) {
+      resetCall('Call ended.');
+    }
+  });
+}
+
+function attachAudio(s) {
+  try {
+    var pc = s.sessionDescriptionHandler.peerConnection;
+    var ms = new MediaStream();
+    pc.getReceivers().forEach(function (r) { if (r.track && r.track.kind === 'audio') ms.addTrack(r.track); });
+    el('ph-audio').srcObject = ms;
+  } catch (e) {}
+}
+
+function phConnect() {
+  var ext = el('ph-ext').value.trim(), pass = el('ph-pass').value;
+  if (!ext || !pass) { note('Enter your extension and SIP password.'); return; }
+  if (!CFG.wssUrl) { note('WebRTC is not configured on this server.'); return; }
+  if (el('ph-remember').checked) {
+    try { localStorage.setItem('ph_ext', ext); } catch (e) {}
+  }
+  note('Connecting…');
+
+  var uri = SIP.UserAgent.makeURI('sip:' + ext + '@' + CFG.sipDomain);
+  ua = new SIP.UserAgent({
+    uri: uri,
+    authorizationUsername: ext,
+    authorizationPassword: pass,
+    transportOptions: { server: CFG.wssUrl },
+    sessionDescriptionHandlerFactoryOptions: {
+      peerConnectionConfiguration: { iceServers: CFG.iceServers || [] }
+    },
+    delegate: {
+      onInvite: function (invitation) {
+        if (session) { try { invitation.reject(); } catch (e) {} return; }
+        incoming = invitation;
+        showIncoming(callerOf(invitation));
+        ringStart();
+        bind(invitation);
+        invitation.stateChange.addListener(function (st) {
+          // caller gave up before we answered
+          if (st === SIP.SessionState.Terminated && !session) resetCall('Missed call.');
+        });
+      }
+    }
+  });
+
+  ua.start().then(function () {
+    registerer = new SIP.Registerer(ua, { expires: 300 });
+    registerer.stateChange.addListener(function (st) {
+      if (st === SIP.RegistererState.Registered) {
+        pill('ph-reg', 'online', 'p-ok');
+        el('ph-call').disabled = false;
+        el('ph-connect').style.display = 'none';
+        el('ph-disconnect').style.display = '';
+        el('ph-setup').style.display = 'none';
+        el('ph-ext-label').textContent = ext;
+        note('Ready to take calls.');
+      } else if (st === SIP.RegistererState.Unregistered) {
+        pill('ph-reg', 'offline', 'p-gray');
+        el('ph-call').disabled = true;
+      }
+    });
+    return registerer.register();
+  }).catch(function (e) { note('Could not connect: ' + e.message); });
+}
+
+function phDisconnect() {
+  try { if (registerer) registerer.unregister(); } catch (e) {}
+  try { if (ua) ua.stop(); } catch (e) {}
+  ua = null; registerer = null;
+  resetCall('');
+  pill('ph-reg', 'offline', 'p-gray');
+  el('ph-connect').style.display = '';
+  el('ph-disconnect').style.display = 'none';
+  el('ph-setup').style.display = '';
+  el('ph-call').disabled = true;
+}
+
+function phAnswer() {
+  if (!incoming) return;
+  ringStop();
+  session = incoming;
+  incoming.accept({ sessionDescriptionHandlerOptions: { constraints: { audio: true, video: false } } })
+    .catch(function (e) { note('Answer failed: ' + e.message); resetCall(); });
+  hideIncoming();
+}
+
+function phReject() {
+  if (!incoming) return;
+  try { incoming.reject(); } catch (e) {}
+  resetCall('Call declined.');
+}
+
+function phHangup() {
+  if (!session) return;
+  try {
+    if (session.state === SIP.SessionState.Established) session.bye();
+    else session.cancel();
+  } catch (e) {}
+  resetCall('Call ended.');
+}
+
+function phMute() {
+  if (!session) return;
+  try {
+    var pc = session.sessionDescriptionHandler.peerConnection;
+    muted = !muted;
+    pc.getSenders().forEach(function (s) { if (s.track && s.track.kind === 'audio') s.track.enabled = !muted; });
+    el('ph-mute').textContent = muted ? 'Unmute' : 'Mute';
+  } catch (e) {}
+}
+
+function phCall() {
+  var dest = el('ph-dial').value.trim();
+  if (!dest || !ua) return;
+  var target = SIP.UserAgent.makeURI('sip:' + dest + '@' + CFG.sipDomain);
+  var inviter = new SIP.Inviter(ua, target, {
+    sessionDescriptionHandlerOptions: { constraints: { audio: true, video: false } }
+  });
+  session = inviter;
+  bind(inviter);
+  note('Calling ' + dest + '…');
+  inviter.invite().catch(function (e) { note('Call failed: ' + e.message); resetCall(); });
+}
+
+// prefill
+(function () {
+  var saved = '';
+  try { saved = localStorage.getItem('ph_ext') || ''; } catch (e) {}
+  el('ph-ext').value = MY_EXT || saved || '';
+  el('ph-ext-label').textContent = el('ph-ext').value || '—';
+  if (!CFG.wssUrl) note('WebRTC is not configured on this server yet.');
+})();
+
+window.addEventListener('beforeunload', function () { try { if (registerer) registerer.unregister(); } catch (e) {} });
+</script>
+
+<%- include('../partials/footer') %>

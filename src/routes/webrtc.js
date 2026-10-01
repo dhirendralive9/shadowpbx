@@ -143,6 +143,13 @@ function createWebrtcWebRouter(deps) {
     res.render('pages/webrtc', locals(req, { webrtcConfig: clientConfig(req) }));
   });
 
+  // Agent-facing browser softphone. Unlike /webrtc (an admin diagnostic page)
+  // this is a usable phone — any signed-in user reaches it, and it registers
+  // as their own extension.
+  router.get('/phone', auth, (req, res) => {
+    res.render('pages/phone', locals(req, { webrtcConfig: clientConfig(req, 'agent') }));
+  });
+
   router.get('/webrtc/api/status', auth, admin, async (req, res) => {
     try { res.json(await buildStatus(deps, req)); }
     catch (err) { res.status(500).json({ success: false, error: err.message }); }
