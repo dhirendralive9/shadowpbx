@@ -86,7 +86,7 @@
 var CFG = <%- JSON.stringify(webrtcConfig || {}) %>;
 
 var ua=null, registerer=null, session=null, incoming=null;
-var muted=false, timer=null, startedAt=0, statsTimer=null, meterTimer=null;
+var muted=false, timer=null, startedAt=0, statsTimer=null, meterTimer=null, ringGuard=null;
 var actx=null, micAn=null, spkAn=null, micSrc=null, spkSrc=null, creds=[], micStream=null;
 
 function el(i){return document.getElementById(i);}
@@ -224,6 +224,7 @@ function onEstablished(s){
   log('Call established with '+callerOf(s));
 }
 function resetCall(why, playTone){
+  if(ringGuard){ clearTimeout(ringGuard); ringGuard=null; }
   ringStop(); statsStop(); meterStop();
   if(playTone) toneHangup();
   el('ph-incoming').style.display='none';
@@ -314,6 +315,16 @@ function startUA(ext, secret){
         inv.stateChange.addListener(function(st){
           if(st===SIP.SessionState.Terminated && session!==inv) resetCall('Missed call.', false);
         });
+        // Safety net: never ring forever. If the CANCEL never reaches the
+        // browser (lost WebSocket, proxy hiccup), stop on our own instead of
+        // ringing after the caller has long gone.
+        if(ringGuard) clearTimeout(ringGuard);
+        ringGuard=setTimeout(function(){
+          if(incoming===inv && session!==inv){
+            try{ inv.reject(); }catch(e){}
+            resetCall('Missed call.', false);
+          }
+        }, (CFG.maxRingSeconds||60)*1000);
       }
     }
   });

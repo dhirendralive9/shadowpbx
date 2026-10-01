@@ -213,8 +213,29 @@ function spCanAnswer() {
   return typeof window.phHasIncoming === 'function' && window.phHasIncoming();
 }
 function spAnswerBtn() {
-  if (!spCanAnswer()) return '';
+  // Rendered immediately if the phone is already ringing; otherwise
+  // spWatchForRing() adds it as soon as SIP.js delivers the INVITE (the
+  // server-side pop event usually arrives a moment earlier).
+  if (!spCanAnswer()) { spWatchForRing(); return ''; }
   return '<button class="sp-btn sp-btn-answer" onclick="spAnswer()">Answer</button>';
+}
+
+var spRingWatch = null;
+function spWatchForRing() {
+  if (spRingWatch) clearInterval(spRingWatch);
+  var tries = 0;
+  spRingWatch = setInterval(function () {
+    tries++;
+    if (spCanAnswer()) {
+      clearInterval(spRingWatch); spRingWatch = null;
+      ['sp-actions', 'sp-unknown-actions'].forEach(function (id) {
+        var n = document.getElementById(id);
+        if (n && n.innerHTML.indexOf('sp-btn-answer') === -1) {
+          n.innerHTML = '<button class="sp-btn sp-btn-answer" onclick="spAnswer()">Answer</button>' + n.innerHTML;
+        }
+      });
+    } else if (tries > 20) { clearInterval(spRingWatch); spRingWatch = null; }
+  }, 300);
 }
 function spAnswer() {
   try {
