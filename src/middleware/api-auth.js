@@ -51,6 +51,15 @@ const POLICY = [
   { m: 'GET', p: '/audio/play/:filename', roles: ROLES },
 
   // ── Chat: your own conversations only ──
+  // Voice interpreter. Reading your own effective setting and changing your
+  // own preference is open to every role — the route itself pins an agent to
+  // their own extension, and respects the admin's "agents may toggle" lock.
+  // The system-wide config (provider keys, defaults) stays admin-only and is
+  // not listed here, so it falls through to the admin check.
+  { m: 'GET',  p: '/interpreter/me', roles: ROLES },
+  { m: 'POST', p: '/interpreter/me', roles: ROLES },
+  { m: 'POST', p: '/interpreter/call/:callId', roles: ROLES },
+
   { m: 'GET', p: '/chat/contacts/:username', roles: ROLES, own: true },
   { m: 'GET', p: '/chat/conversations/:username', roles: ROLES, own: true },
   { m: 'GET', p: '/chat/messages/:user1/:user2', roles: ROLES, own: 'any' },
