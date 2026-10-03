@@ -54,15 +54,26 @@ class CallRouter {
       return route;
     }
 
-    // Try without leading 1 (US numbers)
-    if (did && did.length === 11 && did.startsWith('1')) {
-      route = await InboundRoute.findOne({
-        did: did.substring(1),
-        enabled: true
-      });
-      if (route) {
-        logger.info(`Inbound route matched (stripped 1): ${did} -> ${route.destination.type}:${route.destination.target}`);
-        return route;
+    // The carrier's format and the admin's stored format often differ: Twilio
+    // sends 18887755576, the route may say 8887755576; a German trunk may send
+    // 004915782852099, 4915782852099 or 15782852099 for the same DID. Try the
+    // sensible variants rather than making the operator guess which one to
+    // type. Each is still an EXACT lookup — no prefix/substring matching, so a
+    // route can never swallow a different number.
+    if (did) {
+      const variants = [];
+      if (did.length === 11 && did.startsWith('1')) variants.push(did.substring(1)); // NANP: 1XXXXXXXXXX -> XXXXXXXXXX
+      if (did.length === 10) variants.push('1' + did);                                // NANP: the reverse
+      if (did.startsWith('00')) variants.push(did.substring(2));                       // international 00 prefix
+      else variants.push('00' + did);
+
+      for (const v of variants) {
+        if (!v || v === did) continue;
+        route = await InboundRoute.findOne({ did: v, enabled: true });
+        if (route) {
+          logger.info(`Inbound route matched (${did} as ${v}): -> ${route.destination.type}:${route.destination.target}`);
+          return route;
+        }
       }
     }
 
@@ -83,9 +94,16 @@ class CallRouter {
 
   // Extract DID from inbound SIP INVITE (SignalWire format)
   extractDID(req) {
-    // Try To header first
+    // Return the number AS DIALLED, stripping only a leading "+".
+    //
+    // This used to strip a leading "1" as well (sip:\+?1?(\d+)@), which was
+    // meant for US numbers but applied to every call: a German 4915..., a UK
+    // 44800..., or any number simply beginning with 1 lost a digit before the
+    // route lookup ever ran — so the stored DID had to be entered pre-mangled.
+    // Country-code handling belongs in findInboundRoute(), which already does
+    // it correctly (exact match first, then NANP 11-digit fallback).
     const to = req.getParsedHeader('To');
-    let did = to.uri.match(/sip:\+?1?(\d+)@/)?.[1];
+    let did = to.uri.match(/sip:\+?(\d+)@/)?.[1];
 
     if (did) return did;
 
