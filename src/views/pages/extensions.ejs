@@ -47,7 +47,7 @@
 </div>
 
 <table class="tbl">
-  <thead><tr><th>Status</th><th>Extension</th><th>Name</th><th>Presence</th><th>User agent</th><th>IP address</th><th>Expires</th><th>Ext. SIP</th><th></th></tr></thead>
+  <thead><tr><th>Status</th><th>Extension</th><th>Name</th><th>Presence</th><th>Translation</th><th>User agent</th><th>IP address</th><th>Expires</th><th>Ext. SIP</th><th></th></tr></thead>
   <tbody id="ext-body">
     <tr><td colspan="9" class="empty">Loading...</td></tr>
   </tbody>
@@ -102,6 +102,16 @@ function deviceAddrs(contacts) {
   }).join('');
 }
 
+// Live-translation state for this extension (set by the agent on /phone or by
+// an admin). "default" follows the system setting, so it is not a promise that
+// the call will be translated.
+function xlateBadge(t) {
+  var mode = (t && t.mode) || 'default';
+  if (mode === 'on')  return '<span class="pill p-ok" style="font-size:9px">translate</span>';
+  if (mode === 'off') return '<span class="pill p-gray" style="font-size:9px">no translate</span>';
+  return '<span class="muted" style="font-size:10px">default</span>';
+}
+
 function statusDot(reg, presence) {
   if (!reg) return '<span class="dot dot-gray" title="Offline"></span>';
   if (presence === 'ringing') return '<span class="dot dot-amber" title="Ringing" style="animation:pulse 0.6s infinite"></span>';
@@ -147,6 +157,7 @@ async function loadExtensions() {
           (e.webAccess ? ' <span class="pill p-ok" style="font-size:9px" title="Web access: ' + esc((e.webUser && e.webUser.username) || '') + ' (' + esc((e.webUser && e.webUser.role) || '') + ')">web</span>' : '') +
         '</td>' +
         '<td>' + (reg ? presencePill(p, e.presenceRemote) : '<span class="pill p-gray">offline</span>') + '</td>' +
+        '<td>' + xlateBadge(e.translation) + '</td>' +
         '<td class="muted" style="font-size:11px">' + deviceBadges(e.contacts) + '</td>' +
         '<td class="mono" style="font-size:11px">' + (reg ? deviceAddrs(e.contacts) : '-') + '</td>' +
         '<td class="muted">' + (c0.expires ? formatExpires(c0.expires) : '-') + '</td>' +

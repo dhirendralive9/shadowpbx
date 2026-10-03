@@ -511,6 +511,7 @@ async function main() {
   // Self-update from Settings → System (admin session only)
   app.use('/', require('./routes/updates').createUpdateRouter({ callHandler }));
   app.use('/', require('./routes/migration').createMigrationRouter({ models: require('./models') }));
+  app.use('/api', require('./routes/interpreter').createInterpreterRouter({ models: require('./models') }));
 
   // Web GUI routes
   app.use('/', createWebRouter());

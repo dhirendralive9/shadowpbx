@@ -12,6 +12,7 @@
   <a href="#backup" class="sub-tab" data-tab="backup" onclick="switchTab('backup')">Backup</a>
   <a href="#crm" class="sub-tab" data-tab="crm" onclick="switchTab('crm')">CRM</a>
   <a href="#system" class="sub-tab" data-tab="system" onclick="switchTab('system')">System</a>
+  <a href="#interpreter" class="sub-tab" data-tab="interpreter" onclick="switchTab('interpreter')">Interpreter</a>
   <a href="#migration" class="sub-tab" data-tab="migration" onclick="switchTab('migration')">Migration</a>
 </div>
 
@@ -466,6 +467,18 @@
   </div>
 </div>
 
+<!-- ═══════════════════ VOICE INTERPRETER ═══════════════════ -->
+<div id="panel-interpreter" class="settings-panel">
+  <div class="sec-head"><span class="sec-title">Provider keys</span>
+    <button class="btn btn-sm" onclick="loadInterpreter()">Refresh</button></div>
+  <div class="card" id="int-providers"><div class="muted">Loading…</div></div>
+
+  <div style="margin-top:20px">
+    <div class="sec-head"><span class="sec-title">Defaults</span></div>
+    <div class="card" id="int-settings"><div class="muted">Loading…</div></div>
+  </div>
+</div>
+
 <!-- ═══════════════════ MIGRATION ═══════════════════ -->
 <div id="panel-migration" class="settings-panel">
   <div class="sec-head"><span class="sec-title">Server migration</span></div>
@@ -655,6 +668,7 @@ function switchTab(tab) {
   if (tab === 'security') loadSecurity();
   if (tab === 'users') loadUsers();
   if (tab === 'migration') loadMigration();
+  if (tab === 'interpreter') loadInterpreter();
   if (tab === 'maintenance') { loadSettings(); loadStorage(); }
   if (tab === 'backup') { loadDbStats(); loadBackups(); loadSettings(); }
   if (tab === 'system') loadSystem();
@@ -1440,6 +1454,74 @@ function f2bExport(jail) {
   setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
 }
 
+// ═══════════════════ VOICE INTERPRETER ═══════════════════
+var INT_LANGS = [];
+async function loadInterpreter() {
+  var pbox = document.getElementById('int-providers');
+  var sbox = document.getElementById('int-settings');
+  if (!pbox) return;
+  try {
+    var d = await (await fetch(API.replace('/api','') + '/api/interpreter/config', { headers: H, credentials: 'same-origin' })).json();
+    if (!d.success) { pbox.innerHTML = '<div class="muted">' + esc(d.error || 'failed') + '</div>'; return; }
+    INT_LANGS = d.languages || [];
+
+    var r = d.readiness || {};
+    var banner = r.ready
+      ? '<div style="margin-bottom:10px"><span class="pill p-ok">● Ready</span> <span class="muted" style="font-size:12px">all required providers configured</span></div>'
+      : '<div style="margin-bottom:10px"><span class="pill p-warn">● Not ready</span> <span class="muted" style="font-size:12px">missing: ' + esc((r.missing||[]).join(', ')) + ' — add the key to .env and restart</span></div>';
+
+    pbox.innerHTML = banner +
+      '<table class="tbl"><thead><tr><th>Provider</th><th>Used for</th><th>Env var</th><th>Status</th></tr></thead><tbody>' +
+      (d.providers||[]).map(function(p){
+        return '<tr>' +
+          '<td><b>' + esc(p.label) + '</b>' + (p.required ? '' : ' <span class="muted" style="font-size:10px">optional</span>') + '</td>' +
+          '<td class="muted" style="font-size:12px">' + esc(p.role) + '</td>' +
+          '<td class="mono" style="font-size:11px">' + esc(p.env) + '</td>' +
+          '<td>' + (p.configured
+            ? '<span class="pill p-ok">set</span> <span class="muted mono" style="font-size:10px">' + esc(p.hint||'') + '</span>'
+            : '<span class="pill ' + (p.required ? 'p-err' : 'p-gray') + '">missing</span>') +
+          '</td></tr>';
+      }).join('') + '</tbody></table>';
+
+    var st = d.settings || {};
+    var langOpts = function(sel, includeAuto){
+      return INT_LANGS.filter(function(l){ return includeAuto || l.code !== 'auto'; })
+        .map(function(l){ return '<option value="' + l.code + '"' + (l.code === sel ? ' selected' : '') + '>' + esc(l.label) + '</option>'; }).join('');
+    };
+    sbox.innerHTML =
+      '<label style="display:block;margin-bottom:10px"><input type="checkbox" id="int-enabled"' + (st.enabled ? ' checked' : '') + '> ' +
+        '<b>Enable the interpreter</b> <span class="muted" style="font-size:12px">— master switch; nothing is translated while this is off</span></label>' +
+      '<label style="display:block;margin-bottom:10px"><input type="checkbox" id="int-defaulton"' + (st.defaultOn ? ' checked' : '') + '> ' +
+        'Translate calls by default <span class="muted" style="font-size:12px">— leave off to let agents opt in per call</span></label>' +
+      '<label style="display:block;margin-bottom:14px"><input type="checkbox" id="int-maytoggle"' + (st.agentMayToggle ? ' checked' : '') + '> ' +
+        'Agents may turn translation on/off (including mid-call)</label>' +
+      '<div class="grid-2">' +
+        '<div><span class="muted" style="font-size:11px">Customer language</span>' +
+          '<select class="form-input" id="int-cust">' + langOpts(st.customerLanguage, true) + '</select></div>' +
+        '<div><span class="muted" style="font-size:11px">Agent language</span>' +
+          '<select class="form-input" id="int-agent">' + langOpts(st.agentLanguage, false) + '</select></div>' +
+      '</div>' +
+      '<div style="margin-top:12px"><button class="btn btn-sm btn-primary" onclick="saveInterpreter()">Save defaults</button></div>';
+  } catch (e) { pbox.innerHTML = '<div class="muted">' + esc(e.message) + '</div>'; }
+}
+
+async function saveInterpreter() {
+  try {
+    var body = {
+      enabled: document.getElementById('int-enabled').checked,
+      defaultOn: document.getElementById('int-defaulton').checked,
+      agentMayToggle: document.getElementById('int-maytoggle').checked,
+      customerLanguage: document.getElementById('int-cust').value,
+      agentLanguage: document.getElementById('int-agent').value
+    };
+    var d = await (await fetch('/api/interpreter/config', {
+      method: 'POST', headers: Object.assign({'Content-Type':'application/json'}, H),
+      credentials: 'same-origin', body: JSON.stringify(body)
+    })).json();
+    showToast && showToast(d.success ? 'Interpreter settings saved' : (d.error || 'Save failed'), !d.success);
+  } catch (e) { showToast && showToast(e.message, true); }
+}
+
 // ═══════════════════ MIGRATION ═══════════════════
 function loadMigration() {
   fetch('/system/api/migration/token', { headers: H, credentials: 'same-origin' })
@@ -1866,7 +1948,7 @@ var initTab = window.location.hash.replace('#', '') || 'blocklist';
 // Handle OAuth redirect: ?tab=crm
 var urlParams = new URLSearchParams(window.location.search);
 if (urlParams.get('tab') === 'crm') initTab = 'crm';
-if (['blocklist', 'audio', 'sipdomains', 'dnc', 'security', 'users', 'maintenance', 'backup', 'crm', 'system', 'migration'].indexOf(initTab) === -1) initTab = 'blocklist';
+if (['blocklist', 'audio', 'sipdomains', 'dnc', 'security', 'users', 'maintenance', 'backup', 'crm', 'system', 'migration', 'interpreter'].indexOf(initTab) === -1) initTab = 'blocklist';
 switchTab(initTab);
 </script>
 

@@ -10,6 +10,14 @@ const extensionSchema = new mongoose.Schema({
   email: { type: String },
   enabled: { type: Boolean, default: true },
   allowExternalCalls: { type: Boolean, default: false },  // allow inbound calls from external SIP URIs
+  // Voice interpreter, per agent. mode: 'default' follows the system setting,
+  // 'on' always translates, 'off' never does. spokenLanguages lets an agent who
+  // already speaks the customer's language skip the bridge entirely.
+  translation: {
+    mode: { type: String, enum: ['default', 'on', 'off'], default: 'default' },
+    agentLanguage: { type: String, default: '' },      // blank = system default
+    spokenLanguages: [{ type: String }]
+  },
   maxContacts: { type: Number, default: 5 },
   registrations: [{
     contact: String,
@@ -580,6 +588,20 @@ const systemSettingsSchema = new mongoose.Schema({
     lastBackup: Date,
     lastBackupPath: String,
     lastBackupSize: Number
+  },
+
+  // Real-time voice interpreter defaults. Agents can override per extension;
+  // these are the system-wide starting point. Off by default — translation is
+  // opt-in, and a call is only translated when something explicitly asks for it.
+  interpreter: {
+    enabled: { type: Boolean, default: false },        // master switch
+    defaultOn: { type: Boolean, default: false },      // translate new calls unless an agent opts out
+    agentMayToggle: { type: Boolean, default: true },  // agents can turn it on/off, including mid-call
+    customerLanguage: { type: String, default: 'auto' },
+    agentLanguage: { type: String, default: 'en' },
+    sttProvider: { type: String, default: 'deepgram' },
+    translateProvider: { type: String, default: 'deepl' },
+    ttsProvider: { type: String, default: 'deepgram' }
   },
 
   updatedAt: { type: Date, default: Date.now }

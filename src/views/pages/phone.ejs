@@ -31,6 +31,23 @@
     <div class="muted" id="ph-note" style="font-size:12px;margin-top:8px"></div>
   </div>
 
+  <!-- Translation -->
+  <div class="card ph-full" id="ph-xlate" style="display:none">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <div>
+        <div style="font-weight:600">Live translation</div>
+        <div class="muted" style="font-size:12px" id="ph-xlate-state">—</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <select class="form-input" id="ph-xlate-mode" style="width:auto" onchange="phSetXlate()">
+          <option value="default">Follow default</option>
+          <option value="on">Always on</option>
+          <option value="off">Off</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
   <div class="card ph-full" id="ph-incoming" style="display:none;border-left:3px solid var(--amber,#f5a623)">
     <div class="muted" style="font-size:11px">Incoming call</div>
     <div class="ph-big" id="ph-caller">—</div>
@@ -409,7 +426,47 @@ window.phAnswer = phAnswer;
 window.phHasIncoming = function(){ return !!incoming; };
 
 loadCreds();
+loadXlate();
 if(!CFG.wssUrl) note('WebRTC is not configured on this server yet.');
+
+// ── live translation preference ──────────────────────────────────────
+function loadXlate(){
+  fetch('/api/interpreter/me',{credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(!d||!d.success) return;
+      var box=el('ph-xlate');
+      // Only shown when the interpreter is switched on system-wide.
+      if(!d.system||!d.system.enabled){ box.style.display='none'; return; }
+      box.style.display='';
+      var sel=el('ph-xlate-mode');
+      sel.value=(d.preference&&d.preference.mode)||'default';
+      sel.disabled=!d.system.agentMayToggle;
+      renderXlateState(d.effective, d.system.agentMayToggle);
+    }).catch(function(){});
+}
+function renderXlateState(eff, mayToggle){
+  var n=el('ph-xlate-state');
+  if(!eff){ n.textContent='—'; return; }
+  n.innerHTML = (eff.translate
+      ? '<span class="pill p-ok">on</span> '
+      : '<span class="pill p-gray">off</span> ')
+    + '<span class="muted" style="font-size:12px">' + eff.reason + '</span>'
+    + (mayToggle ? '' : ' <span class="muted" style="font-size:11px">(locked by admin)</span>');
+}
+function phSetXlate(){
+  var mode=el('ph-xlate-mode').value;
+  fetch('/api/interpreter/me',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    credentials:'same-origin',
+    body:JSON.stringify({mode:mode})
+  }).then(function(r){return r.json();}).then(function(d){
+    if(!d||!d.success){ log('Translation: '+((d&&d.error)||'update failed')); loadXlate(); return; }
+    renderXlateState(d.effective, true);
+    log('Translation set to "'+mode+'" — '+d.effective.reason);
+  }).catch(function(e){ log('Translation: '+e.message); });
+}
 window.addEventListener('beforeunload',function(){ try{ if(registerer) registerer.unregister(); }catch(e){} });
 </script>
 
