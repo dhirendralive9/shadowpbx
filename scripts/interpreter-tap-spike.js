@@ -30,6 +30,8 @@ const NG_PORT = parseInt(process.env.RTPENGINE_PORT || '22222', 10);
 const EXTERNAL_IP = process.env.EXTERNAL_IP || '';
 const SECONDS = parseInt(argOf('--seconds') || '15', 10);
 const WANT_CALL = argOf('--call');
+const WANT_TAG = argOf('--tag');          // subscribe to ONE leg by its SIP tag
+const USE_ALL = process.argv.includes('--all'); // mixed both-party tap (diagnostic)
 const LIST_ONLY = process.argv.includes('--list');
 
 function argOf(flag) {
@@ -149,15 +151,33 @@ async function main() {
   // Ask for a copy of the call. flags:['all'] mixes both parties, which is
   // right for a supervisor but WRONG for translation (each STT must hear ONE
   // speaker). Request a single leg so the fork carries one voice only.
-  const sub = await ng('subscribe request', {
-    'call-id': callId,
-    flags: []                       // no 'all' => single leg, unmixed
-  });
+  // Which leg to listen to. RTPEngine needs to be told: with no criteria it
+  // answers "no monologues matched". Each STT stream must hear ONE speaker, so
+  // the real interpreter always names a tag; --all is only for diagnosing.
+  const attempts = [];
+  if (WANT_TAG) attempts.push({ label: `tag=${WANT_TAG}`, params: { 'from-tags': [WANT_TAG] } });
+  if (USE_ALL) attempts.push({ label: 'all (mixed)', params: { flags: ['all'] } });
+  if (!WANT_TAG && !USE_ALL) {
+    // Discover the legs and take the first tagged one, then fall back to mixed.
+    const q = await ng('query', { 'call-id': callId });
+    const tags = q && q.tags ? Object.keys(q.tags).filter(t => t && t !== '0') : [];
+    console.log(`legs          : ${tags.length ? tags.join(', ') : '(none tagged)'}`);
+    for (const t of tags) attempts.push({ label: `tag=${t}`, params: { 'from-tags': [t] } });
+    attempts.push({ label: 'all (mixed)', params: { flags: ['all'] } });
+  }
+
+  let sub = null, used = null;
+  for (const a of attempts) {
+    const r = await ng('subscribe request', Object.assign({ 'call-id': callId }, a.params));
+    if (r && r.sdp) { sub = r; used = a.label; break; }
+    console.log(`  subscribe (${a.label}) -> ${r && r['error-reason'] ? r['error-reason'] : JSON.stringify(r)}`);
+  }
   if (!sub || !sub.sdp) {
-    console.log(`\nsubscribe request failed: ${JSON.stringify(sub)}`);
-    console.log('If this says "unknown command", the RTPEngine build predates v9.5 subscribe support.\n');
+    console.log('\nsubscribe request failed for every leg.');
+    console.log('If it said "unknown command", the RTPEngine build predates v9.5 subscribe support.\n');
     process.exit(2);
   }
+  console.log(`subscribed to : ${used}`);
   const toTag = sub['to-tag'] || sub.tag;
   console.log(`subscribe ok  : to-tag=${toTag}`);
 
