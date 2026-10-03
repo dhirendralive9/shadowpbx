@@ -181,18 +181,40 @@ async function main() {
   const toTag = sub['to-tag'] || sub.tag;
   console.log(`subscribe ok  : to-tag=${toTag}`);
 
-  // Tell RTPEngine where to deliver the fork: our UDP socket.
-  const answer = [
-    'v=0',
-    `o=- 0 0 IN IP4 ${ip}`,
-    's=tap',
-    `c=IN IP4 ${ip}`,
-    't=0 0',
-    `m=audio ${sinkPort} RTP/AVP 0 8`,
-    'a=rtpmap:0 PCMU/8000',
-    'a=rtpmap:8 PCMA/8000',
-    'a=recvonly'
-  ].join('\r\n') + '\r\n';
+  // Build the answer by MIRRORING the offer RTPEngine just handed us, changing
+  // only the connection address and media port to point at our socket. A
+  // hand-written SDP gets rejected ("Failed to process subscription answer")
+  // because the m= line must correspond to the offer's media (same profile and
+  // payload types, same number of streams).
+  console.log('\n--- offer from RTPEngine ---');
+  console.log(sub.sdp.trim().split(/\r?\n/).map(l => '  ' + l).join('\n'));
+
+  const answer = sub.sdp
+    .split(/\r?\n/)
+    .filter(l => l.length)
+    .map((line) => {
+      if (line.startsWith('c=')) return `c=IN IP4 ${ip}`;
+      if (line.startsWith('o=')) {
+        const p = line.split(' ');
+        if (p.length >= 6) { p[5] = ip; return p.join(' '); }
+        return `o=- 0 0 IN IP4 ${ip}`;
+      }
+      if (line.startsWith('m=audio')) {
+        const p = line.split(' ');
+        p[1] = String(sinkPort);                 // keep profile + payload types
+        return p.join(' ');
+      }
+      // We only receive; drop ICE/candidate lines we cannot honour.
+      if (/^a=(candidate|ice-|fingerprint|setup|rtcp:)/.test(line)) return null;
+      if (line === 'a=sendrecv' || line === 'a=sendonly') return 'a=recvonly';
+      return line;
+    })
+    .filter(Boolean)
+    .join('\r\n') + '\r\n';
+
+  console.log('\n--- answer we send back ---');
+  console.log(answer.trim().split(/\r?\n/).map(l => '  ' + l).join('\n'));
+  console.log('');
 
   const ans = await ng('subscribe answer', {
     'call-id': callId,
