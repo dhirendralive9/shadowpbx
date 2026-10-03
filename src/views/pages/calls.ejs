@@ -29,6 +29,38 @@
 // on same-origin requests. KEY stays empty: the server no longer puts a shared
 // secret in the page, and /api enforces the logged-in user's role per route.
 const API = '/api', KEY = '<%= apiKey %>', H = { 'X-API-Key': KEY };
+// Mid-call translation toggle. Only rendered when the interpreter is enabled
+// system-wide (INT_ON is refreshed alongside the call list), so the row is not
+// cluttered on systems that do not use it.
+var INT_ON = false;
+function xlateBtn(c) {
+  if (!INT_ON) return '';
+  var on = !!c.translating;
+  return ' <button class="btn btn-sm" style="color:' + (on ? 'var(--green)' : 'var(--text-muted,#888)') + '"' +
+    ' onclick="toggleXlate(\'' + c.callId + '\',' + (on ? 'false' : 'true') + ')"' +
+    ' title="' + (on ? 'Stop translating this call' : 'Translate this call') + '">' +
+    (on ? 'Translating' : 'Translate') + '</button>';
+}
+function toggleXlate(callId, on) {
+  fetch('/api/interpreter/call/' + encodeURIComponent(callId), {
+    method: 'POST',
+    headers: Object.assign({'Content-Type':'application/json'}, H),
+    credentials: 'same-origin',
+    body: JSON.stringify({ translate: on })
+  }).then(function(r){ return r.json(); }).then(function(d){
+    if (!d || !d.success) { showToast && showToast((d && d.error) || 'Could not change translation', true); return; }
+    showToast && showToast(on ? 'Translation on for this call' : 'Translation off for this call');
+    load();
+  }).catch(function(e){ showToast && showToast(e.message, true); });
+}
+function refreshIntFlag() {
+  fetch('/api/interpreter/me', { credentials: 'same-origin' })
+    .then(function(r){ return r.json(); })
+    .then(function(d){ INT_ON = !!(d && d.success && d.system && d.system.enabled); })
+    .catch(function(){});
+}
+refreshIntFlag();
+
 function dur(s) { if (!s) return '00:00'; return String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0'); }
 
 async function load() {
@@ -51,6 +83,7 @@ async function load() {
             '<button class="btn btn-sm" style="color:var(--green)" onclick="monitor(\'' + c.callId + '\',\'listen\')" title="Silent listen">Listen</button> ' +
             '<button class="btn btn-sm" style="color:var(--amber)" onclick="monitor(\'' + c.callId + '\',\'whisper\')" title="Talk to agent only">Whisper</button> ' +
             '<button class="btn btn-sm" style="color:var(--red)" onclick="monitor(\'' + c.callId + '\',\'barge\')" title="Join call">Barge</button>' +
+            xlateBtn(c) +
           '</td></tr>';
       }).join('');
     } else {

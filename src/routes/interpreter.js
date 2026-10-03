@@ -172,7 +172,42 @@ function createInterpreterRouter({ models }) {
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
 
+  // ── Mid-call: turn translation on/off for one live call ──
+  // Records the intent against the call so the media bridge can pick it up.
+  // Until the bridge exists this is a no-op on the audio itself, which is why
+  // the response says so plainly rather than implying the audio changed.
+  router.post('/interpreter/call/:callId', auth, async (req, res) => {
+    try {
+      const s = await settings();
+      const sys = Object.assign({}, defaults, (s.interpreter || {}).toObject ? s.interpreter.toObject() : s.interpreter);
+      if (!sys.enabled) return res.status(409).json({ success: false, error: 'Interpreter is switched off system-wide' });
+      const role = req.session ? req.session.role : '';
+      if (!sys.agentMayToggle && role === 'agent') {
+        return res.status(403).json({ success: false, error: 'Translation is locked by your administrator' });
+      }
+      const callId = String(req.params.callId || '');
+      const want = !!(req.body && req.body.translate);
+      if (!callId) return res.status(400).json({ success: false, error: 'callId required' });
+
+      liveCalls.set(callId, { translate: want, by: req.session && req.session.user, at: Date.now() });
+      // keep the map from growing without bound
+      if (liveCalls.size > 500) {
+        const cutoff = Date.now() - 6 * 60 * 60 * 1000;
+        for (const [k, v] of liveCalls) if (v.at < cutoff) liveCalls.delete(k);
+      }
+      logger.info(`INTERPRETER: call ${callId} translate=${want} by ${req.session && req.session.user}`);
+      res.json({ success: true, callId, translate: want, applied: 'pending-media-bridge' });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
   return router;
+}
+
+// Per-call translation intent, read by the media bridge when it attaches.
+const liveCalls = new Map();
+function callWants(callId) {
+  const v = liveCalls.get(String(callId));
+  return v ? v.translate : null;
 }
 
 // Resolve what a call will actually do: the master switch wins, then the
@@ -186,4 +221,4 @@ function effectiveFor(sys, mode) {
     : { translate: false, reason: 'System default is off' };
 }
 
-module.exports = { createInterpreterRouter, PROVIDERS, LANGUAGES, providerStatus, readiness, effectiveFor };
+module.exports = { createInterpreterRouter, PROVIDERS, LANGUAGES, providerStatus, readiness, effectiveFor, callWants };

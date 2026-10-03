@@ -1,0 +1,117 @@
+<%- include('../partials/head', { title: 'My settings', active: 'preferences' }) %>
+
+<div style="max-width:720px;margin:0 auto">
+
+  <div class="sec-head"><span class="sec-title">Live translation</span></div>
+  <div class="card" id="pref-xlate">
+    <div class="muted">Loading…</div>
+  </div>
+
+  <div class="muted" id="pref-note" style="font-size:12px;margin-top:10px"></div>
+</div>
+
+<script>
+var PREF_LANGS = [];
+
+function pel(i){ return document.getElementById(i); }
+function pnote(t){ pel('pref-note').textContent = t || ''; }
+
+function loadPrefs() {
+  fetch('/api/interpreter/me', { credentials: 'same-origin' })
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      var box = pel('pref-xlate');
+      if (!d || !d.success) { box.innerHTML = '<div class="muted">' + ((d && d.error) || 'Could not load settings') + '</div>'; return; }
+      PREF_LANGS = d.languages || [];
+
+      if (!d.system || !d.system.enabled) {
+        box.innerHTML = '<div class="muted" style="font-size:13px">Live translation is switched off system-wide. ' +
+          'Your administrator can enable it in Settings → Interpreter.</div>';
+        return;
+      }
+      if (!d.extension) {
+        box.innerHTML = '<div class="muted" style="font-size:13px">No extension is assigned to your account, so there is nothing to configure yet.</div>';
+        return;
+      }
+
+      var pref = d.preference || {};
+      var eff = d.effective || {};
+      var locked = !d.system.agentMayToggle;
+      var mode = pref.mode || 'default';
+
+      var langOpts = function (sel) {
+        return '<option value="">Use system default (' + escP(labelFor(d.system.agentLanguage)) + ')</option>' +
+          PREF_LANGS.filter(function (l) { return l.code !== 'auto'; })
+            .map(function (l) {
+              return '<option value="' + l.code + '"' + (l.code === sel ? ' selected' : '') + '>' + escP(l.label) + '</option>';
+            }).join('');
+      };
+
+      box.innerHTML =
+        '<div style="margin-bottom:14px">' +
+          '<span class="muted" style="font-size:11px">Right now</span><br>' +
+          (eff.translate ? '<span class="pill p-ok">Translating</span>' : '<span class="pill p-gray">Not translating</span>') +
+          ' <span class="muted" style="font-size:12px">' + escP(eff.reason || '') + '</span>' +
+        '</div>' +
+
+        '<div class="muted" style="font-size:11px">Translate my calls</div>' +
+        '<select class="form-input" id="pref-mode" ' + (locked ? 'disabled' : '') + ' style="max-width:320px">' +
+          '<option value="default"' + (mode === 'default' ? ' selected' : '') + '>Follow the system default' +
+            (d.system.defaultOn ? ' (on)' : ' (off)') + '</option>' +
+          '<option value="on"' + (mode === 'on' ? ' selected' : '') + '>Always translate my calls</option>' +
+          '<option value="off"' + (mode === 'off' ? ' selected' : '') + '>Never translate my calls</option>' +
+        '</select>' +
+        (locked ? '<div class="muted" style="font-size:11px;margin-top:4px">Locked by your administrator.</div>' : '') +
+
+        '<div class="muted" style="font-size:11px;margin-top:14px">The language I speak</div>' +
+        '<select class="form-input" id="pref-lang" ' + (locked ? 'disabled' : '') + ' style="max-width:320px">' +
+          langOpts(pref.agentLanguage || '') + '</select>' +
+        '<div class="muted" style="font-size:11px;margin-top:4px">The caller hears their own language; you hear this one.</div>' +
+
+        '<div class="muted" style="font-size:11px;margin-top:14px">Other languages I speak</div>' +
+        '<div id="pref-spoken" style="display:flex;flex-wrap:wrap;gap:12px;margin-top:4px">' +
+          PREF_LANGS.filter(function (l) { return l.code !== 'auto'; }).map(function (l) {
+            var on = (pref.spokenLanguages || []).indexOf(l.code) !== -1;
+            return '<label class="muted" style="font-size:12px"><input type="checkbox" value="' + l.code + '"' +
+              (on ? ' checked' : '') + (locked ? ' disabled' : '') + '> ' + escP(l.label) + '</label>';
+          }).join('') +
+        '</div>' +
+        '<div class="muted" style="font-size:11px;margin-top:4px">Calls in a language you already speak are not translated — you hear the caller directly.</div>' +
+
+        (locked ? '' : '<div style="margin-top:16px"><button class="btn btn-sm btn-primary" onclick="savePrefs()">Save</button></div>');
+    })
+    .catch(function (e) { pel('pref-xlate').innerHTML = '<div class="muted">' + e.message + '</div>'; });
+}
+
+function labelFor(code) {
+  for (var i = 0; i < PREF_LANGS.length; i++) if (PREF_LANGS[i].code === code) return PREF_LANGS[i].label;
+  return code || '—';
+}
+function escP(x) { return String(x == null ? '' : x).replace(/[&<>"]/g, function (c) {
+  return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+}); }
+
+function savePrefs() {
+  var spoken = [];
+  var boxes = document.querySelectorAll('#pref-spoken input[type=checkbox]');
+  for (var i = 0; i < boxes.length; i++) if (boxes[i].checked) spoken.push(boxes[i].value);
+  fetch('/api/interpreter/me', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({
+      mode: pel('pref-mode').value,
+      agentLanguage: pel('pref-lang').value,
+      spokenLanguages: spoken
+    })
+  }).then(function (r) { return r.json(); }).then(function (d) {
+    if (!d || !d.success) { pnote((d && d.error) || 'Could not save'); return; }
+    pnote('Saved — ' + (d.effective ? d.effective.reason : ''));
+    loadPrefs();
+  }).catch(function (e) { pnote(e.message); });
+}
+
+loadPrefs();
+</script>
+
+<%- include('../partials/foot') %>
