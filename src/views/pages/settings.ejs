@@ -433,6 +433,30 @@
     </div>
   </div>
 
+  <!-- ── Firewall whitelist ── -->
+  <div style="margin-top:20px">
+    <div class="sec-head"><span class="sec-title">Whitelisted addresses</span>
+      <button class="btn btn-sm" onclick="loadWhitelist()">Refresh</button></div>
+    <div class="card">
+      <div class="muted" style="font-size:12px;margin-bottom:12px">
+        Addresses here are never banned by any jail. Add your own office or home IP —
+        a softphone retrying with a stale password trips the same rules as an attacker,
+        and a ban locks you out of this page too.
+      </div>
+      <div class="grid-3" style="margin-bottom:0">
+        <div><span class="muted" style="font-size:11px">IP address or CIDR</span>
+          <input class="form-input" id="wl-ip" placeholder="203.0.113.5 or 203.0.113.0/24"></div>
+        <div style="grid-column:span 2"><span class="muted" style="font-size:11px">Note — who or what this is</span>
+          <input class="form-input" id="wl-note" placeholder="Office broadband / my laptop"></div>
+      </div>
+      <div style="margin-top:10px">
+        <button class="btn btn-sm btn-primary" onclick="addWhitelist()">Add to whitelist</button>
+        <button class="btn btn-sm" onclick="unbanOnly()" title="Clear a ban without whitelisting">Just unban an IP</button>
+      </div>
+      <div id="wl-list" style="margin-top:14px"><div class="muted">Loading…</div></div>
+    </div>
+  </div>
+
   <!-- ── Software updates ── -->
   <div style="margin-top:20px">
     <div class="sec-head">
@@ -1386,9 +1410,71 @@ async function loadSysInfo() {
       '</div>';
 
     renderFail2ban(i.fail2ban);
+    loadWhitelist();
   } catch (e) {
     box.innerHTML = '<div class="muted">' + esc(e.message) + '</div>';
   }
+}
+
+async function loadWhitelist() {
+  var box = document.getElementById('wl-list');
+  if (!box) return;
+  try {
+    var d = await (await fetch('/system/api/whitelist', { headers: H, credentials: 'same-origin' })).json();
+    var rows = (d.entries || []);
+    if (!rows.length) {
+      box.innerHTML = '<div class="muted" style="font-size:12px">Nothing whitelisted yet. Only localhost is exempt.</div>';
+      return;
+    }
+    box.innerHTML = '<table class="tbl"><thead><tr><th>Address</th><th>Note</th><th></th></tr></thead><tbody>' +
+      rows.map(function (r) {
+        return '<tr><td class="mono">' + esc(r.ip) + '</td>' +
+          '<td class="muted" style="font-size:12px">' + (r.note ? esc(r.note) : '—') + '</td>' +
+          '<td><button class="btn btn-sm" onclick="delWhitelist(' + JSON.stringify(r.ip) + ')">Remove</button></td></tr>';
+      }).join('') + '</tbody></table>';
+  } catch (e) { box.innerHTML = '<div class="muted">' + esc(e.message) + '</div>'; }
+}
+
+async function addWhitelist() {
+  var ip = document.getElementById('wl-ip').value.trim();
+  var note = document.getElementById('wl-note').value.trim();
+  if (!ip) { showToast && showToast('Enter an IP address', true); return; }
+  try {
+    var d = await (await fetch('/system/api/whitelist', {
+      method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, H),
+      credentials: 'same-origin', body: JSON.stringify({ ip: ip, note: note })
+    })).json();
+    if (!d.success) { showToast && showToast(d.error || 'Could not add', true); return; }
+    document.getElementById('wl-ip').value = '';
+    document.getElementById('wl-note').value = '';
+    showToast && showToast('Whitelisted ' + ip);
+    loadWhitelist(); loadSysInfo();
+  } catch (e) { showToast && showToast(e.message, true); }
+}
+
+async function delWhitelist(ip) {
+  if (!confirm('Remove ' + ip + ' from the whitelist? It can be banned again after this.')) return;
+  try {
+    var d = await (await fetch('/system/api/whitelist/' + encodeURIComponent(ip), {
+      method: 'DELETE', headers: H, credentials: 'same-origin'
+    })).json();
+    if (!d.success) { showToast && showToast(d.error || 'Could not remove', true); return; }
+    showToast && showToast('Removed ' + ip);
+    loadWhitelist();
+  } catch (e) { showToast && showToast(e.message, true); }
+}
+
+async function unbanOnly() {
+  var ip = prompt('Unban which address? (it stays bannable afterwards)');
+  if (!ip) return;
+  try {
+    var d = await (await fetch('/system/api/unban', {
+      method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, H),
+      credentials: 'same-origin', body: JSON.stringify({ ip: ip.trim() })
+    })).json();
+    showToast && showToast(d.success ? ('Unbanned ' + ip) : (d.error || 'Failed'), !d.success);
+    loadSysInfo();
+  } catch (e) { showToast && showToast(e.message, true); }
 }
 
 function renderFail2ban(f) {
