@@ -1010,7 +1010,15 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
       if (ext) exts = [ext];
     }
     exts = [...new Set(exts.filter(Boolean).map(String))];
-    // No assigned extensions -> can see nothing (a filter that matches nothing).
+
+    // A supervisor with nothing assigned supervises everything — that is how
+    // this worked before assignedExtensions existed, and the users UI has no
+    // way to assign extensions, so every supervisor would otherwise see an
+    // empty CDR. Assign extensions to a supervisor and they get scoped to
+    // exactly those.
+    if (role === 'supervisor' && exts.length === 0) return null;
+
+    // An agent with no extension still sees nothing (filter matches nothing).
     if (exts.length === 0) return { _id: null };
 
     const clauses = [];
@@ -1414,17 +1422,27 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
       } else if (me.role === 'supervisor') {
         // Supervisor can chat with admins + agents in their assigned extensions
         const adminUsers = await User.find({ role: 'admin', enabled: true }, 'username name role extension').lean();
-        const agentUsers = await User.find({
-          role: 'agent', enabled: true,
-          extension: { $in: me.assignedExtensions || [] }
-        }, 'username name role extension').lean();
+        // No assigned extensions -> supervises everyone (same rule as the CDR
+        // scope), otherwise an unassigned supervisor sees no agents at all.
+        const assigned = me.assignedExtensions || [];
+        const agentQuery = assigned.length
+          ? { role: 'agent', enabled: true, extension: { $in: assigned } }
+          : { role: 'agent', enabled: true };
+        const agentUsers = await User.find(agentQuery, 'username name role extension').lean();
         const otherSupers = await User.find({ role: 'supervisor', username: { $ne: me.username }, enabled: true }, 'username name role extension').lean();
         contacts = [...adminUsers, ...otherSupers, ...agentUsers];
       } else {
         // Agent can chat with supervisors who manage their extension + admins
+        // Supervisors who manage this agent's extension, plus supervisors with
+        // no assignments at all (they supervise everyone — mirrors the rule
+        // used above and in the CDR scope).
         const supervisors = await User.find({
           role: 'supervisor', enabled: true,
-          assignedExtensions: me.extension
+          $or: [
+            { assignedExtensions: me.extension },
+            { assignedExtensions: { $size: 0 } },
+            { assignedExtensions: { $exists: false } }
+          ]
         }, 'username name role extension').lean();
         const adminUsers = await User.find({ role: 'admin', enabled: true }, 'username name role extension').lean();
         contacts = [...adminUsers, ...supervisors];
