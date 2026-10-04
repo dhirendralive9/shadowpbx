@@ -80,6 +80,13 @@ const WANT_CALL = argOf('--call');
 const WANT_TAG = argOf('--listen-tag') || argOf('--tag');
 const SPEAK_TAG_ARG = argOf('--speak-tag');
 const NO_BLOCK = process.argv.includes('--no-block');
+// How the listener is kept from hearing the original speaker:
+//   silence  - replace their inbound audio with silence for the whole call.
+//              The stream keeps flowing, so our tap on the other leg survives.
+//   block    - drop the media entirely (killed the tap in testing).
+//   playback - only mute while a translation is playing (proven clean, but the
+//              original leaks through between utterances).
+const MUTE_MODE = (argOf('--mute') || 'silence').toLowerCase();
 const LIST_ONLY = process.argv.includes('--list');
 
 // Endpointing: how long Deepgram waits after speech before finalising.
@@ -190,7 +197,7 @@ function localIp() {
   return '127.0.0.1';
 }
 const ms = (n) => `${Math.round(n)}ms`;
-let CALL_ID = null, SPEAK_TAG = null;
+let CALL_ID = null, SPEAK_TAG = null, MUTE_FALLBACK = false;
 
 const https = require('https');
 function deeplTranslate(text, target, source) {
@@ -282,9 +289,15 @@ async function main() {
   // The listener must not hear the original speaker — otherwise they get the
   // raw language AND the translation on top of each other, and the injected
   // audio feeds back into the other direction's microphone.
-  if (!NO_BLOCK && SPEAK_TAG) {
-    const r = await ng('block media', { 'call-id': callId, 'from-tag': SPEAK_TAG });
-    console.log(`blocked       : ${r && r.result === 'ok' ? 'original audio muted for the listener' : JSON.stringify(r)}`);
+  if (!NO_BLOCK && SPEAK_TAG && MUTE_MODE !== 'playback') {
+    const cmd = MUTE_MODE === 'block' ? 'block media' : 'silence media';
+    const r = await ng(cmd, { 'call-id': callId, 'from-tag': SPEAK_TAG });
+    const ok = r && r.result === 'ok';
+    console.log(`mute (${MUTE_MODE.padEnd(8)}): ${ok ? 'listener hears only the translation' : JSON.stringify(r)}`);
+    if (!ok && MUTE_MODE === 'silence') {
+      console.log('                silence media unsupported here — falling back to per-playback muting');
+      MUTE_FALLBACK = true;
+    }
   }
 
   const answer = sub.sdp.split(/\r?\n/).filter(Boolean).map((line) => {
@@ -466,10 +479,16 @@ async function main() {
         if (!fsx.existsSync(AUDIO_HOST)) fsx.mkdirSync(AUDIO_HOST, { recursive: true });
         fsx.writeFileSync(`${AUDIO_HOST}/${name}`, tts.wav);
         fsx.chmodSync(`${AUDIO_HOST}/${name}`, 0o644);
+        const perPlay = (MUTE_MODE === 'playback' || MUTE_FALLBACK) && !NO_BLOCK;
+        if (perPlay) { try { await ng('block media', { 'call-id': CALL_ID, 'from-tag': SPEAK_TAG }); } catch (e) {} }
         const play = await ng('play media', {
           'call-id': CALL_ID, 'from-tag': SPEAK_TAG, file: `${AUDIO_CONTAINER}/${name}`
         });
         const spoke = play && play.result === 'ok';
+        if (perPlay) {
+          const dur = (play && play.duration) ? play.duration : 4000;
+          setTimeout(() => { ng('unblock media', { 'call-id': CALL_ID, 'from-tag': SPEAK_TAG }).catch(() => {}); }, dur + 150);
+        }
         const whole = firstGap !== null ? firstGap + dt + tts.ms : null;
         console.log(`     spoken    : ${spoke ? 'playing' : JSON.stringify(play)} (tts ${ms(tts.ms)}${whole ? `, TOTAL ${ms(whole)}` : ''}, ${tts.voice})`);
         // tidy up old clips so the directory does not grow without bound
@@ -549,7 +568,9 @@ async function main() {
       try { ws.close(); } catch (e) {}
       try { await ng('unsubscribe', { 'call-id': callId, 'to-tag': toTag }); } catch (e) {}
       if (!NO_BLOCK && SPEAK_TAG) {
-        try { await ng('unblock media', { 'call-id': callId, 'from-tag': SPEAK_TAG }); console.log('unblocked     : original audio restored'); } catch (e) {}
+        try { await ng('unsilence media', { 'call-id': callId, 'from-tag': SPEAK_TAG }); } catch (e) {}
+        try { await ng('unblock media', { 'call-id': callId, 'from-tag': SPEAK_TAG }); } catch (e) {}
+        console.log('restored      : original audio unmuted');
       }
       try { sink.close(); } catch (e) {}
 
