@@ -257,54 +257,99 @@ async function main() {
   // are actually sayable. For an interpreter that trade is worth it.
   const MIN_WORDS = parseInt(argOf('--min-words') || '4', 10);
   const MAX_WAIT_MS = parseInt(argOf('--max-wait') || '4000', 10);
+  const GRACE_MS = parseInt(argOf('--grace-ms') || '900', 10);
 
-  let buf = [], firstGap = null, idleTimer = null, hardTimer = null;
+  let buf = [], firstGap = null, idleTimer = null, hardTimer = null, graced = false;
   const translations = [];
 
   const words = (t) => t.trim().split(/\s+/).filter(Boolean).length;
   const endsSentence = (t) => /[.!?।。]["')\]]?\s*$/.test(t.trim());
-  // Trailing conjunctions/prepositions mean the speaker is mid-thought even if
-  // Deepgram punctuated. Common sentence-continuers in en/de/hi.
-  const danglES = /\b(and|but|because|so|that|the|a|an|of|for|to|with|from|my|your|is|are|was|were|i|we|you|und|aber|weil|dass|der|die|das|ein|eine|mit|von|für|zu|ist|sind|ich|wir|sie|और|लेकिन|क्योंकि|से|का|की|के|है|हैं)\s*[.,]?\s*$/i;
 
+  // A fragment ending on one of these is mid-thought no matter what the
+  // punctuation says: "This is David, and" / "I want to cancel my". Sending it
+  // produces confident nonsense ("Das ist David, und."), which is worse than
+  // waiting another half second.
+  const DANGLING = /(^|\s)(and|but|or|because|so|that|if|when|while|the|a|an|of|for|to|with|from|at|in|on|by|my|our|your|his|her|their|its|is|are|am|was|were|be|been|will|would|can|could|should|i|we|you|they|he|she|it|this|these|those|und|aber|oder|weil|dass|wenn|der|die|das|den|dem|ein|eine|einen|mit|von|für|zu|bei|auf|ist|sind|war|waren|ich|wir|sie|er|es|mein|meine|meinen|meinem|meiner|dein|deine|ihr|ihre|ihren|ihrem|unser|unsere|sehr|ganz|noch|auch|nur|schon|automatically|actually|really|very|just|also|still|even|about|into|over|under|than|then|और|लेकिन|क्योंकि|से|का|की|के|को|में|पर|है|हैं|था|थे|मैं|हम|आप|यह|वह|मेरा|मेरी|मेरे)\s*[,;:]?\s*$/i;
+
+  // A trailing function word only means "mid-thought" when the speaker did NOT
+  // finish the sentence. "Thank you." ends on "you" but is plainly complete,
+  // while "Vielen Dank für Ihre" is not — the difference is the full stop, so
+  // check punctuation first and only then look for a dangling word.
+  const isDangling = (t) => {
+    const s2 = (t || '').trim();
+    if (!s2) return false;
+    if (endsSentence(s2)) return false;   // punctuated = the speaker stopped
+    return DANGLING.test(s2);
+  };
+
+  // Complete = ends a sentence, has substance, and isn't left hanging.
   function looksComplete(text) {
-    if (!text) return false;
-    if (danglES.test(text)) return false;          // clearly mid-sentence
-    if (endsSentence(text) && words(text) >= MIN_WORDS) return true;
-    return false;
+    const t = (text || '').trim();
+    if (!t) return false;
+    if (isDangling(t)) return false;
+    return endsSentence(t) && words(t) >= MIN_WORDS;
+  }
+
+  // Can we send this even though no sentence end arrived? Only if it is not
+  // obviously mid-thought. Used by the idle / utterance-end / max-wait paths.
+  function safeToSend(text) {
+    const t = (text || '').trim();
+    if (!t) return false;
+    if (isDangling(t)) return false;
+    // No wordlist can tell "Yeah. I actually subscribed" (unfinished) from a
+    // finished sentence — both end on an ordinary word. But Deepgram does
+    // punctuate what it believes are complete sentences, so an UNPUNCTUATED
+    // tail is the honest signal that the speaker is still going. Hold it and
+    // let the grace period decide.
+    if (!endsSentence(t)) return false;
+    return words(t) >= MIN_WORDS;
+  }
+
+  function armIdle() {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => tryFlush('idle'), SENTENCE_IDLE_MS);
+  }
+
+  // One extra grace period when a timer fires on an obviously unfinished
+  // phrase — speakers hesitate mid-sentence ("I want to cancel my … Netflix
+  // subscription"). We wait once more, then give up and send what we have
+  // rather than dropping the words entirely.
+  function tryFlush(reason) {
+    const joined = buf.join(' ');
+    if (!buf.length) return;
+    if (safeToSend(joined) || graced) { graced = false; return flush(reason); }
+    graced = true;
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => { graced = true; tryFlush(reason + '+grace'); }, GRACE_MS);
   }
 
   function pushFragment(text, gap) {
     if (!text || !text.trim()) return;
     if (!buf.length) {
       firstGap = gap;
+      graced = false;
       clearTimeout(hardTimer);
-      hardTimer = setTimeout(() => flush('max-wait'), MAX_WAIT_MS);
+      hardTimer = setTimeout(() => { graced = true; tryFlush('max-wait'); }, MAX_WAIT_MS);
     }
     buf.push(text.trim());
     const joined = buf.join(' ');
     console.log(`  frag   ${gap !== null ? ('[' + ms(gap) + ']').padEnd(9) : ''.padEnd(9)} "${text.trim()}"`);
 
-    clearTimeout(idleTimer);
     if (looksComplete(joined)) { flush('sentence'); return; }
-    idleTimer = setTimeout(() => flush('idle'), SENTENCE_IDLE_MS);
+    armIdle();
   }
 
-  // UtteranceEnd means Deepgram heard real silence. Honour it only if what we
-  // have is a plausible thought — otherwise keep waiting for the rest.
   function onUtteranceEnd() {
-    const joined = buf.join(' ');
     if (!buf.length) return;
-    if (words(joined) >= MIN_WORDS || endsSentence(joined)) flush('utterance-end');
+    tryFlush('utterance-end');
   }
 
   async function flush(reason) {
     clearTimeout(idleTimer); clearTimeout(hardTimer);
     if (!buf.length) return;
     let text = buf.join(' ').trim();
-    buf = [];
-    if (words(text) < 1) return;
-    // Give DeepL a sentence to work with even when the speaker trailed off.
+    buf = []; graced = false;
+    if (!text) return;
     if (!endsSentence(text)) text += '.';
 
     const t1 = Date.now();
