@@ -87,6 +87,13 @@ const NO_BLOCK = process.argv.includes('--no-block');
 //   playback - only mute while a translation is playing (proven clean, but the
 //              original leaks through between utterances).
 const MUTE_MODE = (argOf('--mute') || 'silence').toLowerCase();
+// WHICH leg gets muted. rtpengine's block/silence with a from-tag acts on the
+// media that participant SENDS. So to stop the listener hearing the original
+// speaker, we mute the SPEAKER's leg (the one we are tapping) — not the
+// listener's. The tap is a separate subscription, so it should keep receiving.
+//   speaker  - mute the leg we listen to (correct for "only hear translation")
+//   listener - mute the leg we inject into (wrong direction; kept for testing)
+const MUTE_SIDE = (argOf('--mute-side') || 'speaker').toLowerCase();
 const LIST_ONLY = process.argv.includes('--list');
 
 // Endpointing: how long Deepgram waits after speech before finalising.
@@ -197,7 +204,7 @@ function localIp() {
   return '127.0.0.1';
 }
 const ms = (n) => `${Math.round(n)}ms`;
-let CALL_ID = null, SPEAK_TAG = null, MUTE_FALLBACK = false;
+let CALL_ID = null, SPEAK_TAG = null, MUTE_FALLBACK = false, MUTE_TAG = null;
 
 const https = require('https');
 function deeplTranslate(text, target, source) {
@@ -289,9 +296,11 @@ async function main() {
   // The listener must not hear the original speaker — otherwise they get the
   // raw language AND the translation on top of each other, and the injected
   // audio feeds back into the other direction's microphone.
-  if (!NO_BLOCK && SPEAK_TAG && MUTE_MODE !== 'playback') {
+  MUTE_TAG = (MUTE_SIDE === 'listener') ? SPEAK_TAG : listenTag;
+  if (!NO_BLOCK && MUTE_TAG && MUTE_MODE !== 'playback') {
     const cmd = MUTE_MODE === 'block' ? 'block media' : 'silence media';
-    const r = await ng(cmd, { 'call-id': callId, 'from-tag': SPEAK_TAG });
+    console.log(`muting leg    : ${MUTE_TAG}  (${MUTE_SIDE})`);
+    const r = await ng(cmd, { 'call-id': callId, 'from-tag': MUTE_TAG });
     const ok = r && r.result === 'ok';
     console.log(`mute (${MUTE_MODE.padEnd(8)}): ${ok ? 'listener hears only the translation' : JSON.stringify(r)}`);
     if (!ok && MUTE_MODE === 'silence') {
@@ -480,14 +489,14 @@ async function main() {
         fsx.writeFileSync(`${AUDIO_HOST}/${name}`, tts.wav);
         fsx.chmodSync(`${AUDIO_HOST}/${name}`, 0o644);
         const perPlay = (MUTE_MODE === 'playback' || MUTE_FALLBACK) && !NO_BLOCK;
-        if (perPlay) { try { await ng('block media', { 'call-id': CALL_ID, 'from-tag': SPEAK_TAG }); } catch (e) {} }
+        if (perPlay) { try { await ng('block media', { 'call-id': CALL_ID, 'from-tag': MUTE_TAG || SPEAK_TAG }); } catch (e) {} }
         const play = await ng('play media', {
           'call-id': CALL_ID, 'from-tag': SPEAK_TAG, file: `${AUDIO_CONTAINER}/${name}`
         });
         const spoke = play && play.result === 'ok';
         if (perPlay) {
           const dur = (play && play.duration) ? play.duration : 4000;
-          setTimeout(() => { ng('unblock media', { 'call-id': CALL_ID, 'from-tag': SPEAK_TAG }).catch(() => {}); }, dur + 150);
+          setTimeout(() => { ng('unblock media', { 'call-id': CALL_ID, 'from-tag': MUTE_TAG || SPEAK_TAG }).catch(() => {}); }, dur + 150);
         }
         const whole = firstGap !== null ? firstGap + dt + tts.ms : null;
         console.log(`     spoken    : ${spoke ? 'playing' : JSON.stringify(play)} (tts ${ms(tts.ms)}${whole ? `, TOTAL ${ms(whole)}` : ''}, ${tts.voice})`);
@@ -567,9 +576,10 @@ async function main() {
     setTimeout(async () => {
       try { ws.close(); } catch (e) {}
       try { await ng('unsubscribe', { 'call-id': callId, 'to-tag': toTag }); } catch (e) {}
-      if (!NO_BLOCK && SPEAK_TAG) {
-        try { await ng('unsilence media', { 'call-id': callId, 'from-tag': SPEAK_TAG }); } catch (e) {}
-        try { await ng('unblock media', { 'call-id': callId, 'from-tag': SPEAK_TAG }); } catch (e) {}
+      if (!NO_BLOCK && (MUTE_TAG || SPEAK_TAG)) {
+        const mt = MUTE_TAG || SPEAK_TAG;
+        try { await ng('unsilence media', { 'call-id': callId, 'from-tag': mt }); } catch (e) {}
+        try { await ng('unblock media', { 'call-id': callId, 'from-tag': mt }); } catch (e) {}
         console.log('restored      : original audio unmuted');
       }
       try { sink.close(); } catch (e) {}
