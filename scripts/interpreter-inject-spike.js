@@ -101,7 +101,10 @@ function speak(text, voice) {
     const body = JSON.stringify({ text });
     // 8 kHz mu-law in a WAV container: rtpengine reads the container, and the
     // samples are already the codec the call uses, so nothing is transcoded.
-    const q = `model=${voice}&encoding=mulaw&sample_rate=8000&container=wav`;
+    // 16-bit PCM, not mulaw. rtpengine's player decodes linear16 cleanly and
+    // transcodes to whatever the call is using; a mu-law WAV played back
+    // broken and stuttering.
+    const q = `model=${voice}&encoding=linear16&sample_rate=8000&container=wav`;
     const t0 = Date.now();
     const req = https.request({
       method: 'POST', hostname: 'api.deepgram.com', path: `/v1/speak?${q}`,
@@ -133,6 +136,11 @@ async function main() {
   }
 
   const q = await ng('query', { 'call-id': CALL });
+  if (!q || q.result === 'error') {
+    console.log(`\ncall-id not known to rtpengine: ${CALL}`);
+    console.log('(dead sessions linger in "list" — make a fresh call and use its id)\n');
+    process.exit(1);
+  }
   const tags = q && q.tags ? Object.keys(q.tags).filter(t => t && t !== '0') : [];
   console.log(`\ncall          : ${CALL}`);
   console.log('legs          :');
@@ -145,10 +153,19 @@ async function main() {
   console.log(`text          : ${TEXT}`);
 
   const tts = await speak(TEXT, voice);
-  const file = `/tmp/inject-${Date.now()}.wav`;
+  // rtpengine runs in a container with its own filesystem: /tmp here is NOT
+  // /tmp there. The installer bind-mounts /opt/shadowpbx/audio -> /audio, so
+  // that is the one place both sides can see.
+  const AUDIO_HOST = process.env.AUDIO_DIR || '/opt/shadowpbx/audio';
+  const AUDIO_CONTAINER = process.env.AUDIO_DIR_CONTAINER || '/audio';
+  const name = `inject-${Date.now()}.wav`;
+  const file = path.join(AUDIO_HOST, name);
+  const fileForRtpengine = `${AUDIO_CONTAINER}/${name}`;
+  if (!fs.existsSync(AUDIO_HOST)) fs.mkdirSync(AUDIO_HOST, { recursive: true });
   fs.writeFileSync(file, tts.audio);
   fs.chmodSync(file, 0o644);
-  console.log(`tts           : ${tts.ms}ms, ${tts.audio.length} bytes -> ${file}`);
+  console.log(`tts           : ${tts.ms}ms, ${tts.audio.length} bytes`);
+  console.log(`file          : ${file}  (rtpengine sees ${fileForRtpengine})`);
 
   // Who hears it. "all" is the simplest first proof; a from-tag targets one
   // party, which is what the interpreter needs (the agent hears German while
@@ -165,7 +182,7 @@ async function main() {
 
   const params = Object.assign({ 'call-id': CALL }, target);
   if (USE_BLOB) params.blob = tts.audio.toString('binary');
-  else params.file = file;
+  else params.file = fileForRtpengine;
 
   console.log(`\nplaying via   : ${USE_BLOB ? 'blob (inline bytes)' : 'file path'}`);
   const t0 = Date.now();
@@ -186,9 +203,8 @@ async function main() {
       console.log('This rtpengine build has no media player (needs libavcodec support).');
       console.log('Check: docker exec rtpengine rtpengine --version');
     } else if (!USE_BLOB) {
-      console.log('If this is a file-permission problem, rtpengine must be able to read');
-      console.log(`  ${file}`);
-      console.log('Try the same command with --blob to send the audio inline instead.');
+      console.log('rtpengine could not read or decode the file. Check it can see it:');
+      console.log(`  docker exec rtpengine ls -l ${fileForRtpengine}`);
     }
   }
   console.log('─'.repeat(60));
