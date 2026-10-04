@@ -259,7 +259,7 @@ async function main() {
   const MAX_WAIT_MS = parseInt(argOf('--max-wait') || '4000', 10);
   const GRACE_MS = parseInt(argOf('--grace-ms') || '900', 10);
 
-  let buf = [], firstGap = null, idleTimer = null, hardTimer = null, graced = false;
+  let buf = [], firstGap = null, idleTimer = null, hardTimer = null, bufStartedAt = 0;
   const translations = [];
 
   const words = (t) => t.trim().split(/\s+/).filter(Boolean).length;
@@ -310,26 +310,36 @@ async function main() {
     idleTimer = setTimeout(() => tryFlush('idle'), SENTENCE_IDLE_MS);
   }
 
-  // One extra grace period when a timer fires on an obviously unfinished
-  // phrase — speakers hesitate mid-sentence ("I want to cancel my … Netflix
-  // subscription"). We wait once more, then give up and send what we have
-  // rather than dropping the words entirely.
+  // When a timer fires on text that is still obviously mid-sentence, keep
+  // waiting rather than sending half a thought. Surrendering early is what
+  // produced "Netflix." / "Abonnement." as two translations, and "Probleme mit
+  // meinem…" — each one a confident fragment the agent cannot act on.
+  //
+  // So the grace period RETRIES. Only the hard max-wait ceiling forces a send,
+  // which guarantees words are never dropped and nobody waits forever.
   function tryFlush(reason) {
-    const joined = buf.join(' ');
     if (!buf.length) return;
-    if (safeToSend(joined) || graced) { graced = false; return flush(reason); }
-    graced = true;
+    const joined = buf.join(' ');
+
+    if (safeToSend(joined)) return flush(reason);
+
+    if (bufAgeMs() >= MAX_WAIT_MS) return flush(reason + '+forced');
+
+    // not safe yet, and we still have time — wait for the rest of the sentence
     clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => { graced = true; tryFlush(reason + '+grace'); }, GRACE_MS);
+    idleTimer = setTimeout(() => tryFlush(reason + '+wait'), GRACE_MS);
   }
+
+  const bufAgeMs = () => (bufStartedAt ? Date.now() - bufStartedAt : 0);
 
   function pushFragment(text, gap) {
     if (!text || !text.trim()) return;
     if (!buf.length) {
       firstGap = gap;
-      graced = false;
+      bufStartedAt = Date.now();
       clearTimeout(hardTimer);
-      hardTimer = setTimeout(() => { graced = true; tryFlush('max-wait'); }, MAX_WAIT_MS);
+      // Absolute ceiling: whatever we have goes out, finished or not.
+      hardTimer = setTimeout(() => flush('max-wait'), MAX_WAIT_MS);
     }
     buf.push(text.trim());
     const joined = buf.join(' ');
@@ -348,7 +358,7 @@ async function main() {
     clearTimeout(idleTimer); clearTimeout(hardTimer);
     if (!buf.length) return;
     let text = buf.join(' ').trim();
-    buf = []; graced = false;
+    buf = []; bufStartedAt = 0;
     if (!text) return;
     if (!endsSentence(text)) text += '.';
 
