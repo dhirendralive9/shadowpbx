@@ -127,9 +127,17 @@ function localIp() {
 const ms = (n) => `${Math.round(n)}ms`;
 
 const https = require('https');
-function deeplTranslate(text, target) {
+function deeplTranslate(text, target, source) {
   return new Promise((resolve, reject) => {
-    const body = JSON.stringify({ text: [text], target_lang: target });
+    // Pass source_lang when we know it. Auto-detect gets confused by short or
+    // code-switched fragments ("order के वैसे...") and silently returns the
+    // input untranslated, which is worse than a wrong translation because it
+    // looks like it worked.
+    const payload = { text: [text], target_lang: target };
+    if (source && source !== 'multi' && source.toUpperCase() !== target) {
+      payload.source_lang = source.toUpperCase();
+    }
+    const body = JSON.stringify(payload);
     const req = https.request({
       method: 'POST', hostname: DEEPL_HOST, path: '/v2/translate',
       headers: {
@@ -234,40 +242,79 @@ async function main() {
   const turns = [];                      // measured silence -> final gaps
 
   // ── sentence buffer ──────────────────────────────────────────────────
-  // Finals are fragments. Accumulate until the thought is complete, then
-  // translate once. Flushing on: terminal punctuation, UtteranceEnd, or a
-  // short idle timeout (someone trailed off without a full stop).
-  let buf = [], bufStartedAt = 0, firstGap = null, idleTimer = null;
+  // Deepgram finalises on pauses, not on meaning. A person saying "I am
+  // looking ... for more information about my order" produces two finals, and
+  // translating each alone gives "Ich suche" + a dangling phrase — worse than
+  // useless, because the agent hears confident nonsense.
+  //
+  // So we hold fragments until the thought is actually complete:
+  //
+  //   * terminal punctuation AND enough words  -> flush now (the common case)
+  //   * UtteranceEnd / idle, but only if the buffer looks like a whole thought
+  //   * a hard cap, so nobody waits forever mid-ramble
+  //
+  // The cost is latency on long sentences; the benefit is translations that
+  // are actually sayable. For an interpreter that trade is worth it.
+  const MIN_WORDS = parseInt(argOf('--min-words') || '4', 10);
+  const MAX_WAIT_MS = parseInt(argOf('--max-wait') || '4000', 10);
+
+  let buf = [], firstGap = null, idleTimer = null, hardTimer = null;
   const translations = [];
 
+  const words = (t) => t.trim().split(/\s+/).filter(Boolean).length;
+  const endsSentence = (t) => /[.!?।。]["')\]]?\s*$/.test(t.trim());
+  // Trailing conjunctions/prepositions mean the speaker is mid-thought even if
+  // Deepgram punctuated. Common sentence-continuers in en/de/hi.
+  const danglES = /\b(and|but|because|so|that|the|a|an|of|for|to|with|from|my|your|is|are|was|were|i|we|you|und|aber|weil|dass|der|die|das|ein|eine|mit|von|für|zu|ist|sind|ich|wir|sie|और|लेकिन|क्योंकि|से|का|की|के|है|हैं)\s*[.,]?\s*$/i;
+
+  function looksComplete(text) {
+    if (!text) return false;
+    if (danglES.test(text)) return false;          // clearly mid-sentence
+    if (endsSentence(text) && words(text) >= MIN_WORDS) return true;
+    return false;
+  }
+
   function pushFragment(text, gap) {
-    if (!text) return;
-    if (!buf.length) { bufStartedAt = Date.now(); firstGap = gap; }
+    if (!text || !text.trim()) return;
+    if (!buf.length) {
+      firstGap = gap;
+      clearTimeout(hardTimer);
+      hardTimer = setTimeout(() => flush('max-wait'), MAX_WAIT_MS);
+    }
     buf.push(text.trim());
     const joined = buf.join(' ');
     console.log(`  frag   ${gap !== null ? ('[' + ms(gap) + ']').padEnd(9) : ''.padEnd(9)} "${text.trim()}"`);
-    if (/[.!?。]\s*$/.test(joined)) flush('punctuation');
-    else {
-      clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => flush('idle'), SENTENCE_IDLE_MS);
-    }
+
+    clearTimeout(idleTimer);
+    if (looksComplete(joined)) { flush('sentence'); return; }
+    idleTimer = setTimeout(() => flush('idle'), SENTENCE_IDLE_MS);
+  }
+
+  // UtteranceEnd means Deepgram heard real silence. Honour it only if what we
+  // have is a plausible thought — otherwise keep waiting for the rest.
+  function onUtteranceEnd() {
+    const joined = buf.join(' ');
+    if (!buf.length) return;
+    if (words(joined) >= MIN_WORDS || endsSentence(joined)) flush('utterance-end');
   }
 
   async function flush(reason) {
-    clearTimeout(idleTimer);
+    clearTimeout(idleTimer); clearTimeout(hardTimer);
     if (!buf.length) return;
-    const text = buf.join(' ').trim();
+    let text = buf.join(' ').trim();
     buf = [];
-    if (text.length < 2) return;
+    if (words(text) < 1) return;
+    // Give DeepL a sentence to work with even when the speaker trailed off.
+    if (!endsSentence(text)) text += '.';
 
     const t1 = Date.now();
     try {
-      const out = await deeplTranslate(text, TARGET);
+      const out = await deeplTranslate(text, TARGET, LANG);
       const dt = Date.now() - t1;
       const total = firstGap !== null ? firstGap + dt : null;
-      translations.push({ translateMs: dt, totalMs: total });
+      translations.push({ translateMs: dt, totalMs: total, words: words(text) });
       console.log('');
-      console.log(`  ${out.detected || '??'} → ${TARGET}   (translate ${ms(dt)}${total ? `, stop→translated ${ms(total)}` : ''}, flush: ${reason})`);
+      console.log(`  ${out.detected || LANG.toUpperCase()} → ${TARGET}   (translate ${ms(dt)}${total ? `, stop→translated ${ms(total)}` : ''}, flush: ${reason})`);
       console.log(`     said      : ${text}`);
       console.log(`     translated: ${out.text}`);
       console.log('');
@@ -293,7 +340,7 @@ async function main() {
         const gap = Date.now() - speechEndedAt;
         console.log(`   · UtteranceEnd after ${ms(gap)} of real silence`);
       }
-      flush('utterance-end');
+      onUtteranceEnd();
       return;
     }
     const alt = m.channel && m.channel.alternatives && m.channel.alternatives[0];
