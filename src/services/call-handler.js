@@ -1654,6 +1654,18 @@ class CallHandler {
   // file must land in the directory bind-mounted into it, and the WAV header
   // must carry real chunk lengths or its ffmpeg stutters ("dts = NOPTS").
   async _playToLeg(callId, tag, mulaw) {
+    // Serialise playback per call. Each translated sentence is its own
+    // "play media", and if a second one starts while the first is still
+    // playing, RTPEngine mixes them — two voices at once, which the listener
+    // hears as gibberish. Queue them so one finishes before the next begins.
+    if (!this._playQueues) this._playQueues = new Map();
+    const prev = this._playQueues.get(callId) || Promise.resolve();
+    const run = prev.catch(() => {}).then(() => this._playToLegNow(callId, tag, mulaw));
+    this._playQueues.set(callId, run.catch(() => {}));
+    return run;
+  }
+
+  async _playToLegNow(callId, tag, mulaw) {
     const { wavHeader, AUDIO_HOST, AUDIO_CONTAINER } = require('./interpreter-pipeline');
     const fsx = require('fs');
     const pcm = Buffer.alloc(mulaw.length * 2);
@@ -1670,6 +1682,11 @@ class CallHandler {
     const r = await this._ng('play media', { 'call-id': callId, 'from-tag': tag, file: AUDIO_CONTAINER + '/' + name });
     setTimeout(() => { try { fsx.unlinkSync(AUDIO_HOST + '/' + name); } catch (e) {} }, 60000);
     if (!r || r.result !== 'ok') throw new Error('play media failed: ' + JSON.stringify(r));
+    // Hold the queue until this clip has actually finished. RTPEngine reports
+    // the duration it parsed, so we wait that long (plus a little) before
+    // letting the next sentence start.
+    const waitMs = (typeof r.duration === 'number' ? r.duration : Math.ceil(mulaw.length / 8)) + 120;
+    await new Promise(res => setTimeout(res, waitMs));
     return r;
   }
 
@@ -1782,6 +1799,7 @@ class CallHandler {
   // Called from the normal call teardown so a translated call never leaves a
   // socket or a streamer behind.
   _stopInterpreter(callId) {
+    if (this._playQueues) this._playQueues.delete(callId);
     const sess = this.interpreterSessions.get(callId);
     if (!sess) return;
     logger.info(`INTERPRETER: tearing down ${callId} after ${Math.round((Date.now() - sess.startedAt) / 1000)}s ${JSON.stringify(sess.media.report())}`);
