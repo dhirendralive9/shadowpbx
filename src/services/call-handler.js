@@ -374,7 +374,8 @@ class CallHandler {
         const rtpOffer = await this._rtpengineOffer(callId, fromTag, req.body, { target: dest.media });
         let offerSdp = rtpOffer ? rtpOffer.sdp : req.body;
 
-        // ── live interpreter ───────────────────────────────────────────────
+      
+  // ── live interpreter ───────────────────────────────────────────────
         // When this call is translated, the agent's media terminates HERE
         // instead of being bridged by RTPEngine. That is the only way to
         // guarantee the customer never hears the agent's real voice: RTPEngine
@@ -430,6 +431,16 @@ class CallHandler {
 
         // Track the call
         this.activeCalls.set(callId, { uas, uac, cdr, fromExt: callerID, toExt: target });
+
+        // With both legs established we know their tags, so the interpreter can
+        // attach: tap the customer, hold the agent, translate both ways.
+        if (interpreter) {
+          this._attachInterpreter(interpreter, { callId, fromTag, uas, uac, target })
+            .catch(e => {
+              logger.error(`INTERPRETER: attach failed for ${callId}: ${e.message} — call continues untranslated`);
+              this._stopInterpreter(callId);
+            });
+        }
         const rtpCallId = callId;
         const rtpFromTag = fromTag;
         cdr.rtpengineCallId = rtpCallId;
@@ -1544,6 +1555,169 @@ class CallHandler {
       });
     }
     return calls;
+  }
+
+  // ── interpreter plumbing ──────────────────────────────────────────────
+  // Raw ng commands. rtp-helper covers offer/answer; subscribe and play media
+  // are only needed by the interpreter, so they live here rather than widening
+  // that module's surface.
+  _ng(command, params) {
+    const dgram = require('dgram');
+    const enc = (o) => {
+      if (typeof o === 'number') return 'i' + o + 'e';
+      if (typeof o === 'string') return Buffer.byteLength(o) + ':' + o;
+      if (Array.isArray(o)) return 'l' + o.map(enc).join('') + 'e';
+      if (o && typeof o === 'object') { let x = 'd'; for (const k of Object.keys(o)) x += enc(k) + enc(o[k]); return x + 'e'; }
+      return '0:';
+    };
+    const dec = (str) => {
+      let i = 0;
+      const val = () => {
+        const c = str[i];
+        if (c === 'i') { const e = str.indexOf('e', i); const n = parseInt(str.slice(i + 1, e), 10); i = e + 1; return n; }
+        if (c === 'l') { i++; const a = []; while (str[i] !== 'e') a.push(val()); i++; return a; }
+        if (c === 'd') { i++; const o = {}; while (str[i] !== 'e') { const k = val(); o[k] = val(); } i++; return o; }
+        const col = str.indexOf(':', i), len = parseInt(str.slice(i, col), 10);
+        const v = str.slice(col + 1, col + 1 + len); i = col + 1 + len; return v;
+      };
+      try { return val(); } catch (e) { return null; }
+    };
+    return new Promise((resolve) => {
+      const sock = dgram.createSocket('udp4');
+      const t = setTimeout(() => { try { sock.close(); } catch (e) {} resolve(null); }, 5000);
+      sock.on('message', (d) => {
+        clearTimeout(t); const str = d.toString(), sp = str.indexOf(' ');
+        try { sock.close(); } catch (e) {}
+        resolve(sp < 0 ? null : dec(str.slice(sp + 1)));
+      });
+      sock.on('error', () => { clearTimeout(t); resolve(null); });
+      sock.send(Buffer.from(`${Math.random().toString(36).slice(2, 10)} ${enc(Object.assign({ command }, params))}`),
+        this.rtpengineConfig.port, this.rtpengineConfig.host, () => {});
+    });
+  }
+
+  // Fork one leg's audio to a socket of ours. An unnamed subscribe matches no
+  // monologue ("No medias found"), so the leg must be named by tag.
+  async _tapLeg(callId, tag, onAudio) {
+    const dgram = require('dgram');
+    const os = require('os');
+    let ip = process.env.EXTERNAL_IP;
+    if (!ip) {
+      const ifs = os.networkInterfaces();
+      outer: for (const n of Object.keys(ifs)) {
+        for (const a of ifs[n]) if (a.family === 'IPv4' && !a.internal) { ip = a.address; break outer; }
+      }
+      ip = ip || '127.0.0.1';
+    }
+
+    const sink = dgram.createSocket('udp4');
+    await new Promise(res => sink.bind(0, '0.0.0.0', res));
+    const port = sink.address().port;
+
+    const sub = await this._ng('subscribe request', { 'call-id': callId, 'from-tags': [tag] });
+    if (!sub || !sub.sdp) { try { sink.close(); } catch (e) {} throw new Error('subscribe request failed'); }
+    const toTag = sub['to-tag'] || sub.tag;
+
+    // Mirror RTPEngine's own offer back at it; a hand-written SDP is rejected
+    // with "Failed to process subscription answer".
+    const answer = sub.sdp.split(/\r?\n/).filter(Boolean).map((line) => {
+      if (line.startsWith('c=')) return 'c=IN IP4 ' + ip;
+      if (line.startsWith('o=')) { const q = line.split(' '); if (q.length >= 6) { q[5] = ip; return q.join(' '); } return 'o=- 0 0 IN IP4 ' + ip; }
+      if (line.startsWith('m=audio')) { const q = line.split(' '); q[1] = String(port); return q.join(' '); }
+      if (/^a=(candidate|ice-|fingerprint|setup|rtcp:)/.test(line)) return null;
+      if (line === 'a=sendrecv' || line === 'a=sendonly') return 'a=recvonly';
+      return line;
+    }).filter(Boolean).join('\r\n') + '\r\n';
+
+    const ans = await this._ng('subscribe answer', {
+      'call-id': callId, 'to-tag': toTag, sdp: answer,
+      flags: ['trust-address'], replace: ['origin', 'session-connection'], ICE: 'remove'
+    });
+    if (!ans || ans.result !== 'ok') { try { sink.close(); } catch (e) {} throw new Error('subscribe answer failed'); }
+
+    sink.on('message', (buf) => {
+      if (buf.length < 13) return;
+      const csrc = buf[0] & 0x0f, ext = (buf[0] >> 4) & 0x01;
+      let off = 12 + csrc * 4;
+      if (ext && buf.length > off + 4) off += 4 + buf.readUInt16BE(off + 2) * 4;
+      const payload = buf.subarray(off);
+      if (payload.length) onAudio(payload);
+    });
+
+    return () => {
+      this._ng('unsubscribe', { 'call-id': callId, 'to-tag': toTag }).catch(() => {});
+      try { sink.close(); } catch (e) {}
+    };
+  }
+
+  // Play synthesised speech to one party. RTPEngine runs in a container, so the
+  // file must land in the directory bind-mounted into it, and the WAV header
+  // must carry real chunk lengths or its ffmpeg stutters ("dts = NOPTS").
+  async _playToLeg(callId, tag, mulaw) {
+    const { wavHeader, AUDIO_HOST, AUDIO_CONTAINER } = require('./interpreter-pipeline');
+    const fsx = require('fs');
+    const pcm = Buffer.alloc(mulaw.length * 2);
+    for (let i = 0; i < mulaw.length; i++) {
+      const u = ~mulaw[i] & 0xff;
+      const sign = u & 0x80, exp = (u >> 4) & 0x07, man = u & 0x0f;
+      let v = (((man << 3) + 0x84) << exp) - 0x84;
+      if (sign) v = -v;
+      pcm.writeInt16LE(Math.max(-32768, Math.min(32767, v)), i * 2);
+    }
+    const name = 'xlate-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7) + '.wav';
+    if (!fsx.existsSync(AUDIO_HOST)) fsx.mkdirSync(AUDIO_HOST, { recursive: true });
+    fsx.writeFileSync(AUDIO_HOST + '/' + name, Buffer.concat([wavHeader(pcm.length, 8000), pcm]));
+    const r = await this._ng('play media', { 'call-id': callId, 'from-tag': tag, file: AUDIO_CONTAINER + '/' + name });
+    setTimeout(() => { try { fsx.unlinkSync(AUDIO_HOST + '/' + name); } catch (e) {} }, 60000);
+    if (!r || r.result !== 'ok') throw new Error('play media failed: ' + JSON.stringify(r));
+    return r;
+  }
+
+
+  // Start translating once both legs exist. Anything that throws here leaves
+  // the call up and untranslated rather than taking it down.
+  async _attachInterpreter(session, { callId, fromTag, uas, uac, target }) {
+    const { InterpreterSession } = require('./interpreter-pipeline');
+
+    const customerTag = fromTag;                       // the inbound caller
+    const langs = await this._interpreterLanguages(target);
+
+    const pipeline = new InterpreterSession({
+      callId,
+      media: session.media,
+      customerLang: langs.customer,
+      agentLang: langs.agent,
+      voiceGender: langs.voiceGender,
+      tapCustomer: (onAudio) => this._tapLeg(callId, customerTag, onAudio),
+      playToCustomer: (mulaw) => this._playToLeg(callId, customerTag, mulaw)
+    });
+
+    await pipeline.start();
+    session.pipeline = pipeline;
+    const origClose = session.close;
+    session.close = () => { try { pipeline.close(); } catch (e) {} origClose(); };
+    logger.info(`INTERPRETER: translating ${callId} — customer ${langs.customer} <-> agent ${langs.agent}`);
+  }
+
+  // Languages for this call: the agent's own setting wins, then the system
+  // default, then English. "auto" is left alone — Deepgram handles detection.
+  async _interpreterLanguages(extension) {
+    const out = { customer: 'auto', agent: 'en', voiceGender: 'female' };
+    try {
+      const { SystemSettings, Extension } = require('../models');
+      const sys = await SystemSettings.findById('system');
+      const cfg = (sys && sys.interpreter) || {};
+      if (cfg.customerLanguage) out.customer = cfg.customerLanguage;
+      if (cfg.agentLanguage) out.agent = cfg.agentLanguage;
+      const ext = await Extension.findOne({ extension: String(extension) }, 'translation');
+      const t = ext && ext.translation;
+      if (t && t.agentLanguage) out.agent = t.agentLanguage;
+    } catch (e) {
+      logger.warn(`INTERPRETER: language lookup failed (${e.message}) — using defaults`);
+    }
+    if (process.env.TRANSLATION_CUSTOMER_LANG) out.customer = process.env.TRANSLATION_CUSTOMER_LANG;
+    if (process.env.TRANSLATION_AGENT_LANG) out.agent = process.env.TRANSLATION_AGENT_LANG;
+    return out;
   }
 
   // ── live interpreter ──────────────────────────────────────────────────
