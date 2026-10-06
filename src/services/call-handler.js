@@ -12,6 +12,9 @@ class CallHandler {
     this.trunkManager = trunkManager;
     this.callRouter = callRouter;
     this.activeCalls = new Map();
+    // Live interpreter sessions, keyed by callId. Only translated calls appear
+    // here; every other call never touches this code path.
+    this.interpreterSessions = new Map();
     this.transferHandler = null; // set after construction
     this.holdHandler = null;     // set after construction
     this.parkHandler = null;     // set after construction
@@ -267,6 +270,7 @@ class CallHandler {
         const onDestroy = async (hangupBy) => {
           await this._endCall(cdr, hangupBy);
           this.activeCalls.delete(callId);
+          this._stopInterpreter(callId);
         };
         result.uas.on('destroy', () => { try { result.uac.destroy(); } catch(e) {} onDestroy('caller'); });
         result.uac.on('destroy', () => { try { result.uas.destroy(); } catch(e) {} onDestroy('callee'); });
@@ -368,7 +372,26 @@ class CallHandler {
         // Route through RTPEngine for proper NAT/media handling
         const fromTag = req.getParsedHeader('From').params.tag;
         const rtpOffer = await this._rtpengineOffer(callId, fromTag, req.body, { target: dest.media });
-        const offerSdp = rtpOffer ? rtpOffer.sdp : req.body;
+        let offerSdp = rtpOffer ? rtpOffer.sdp : req.body;
+
+        // ── live interpreter ───────────────────────────────────────────────
+        // When this call is translated, the agent's media terminates HERE
+        // instead of being bridged by RTPEngine. That is the only way to
+        // guarantee the customer never hears the agent's real voice: RTPEngine
+        // cannot mute a leg and still let us tap it (measured — every mute is
+        // applied before the fork point), so we have to hold that side
+        // ourselves. The customer's leg is left on the normal RTPEngine path.
+        let interpreter = null;
+        if (await this._shouldTranslate(target)) {
+          try {
+            interpreter = await this._startInterpreter(callId, target, fromTag, dest);
+            if (interpreter) offerSdp = interpreter.media.sdp;   // offer OUR address to the agent
+          } catch (e) {
+            // Never fail a call because translation could not start.
+            logger.error(`INTERPRETER: could not start for ${callId}: ${e.message} — continuing untranslated`);
+            interpreter = null;
+          }
+        }
 
         const { uas, uac } = await this.srf.createB2BUA(req, res, targetUri, {
           localSdpB: offerSdp,
@@ -377,6 +400,17 @@ class CallHandler {
             // Note: uas is not yet available here — extract to-tag from the response
             const toTag = (res && res.getParsedHeader && res.getParsedHeader('To')) ?
               (res.getParsedHeader('To').params.tag || '') : '';
+            if (interpreter) {
+              // We hold the agent leg, so their SDP is ours to consume, not
+              // something to hand to RTPEngine. The caller still gets a normal
+              // RTPEngine answer built from the original offer.
+              try { interpreter.onAgentSdp(sdp); } catch (e) {}
+              if (toTag && this.rtpengine) {
+                return this._rtpengineAnswer(callId, fromTag, toTag, interpreter.customerAnswerSdp || sdp)
+                  .then(r => r ? r.sdp : sdp);
+              }
+              return sdp;
+            }
             if (toTag && this.rtpengine) {
               return this._rtpengineAnswer(callId, fromTag, toTag, sdp).then(r => r ? r.sdp : sdp);
             }
@@ -403,6 +437,7 @@ class CallHandler {
         const onDestroy = async (hangupBy) => {
           await this._endCall(cdr, hangupBy);
           this.activeCalls.delete(callId);
+          this._stopInterpreter(callId);
           await this._rtpengineDelete(rtpCallId, rtpFromTag);
         };
         uas.on('destroy', () => { try { uac.destroy(); } catch(e) {} onDestroy('caller'); });
@@ -479,6 +514,7 @@ class CallHandler {
               logger.debug(`Recording pcap released for ${cdr.callId} (sipCallId=${rtpCallId})`);
             }
             this.activeCalls.delete(callId);
+          this._stopInterpreter(callId);
           };
           result.uas.on('destroy', () => { try { result.uac.destroy(); } catch(e) {} onDestroy('caller'); });
           result.uac.on('destroy', () => { try { result.uas.destroy(); } catch(e) {} onDestroy('callee'); });
@@ -728,6 +764,7 @@ class CallHandler {
       const onDestroy = async (hangupBy) => {
         await this._endCall(cdr, hangupBy);
         this.activeCalls.delete(callId);
+          this._stopInterpreter(callId);
         await this._rtpengineDelete(callId, fromTag);
       };
       uas.on('destroy', () => { try { uac.destroy(); } catch (e) {} onDestroy('caller'); });
@@ -1001,6 +1038,7 @@ class CallHandler {
         logger.debug(`Recording pcap released for ${cdr.callId} (sipCallId=${callId})`);
       }
       this.activeCalls.delete(callId);
+          this._stopInterpreter(callId);
       if (this.holdHandler) this.holdHandler.cleanup(callId);
       await ActiveCall.deleteOne({ callId: cdr.callId }).catch(() => {});
     };
@@ -1082,8 +1120,10 @@ class CallHandler {
       cdr.recorded = false;
       await cdr.save();
       this.activeCalls.set(callId, { uas, uac, cdr });
-      uas.on('destroy', async () => { try { uac.destroy(); } catch(e) {} await this._endCall(cdr, 'caller'); this.activeCalls.delete(callId); });
-      uac.on('destroy', async () => { try { uas.destroy(); } catch(e) {} await this._endCall(cdr, 'callee'); this.activeCalls.delete(callId); });
+      uas.on('destroy', async () => { try { uac.destroy(); } catch(e) {} await this._endCall(cdr, 'caller'); this.activeCalls.delete(callId);
+          this._stopInterpreter(callId); });
+      uac.on('destroy', async () => { try { uas.destroy(); } catch(e) {} await this._endCall(cdr, 'callee'); this.activeCalls.delete(callId);
+          this._stopInterpreter(callId); });
     } catch (err) {
       await this._failCall(cdr, err, cdr.from, cdr.to);
     }
@@ -1292,6 +1332,7 @@ class CallHandler {
           const onDestroy = async (hangupBy) => {
             await this._endCall(cdr, hangupBy);
             this.activeCalls.delete(callId);
+          this._stopInterpreter(callId);
             finish(hangupBy === 'caller' ? 'web caller hung up' : 'agent hung up');
           };
           result.uas.on('destroy', () => { try { result.uac.destroy(); } catch (e) {} onDestroy('caller'); });
@@ -1504,6 +1545,75 @@ class CallHandler {
     }
     return calls;
   }
+
+  // ── live interpreter ──────────────────────────────────────────────────
+  //
+  // Whether this call should be translated. Deliberately conservative: any
+  // doubt means a normal call, because a normal call always works and a
+  // half-configured translated one does not.
+  async _shouldTranslate(extension) {
+    try {
+      if (String(process.env.TRANSLATION_ENABLED || '').toLowerCase() !== 'true') return false;
+      if (!process.env.DEEPGRAM_API_KEY || !process.env.DEEPL_API_KEY) return false;
+
+      // While bringing this up, one extension opts in via .env so the first
+      // live tests have the fewest moving parts. With it unset we fall back to
+      // the configured per-extension/system settings.
+      const only = (process.env.TRANSLATION_ONLY_EXTENSION || '').trim();
+      if (only) return String(extension) === only;
+
+      const { SystemSettings, Extension } = require('../models');
+      const sys = await SystemSettings.findById('system');
+      const cfg = (sys && sys.interpreter) || {};
+      if (!cfg.enabled) return false;
+      const ext = await Extension.findOne({ extension: String(extension) }, 'translation');
+      const mode = (ext && ext.translation && ext.translation.mode) || 'default';
+      if (mode === 'on') return true;
+      if (mode === 'off') return false;
+      return !!cfg.defaultOn;
+    } catch (e) {
+      logger.warn(`INTERPRETER: translation check failed (${e.message}) — treating as off`);
+      return false;
+    }
+  }
+
+  // Stand up the media endpoint for the agent side and register teardown.
+  async _startInterpreter(callId, extension, fromTag, dest) {
+    const { InterpreterMedia } = require('./interpreter-media');
+    const media = new InterpreterMedia({
+      callId,
+      onAgentAudio: (payload) => {
+        const sess = this.interpreterSessions.get(callId);
+        if (sess && sess.onAgentAudio) sess.onAgentAudio(payload);
+      }
+    });
+    await media.start();
+
+    const session = {
+      callId, extension, fromTag, media,
+      startedAt: Date.now(),
+      onAgentAudio: null,         // set by the pipeline once STT is attached
+      customerAnswerSdp: null,
+      onAgentSdp: (sdp) => { session.agentSdp = sdp; },
+      close: () => {
+        try { media.close(); } catch (e) {}
+        this.interpreterSessions.delete(callId);
+      }
+    };
+    this.interpreterSessions.set(callId, session);
+    logger.info(`INTERPRETER: holding agent media for ${extension} on call ${callId} (port ${media.port})`);
+    return session;
+  }
+
+  // Called from the normal call teardown so a translated call never leaves a
+  // socket or a streamer behind.
+  _stopInterpreter(callId) {
+    const sess = this.interpreterSessions.get(callId);
+    if (!sess) return;
+    logger.info(`INTERPRETER: tearing down ${callId} after ${Math.round((Date.now() - sess.startedAt) / 1000)}s ${JSON.stringify(sess.media.report())}`);
+    sess.close();
+  }
+
 }
 
 module.exports = CallHandler;
