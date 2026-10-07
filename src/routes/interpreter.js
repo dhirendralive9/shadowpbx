@@ -54,7 +54,24 @@ function readiness(status) {
   return { ready: missing.length === 0, missing };
 }
 
-function createInterpreterRouter({ models }) {
+// Where the agent application should open its translation socket.
+//
+// Two routes reach the same server. In production nginx proxies
+// /interpreter/ws on the main HTTPS vhost, which gets the socket a TLS
+// certificate it would otherwise need of its own — so the default is a URL on
+// whatever host the browser already trusts. An operator who exposes the
+// interpreter port directly (for a desktop app on a private network, say)
+// sets INTERPRETER_PUBLIC_URL and that wins.
+function interpreterUrl(req) {
+  const override = (process.env.INTERPRETER_PUBLIC_URL || '').trim();
+  if (override) return override.replace(/\/+$/, '') + '/interpreter/ws';
+  const proto = (req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http')) === 'https' ? 'wss' : 'ws';
+  const host = req.headers['x-forwarded-host'] || req.headers.host || '';
+  return `${proto}://${host}/interpreter/ws`;
+}
+
+function createInterpreterRouter(deps) {
+  const { models } = deps || {};
   const router = express.Router();
   const web = require('./web');
   const auth = web.authMiddleware;
@@ -172,6 +189,77 @@ function createInterpreterRouter({ models }) {
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
   });
 
+  // ── Agent app: open a translation session ──
+  //
+  // The agent application terminates the call's media itself and sends only
+  // synthesised speech into the call, so the microphone never reaches the
+  // customer. To do that it needs a socket on the interpreter port, and to
+  // open one it needs a token.
+  //
+  // Everything that decides what the session costs and what it is allowed to
+  // do is settled HERE, under the session cookie, and baked into the token:
+  // which extension, which language pair. The socket itself takes no
+  // instructions on those — a client that lies about them changes nothing.
+  router.post('/interpreter/session', auth, async (req, res) => {
+    try {
+      const s = await settings();
+      const sys = Object.assign({}, defaults, (s.interpreter || {}).toObject ? s.interpreter.toObject() : s.interpreter);
+
+      const status = providerStatus();
+      const ready = readiness(status);
+      if (!sys.enabled) return res.status(409).json({ success: false, error: 'Interpreter is switched off system-wide' });
+      if (!ready.ready) return res.status(503).json({ success: false, error: `Interpreter not configured: missing ${ready.missing.join(', ')}` });
+
+      const ext = targetExt(req);
+      if (!ext) return res.status(400).json({ success: false, error: 'No extension assigned to your account' });
+
+      // An agent may only ever open a session for their own extension. This
+      // repeats the check inside targetExt deliberately: that helper is used
+      // by read-only endpoints too, and this is the one that spends money.
+      const role = req.session ? req.session.role : '';
+      const mine = req.session ? String(req.session.extension || '') : '';
+      const asked = String((req.body && req.body.extension) || '').trim();
+      if (!(role === 'admin' || role === 'supervisor') && asked && asked !== mine) {
+        logger.warn(`INTERPRETER: ${req.session && req.session.user} asked for a session on ${asked} (own: ${mine}) — denied`);
+        return res.status(403).json({ success: false, error: 'You can only translate your own extension' });
+      }
+
+      const row = await Extension.findOne({ extension: ext }, 'extension name translation');
+      if (!row) return res.status(404).json({ success: false, error: 'Extension not found' });
+
+      const pref = (row.translation || {});
+      const eff = effectiveFor(sys, pref.mode || 'default');
+      if (!eff.translate) return res.status(409).json({ success: false, error: eff.reason });
+
+      const agentLanguage = (pref.agentLanguage || sys.agentLanguage || 'en').toLowerCase();
+      const customerLanguage = (sys.customerLanguage || 'auto').toLowerCase();
+
+      const tokens = require('../services/interpreter-tokens');
+      const { token, expires } = tokens.issue({
+        extension: ext,
+        user: req.session && req.session.user,
+        languages: { agent: agentLanguage, customer: customerLanguage },
+        voiceGender: String((req.body && req.body.voiceGender) || 'female') === 'male' ? 'male' : 'female'
+      });
+
+      logger.info(`INTERPRETER: session token issued for ext ${ext} to ${req.session && req.session.user} (${agentLanguage} -> ${customerLanguage})`);
+      res.json({
+        success: true,
+        token, expires,
+        extension: ext,
+        url: interpreterUrl(req),
+        agentLanguage, customerLanguage
+      });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // ── Admin: what is live on the interpreter port right now ──
+  router.get('/interpreter/sessions', auth, admin, (req, res) => {
+    const srv = deps && deps.interpreterServer;
+    if (!srv) return res.json({ success: true, running: false, sessions: [] });
+    res.json(Object.assign({ success: true, running: true }, srv.report()));
+  });
+
   // ── Mid-call: turn translation on/off for one live call ──
   // Records the intent against the call so the media bridge can pick it up.
   // Until the bridge exists this is a no-op on the audio itself, which is why
@@ -221,4 +309,4 @@ function effectiveFor(sys, mode) {
     : { translate: false, reason: 'System default is off' };
 }
 
-module.exports = { createInterpreterRouter, PROVIDERS, LANGUAGES, providerStatus, readiness, effectiveFor, callWants };
+module.exports = { createInterpreterRouter, PROVIDERS, LANGUAGES, providerStatus, readiness, effectiveFor, callWants, interpreterUrl };

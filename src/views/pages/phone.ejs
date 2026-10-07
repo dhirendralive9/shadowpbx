@@ -39,12 +39,22 @@
         <div class="muted" style="font-size:12px" id="ph-xlate-state">—</div>
       </div>
       <div style="display:flex;align-items:center;gap:8px">
+        <button class="btn btn-sm" id="ph-xlate-toggle" onclick="phToggleXlate()" style="display:none"></button>
         <select class="form-input" id="ph-xlate-mode" style="width:auto" onchange="phSetXlate()">
           <option value="default">Follow default</option>
           <option value="on">Always on</option>
           <option value="off">Off</option>
         </select>
       </div>
+    </div>
+    <div id="ph-xlate-live" style="display:none;margin-top:10px;padding-top:10px;border-top:0.5px solid var(--border)">
+      <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap">
+        <span class="pill p-ok" id="ph-xlate-pill">translating</span>
+        <span class="muted" style="font-size:11px" id="ph-xlate-meta">—</span>
+      </div>
+      <div class="muted" style="font-size:11px;margin-top:8px">Last turn</div>
+      <div id="ph-xlate-said" style="font-size:13px">—</div>
+      <div id="ph-xlate-text" style="font-size:13px;font-weight:600;margin-top:2px">—</div>
     </div>
   </div>
 
@@ -99,12 +109,16 @@
 <audio id="ph-audio" autoplay playsinline></audio>
 
 <script src="/vendor/sip-0.21.2.min.js"></script>
+<script src="/js/interpreter-client.js"></script>
 <script>
 var CFG = <%- JSON.stringify(webrtcConfig || {}) %>;
 
 var ua=null, registerer=null, session=null, incoming=null;
 var muted=false, timer=null, startedAt=0, statsTimer=null, meterTimer=null, ringGuard=null, wasEstablished=false;
 var actx=null, micAn=null, spkAn=null, micSrc=null, spkSrc=null, creds=[], micStream=null;
+// Live translation. xlateEff is what the server says should happen on the
+// next call; xlate is the client once it is actually running on this one.
+var xlate=null, xlateEff=null, xlateSys=null, micTrack=null;
 
 function el(i){return document.getElementById(i);}
 function pill(i,t,c){var n=el(i);n.textContent=t;n.className='pill '+(c||'p-gray');}
@@ -241,10 +255,124 @@ function onEstablished(s){
     statsStart(pc); meterStart(pc);
   }
   log('Call established with '+callerOf(s));
+
+  // Translation has to engage now rather than at invite time: until the call
+  // is up there is no sender to put the synthesised track on.
+  if(xlateEff && xlateEff.translate) startXlate(s);
+  else renderXlateLive();
+}
+
+// ── taking over the outgoing audio ──────────────────────────────────────
+//
+// The microphone is never connected to the call. It goes to the interpreter
+// socket, and what goes to the customer is the synthesised speech that comes
+// back, swapped onto the existing sender with replaceTrack. No renegotiation,
+// so this can be turned on and off mid-call.
+function xlateSender(){
+  var pc=pcOf(session); if(!pc) return null;
+  var found=null;
+  pc.getSenders().forEach(function(s){ if(!found && s.track && s.track.kind==='audio') found=s; });
+  // After a swap the sender's track is ours, not the microphone's, so fall
+  // back to any audio sender rather than losing track of it.
+  if(!found) pc.getSenders().forEach(function(s){ if(!found && s.dtmf!==undefined) found=s; });
+  return found;
+}
+
+function startXlate(s){
+  if(xlate || !window.InterpreterClient) { renderXlateLive(); return; }
+  var sender=xlateSender();
+  if(!sender){ log('Translation: no audio sender on this call'); return; }
+  if(!micStream){ log('Translation: no microphone stream'); return; }
+  micTrack=sender.track;
+
+  var client=new InterpreterClient({
+    micStream: micStream,
+    onLog: log,
+    onSpeech: function(m){
+      el('ph-xlate-said').textContent='“'+m.said+'”';
+      el('ph-xlate-text').textContent='“'+m.text+'”';
+    },
+    onState: function(st){ renderXlateLive(st); },
+    // Fail closed. If the socket dies the customer would hear nothing at all,
+    // and any attempt to "recover" by restoring the microphone would put the
+    // agent's untranslated voice on the line — the one thing this must never
+    // do. Ending the call is the honest outcome, and the agent is told why.
+    onFail: function(why){
+      log('Translation failed mid-call — ending the call: '+why);
+      note('Translation stopped working, so the call was ended rather than continuing untranslated.');
+      try{ if(session && session.state===SIP.SessionState.Established) session.bye(); }catch(e){}
+      resetCall('Call ended (translation lost).', true);
+    }
+  });
+  xlate=client;
+  renderXlateLive('connecting');
+
+  var callId='';
+  try{ callId=session.request ? session.request.callId : (session.dialog ? session.dialog.callId : ''); }catch(e){}
+
+  client.start(callId).then(function(){
+    // The call may have ended while we were connecting.
+    if(xlate!==client || !session){ client.stop(); return; }
+    return sender.replaceTrack(client.track).then(function(){
+      log('Your microphone is now out of the call — the customer hears only the translation');
+      renderXlateLive('live');
+      var pc=pcOf(session); if(pc) meterStart(pc);   // meter the synthesised track
+    });
+  }).catch(function(e){
+    if(xlate===client) xlate=null;
+    log('Translation could not start: '+e.message);
+    note('Translation could not start — this call is running untranslated.');
+    renderXlateLive();
+  });
+}
+
+function stopXlate(){
+  var c=xlate; xlate=null;
+  if(!c) return;
+  // Put the microphone back, so a call that continues is a normal call.
+  try{
+    var sender=xlateSender();
+    if(sender && micTrack) sender.replaceTrack(micTrack).catch(function(){});
+  }catch(e){}
+  try{ c.stop(); }catch(e){}
+  renderXlateLive();
+}
+
+function phToggleXlate(){
+  if(!session || !wasEstablished){ return; }
+  if(xlate){ log('Translation turned off for this call'); stopXlate(); var pc=pcOf(session); if(pc) meterStart(pc); }
+  else { log('Turning translation on for this call'); startXlate(session); }
+}
+
+function renderXlateLive(st){
+  var box=el('ph-xlate-live'), btn=el('ph-xlate-toggle');
+  var on=!!xlate;
+  var inCall=!!(session && wasEstablished);
+
+  btn.style.display = inCall ? '' : 'none';
+  btn.textContent = on ? 'Stop translating' : 'Translate this call';
+  btn.disabled = !inCall || (xlateSys && !xlateSys.agentMayToggle);
+
+  if(!on){ box.style.display='none'; return; }
+  box.style.display='';
+  var state=st||xlate.state;
+  var pill=el('ph-xlate-pill');
+  if(state==='live'){ pill.className='pill p-ok'; pill.textContent='translating · mic not in call'; }
+  else if(state==='connecting'){ pill.className='pill p-gray'; pill.textContent='connecting…'; }
+  else { pill.className='pill p-warn'; pill.textContent=state; }
+  var r=xlate.report();
+  el('ph-xlate-meta').textContent=r.utterances+' turns · '+r.secondsSent+'s of speech sent'+(r.errors?' · '+r.errors+' errors':'');
 }
 function resetCall(why, playTone){
   try{ if(window.spDismiss) window.spDismiss(); }catch(e){}
   if(ringGuard){ clearTimeout(ringGuard); ringGuard=null; }
+  // Before anything else: close the translation session. It holds an open
+  // recogniser that bills for as long as it lives, and the call it belonged
+  // to is over.
+  if(xlate){ var c=xlate; xlate=null; try{ c.stop(); }catch(e){} }
+  micTrack=null;
+  el('ph-xlate-live').style.display='none';
+  el('ph-xlate-toggle').style.display='none';
   ringStop(); statsStop(); meterStop();
   if(playTone) toneHangup();
   el('ph-incoming').style.display='none';
@@ -407,8 +535,18 @@ function phHangup(){
 function phMute(){
   var pc=pcOf(session); if(!pc) return;
   muted=!muted;
-  pc.getSenders().forEach(function(s){ if(s.track&&s.track.kind==='audio') s.track.enabled=!muted; });
   el('ph-mute').textContent=muted?'Unmute':'Mute';
+
+  // While translating, the microphone is not in the call, so muting the
+  // sender would only silence the synthesised speech — the agent would go on
+  // talking and the customer would hear nothing, with no clue why. Mute the
+  // microphone itself instead: nothing is recognised, so nothing is spoken.
+  if(xlate){
+    micStream.getAudioTracks().forEach(function(t){ t.enabled=!muted; });
+    log(muted?'Microphone muted — nothing will be translated':'Microphone unmuted');
+    return;
+  }
+  pc.getSenders().forEach(function(s){ if(s.track&&s.track.kind==='audio') s.track.enabled=!muted; });
   log(muted?'Microphone muted':'Microphone unmuted');
 }
 function phCall(){
@@ -437,14 +575,19 @@ function loadXlate(){
       if(!d||!d.success) return;
       var box=el('ph-xlate');
       // Only shown when the interpreter is switched on system-wide.
-      if(!d.system||!d.system.enabled){ box.style.display='none'; return; }
+      if(!d.system||!d.system.enabled){ box.style.display='none'; xlateEff=null; return; }
       box.style.display='';
+      xlateSys=d.system;
+      xlateEff=d.effective;
       var sel=el('ph-xlate-mode');
       sel.value=(d.preference&&d.preference.mode)||'default';
       sel.disabled=!d.system.agentMayToggle;
       renderXlateState(d.effective, d.system.agentMayToggle);
     }).catch(function(){});
 }
+
+// Keep the live panel's counters moving while a call is up.
+setInterval(function(){ if(xlate) renderXlateLive(); }, 1000);
 function renderXlateState(eff, mayToggle){
   var n=el('ph-xlate-state');
   if(!eff){ n.textContent='—'; return; }
@@ -463,11 +606,15 @@ function phSetXlate(){
     body:JSON.stringify({mode:mode})
   }).then(function(r){return r.json();}).then(function(d){
     if(!d||!d.success){ log('Translation: '+((d&&d.error)||'update failed')); loadXlate(); return; }
+    xlateEff=d.effective;
     renderXlateState(d.effective, true);
-    log('Translation set to "'+mode+'" — '+d.effective.reason);
+    log('Translation set to "'+mode+'" — '+d.effective.reason+(session?' (takes effect on the next call)':''));
   }).catch(function(e){ log('Translation: '+e.message); });
 }
-window.addEventListener('beforeunload',function(){ try{ if(registerer) registerer.unregister(); }catch(e){} });
+window.addEventListener('beforeunload',function(){
+  try{ if(xlate) xlate.stop(); }catch(e){}
+  try{ if(registerer) registerer.unregister(); }catch(e){}
+});
 </script>
 
 <%- include('../partials/foot') %>

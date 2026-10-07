@@ -122,6 +122,9 @@ WEB_DOMAIN=$(env_get WEB_DOMAIN)
 WSS_URL=$(env_get WSS_URL)
 MOH_DIR=$(env_get MOH_DIR); MOH_DIR=${MOH_DIR:-${APP_DIR}/audio}
 VM_DIR=$(env_get VOICEMAIL_DIR); VM_DIR=${VM_DIR:-/var/lib/shadowpbx/voicemail}
+# Interpreter socket port, proxied on the HTTPS vhost below so it inherits
+# that certificate rather than needing one of its own.
+INTERP_PORT=$(env_get INTERPRETER_PORT); INTERP_PORT=${INTERP_PORT:-3002}
 
 if [ -z "$WEB_DOMAIN" ] && [ -n "$WSS_URL" ]; then
   WEB_DOMAIN=$(echo "$WSS_URL" | sed -E 's#^wss?://([^/:]+).*#\1#')
@@ -321,6 +324,23 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
+    # Interpreter socket -> the interpreter port. Agent applications stream
+    # their microphone up here and get synthesised speech back; the socket
+    # lives for the whole call, hence the long timeouts. Proxying it on this
+    # vhost means it inherits this certificate instead of needing one of its
+    # own, and the interpreter port itself can stay bound to loopback.
+    location /interpreter/ws {
+        proxy_pass http://127.0.0.1:${INTERP_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_read_timeout 7200s;
+        proxy_send_timeout 7200s;
+        proxy_buffering off;
+    }
+
     # SIP over WebSocket (WebRTC) -> Drachtio WSS. Must be the wss listener
     # (5062): browsers send "Via: SIP/2.0/WSS" and sofia-sip silently drops
     # messages whose Via transport has no matching listener.
@@ -358,6 +378,19 @@ else
   fi
   grep -q 'proxy_read_timeout' "$NGINX_FILE" || warn "No proxy_read_timeout on /ws — nginx will drop idle SIP WebSockets after 60s (set 3600s)"
   grep -q 'listen 443' "$NGINX_FILE" || warn "${NGINX_FILE} has no 'listen 443' — browsers require wss:// (HTTPS)"
+
+  # The interpreter socket needs no change here: ShadowPBX also accepts
+  # /interpreter/ws on the main API port, so the existing "location /" block
+  # already carries it, and the socket pings often enough that a 60s idle
+  # timeout never fires. A dedicated location is only worth adding if you
+  # want that traffic off the app port, or you are pointing a desktop app at
+  # the interpreter port directly.
+  if ! grep -q 'location /interpreter/ws' "$NGINX_FILE"; then
+    info "Interpreter socket will use the existing 'location /' block (fine). To give it its own:"
+    info "    location /interpreter/ws { proxy_pass http://127.0.0.1:${INTERP_PORT}; proxy_http_version 1.1;"
+    info "        proxy_set_header Upgrade \$http_upgrade; proxy_set_header Connection \"upgrade\";"
+    info "        proxy_set_header X-Real-IP \$remote_addr; proxy_read_timeout 7200s; proxy_buffering off; }"
+  fi
 fi
 
 # ============================================================

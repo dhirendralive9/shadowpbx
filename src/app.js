@@ -512,7 +512,29 @@ async function main() {
   app.use('/', require('./routes/updates').createUpdateRouter({ callHandler }));
   app.use('/', require('./routes/updates').createWhitelistRouter());
   app.use('/', require('./routes/migration').createMigrationRouter({ models: require('./models') }));
-  app.use('/api', require('./routes/interpreter').createInterpreterRouter({ models: require('./models') }));
+  // ── Interpreter port ──
+  //
+  // A second listener, separate from the API and the GUI, that agent
+  // applications open a translation socket on. It runs here rather than in
+  // the call path because the agent's media now terminates in the app: the
+  // microphone never enters the call, only the synthesised speech does, which
+  // is the one arrangement that keeps the agent's real voice away from the
+  // customer without also silencing the tap we recognise speech from.
+  //
+  // It starts regardless of whether the interpreter is switched on today, so
+  // an admin turning it on in Settings does not need a restart. The route
+  // that mints tokens refuses while it is off, so an idle port grants nothing.
+  let interpreterServer = null;
+  try {
+    const { InterpreterServer } = require('./services/interpreter-server');
+    interpreterServer = new InterpreterServer().start();
+  } catch (e) {
+    logger.error(`INTERPRETER-WS: failed to start the interpreter port: ${e.message}`);
+  }
+
+  app.use('/api', require('./routes/interpreter').createInterpreterRouter({
+    models: require('./models'), interpreterServer
+  }));
 
   // Web GUI routes
   app.use('/', createWebRouter());
@@ -522,6 +544,12 @@ async function main() {
   const { Server: SocketIO } = require('socket.io');
   const server = http.createServer(app);
   const io = new SocketIO(server);
+
+  // The browser phone opens its translation socket on the host it is already
+  // served from, so it inherits the TLS nginx terminates here. The dedicated
+  // interpreter port stays open alongside for the desktop app. Attached after
+  // Socket.IO so Socket.IO owns the event first and only sees its own paths.
+  if (interpreterServer) interpreterServer.attach(server);
 
   // Socket.IO real-time updates
   const { ChatMessage } = require('./models');
@@ -892,6 +920,12 @@ async function main() {
       io.disconnectSockets(true);
       logger.info('Shutdown: Socket.IO connections closed');
     } catch (e) {}
+
+    // Step 4b: Close interpreter sessions. Each one holds an open Deepgram
+    // connection that bills while it lives, so this is not just tidiness.
+    try {
+      if (interpreterServer) { interpreterServer.stop(); logger.info('Shutdown: interpreter sessions closed'); }
+    } catch (e) { logger.warn(`Shutdown: interpreter error: ${e.message}`); }
 
     // Step 4: Close HTTP server
     try {

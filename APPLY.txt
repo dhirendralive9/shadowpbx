@@ -1,0 +1,99 @@
+Interpreter: agent-side translation
+===================================
+
+Unzip over /opt/shadowpbx. Paths inside the zip already match the repo
+layout, so nothing needs moving.
+
+    cd /opt/shadowpbx
+    git checkout feat/voice-interpreter
+    unzip -o /root/shadowpbx-interpreter-client.zip -d /opt/shadowpbx
+    npm install
+    systemctl restart shadowpbx
+
+Delete APPLY.txt afterwards — it is only this note, not part of the app.
+
+NO .env CHANGES ARE REQUIRED. Every new setting has a working default in
+code. .env.example documents them if you later want to tune the speech
+gate or the session limits.
+
+
+Check it came up
+----------------
+
+    journalctl -u shadowpbx -n 50 | grep INTERPRETER
+
+Expect:
+
+    INTERPRETER-WS: interpreter port on 127.0.0.1:3002
+      (path /interpreter/ws, max 20 sessions)
+
+Then run the self-test. It stubs the translator, so it spends nothing and
+touches no calls — safe on the live box:
+
+    node scripts/interpreter-ws-selftest.js
+
+Expect "30 passed, 0 failed".
+
+
+No nginx change needed
+----------------------
+
+The interpreter also accepts /interpreter/ws on port 3000, so your
+existing "location /" block already carries it. Port 3002 exists for the
+Electron app later and stays on loopback.
+
+
+Before testing a call
+---------------------
+
+Settings -> System: the interpreter master switch must be ON, and the
+extension's mode must resolve to on (/preferences, or "Always on"). The
+token route refuses otherwise, by design — an idle port grants nothing.
+
+On /phone you will now see a "Translate this call" button and a live panel
+showing each turn as it is translated.
+
+
+Files in this zip
+-----------------
+
+New:
+  src/services/interpreter-server.js    the interpreter port (WebSocket)
+  src/services/interpreter-tokens.js    single-use connect tokens
+  src/public/js/interpreter-client.js   the browser-side client
+  scripts/interpreter-ws-selftest.js    30 assertions, free to run
+  docs/VOICE-INTERPRETER.md             why this architecture, and the
+                                        rtpengine measurements behind it
+
+Changed:
+  src/app.js                 starts the interpreter port, attaches it to
+                             the main server, closes sessions on shutdown
+  src/routes/interpreter.js  POST /api/interpreter/session mints tokens;
+                             GET /api/interpreter/sessions for admins
+  src/views/pages/phone.ejs  swaps the outgoing track to the translated
+                             stream; mute now gates the microphone
+  scripts/setup-webrtc.sh    nginx location for new vhosts
+  package.json               ws promoted to a declared dependency
+  package-lock.json          ws added; also filled in entries that were
+                             missing for socket.io, ejs, multer,
+                             cookie-parser and bcryptjs
+  .env.example               documents the new settings
+
+
+If npm install complains about the lockfile
+-------------------------------------------
+
+Delete package-lock.json from the zip before unzipping, then run
+"npm install" — it will regenerate the lock from package.json. The only
+dependency change is adding "ws", which was previously only present
+transitively through socket.io.
+
+
+Rolling back
+------------
+
+    cd /opt/shadowpbx
+    git checkout -- .          # discards everything in this zip
+    git clean -fd src/services src/public/js scripts docs
+    npm install
+    systemctl restart shadowpbx
