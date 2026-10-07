@@ -108,12 +108,34 @@ if [ -f "${CERT_DIR}/fullchain.pem" ] && [ -f "${CERT_DIR}/privkey.pem" ]; then
     log "Certificate issued for ${DOMAIN}"
   fi
 else
-  # Temporarily stop anything on port 80
-  systemctl stop nginx 2>/dev/null || true
+  # certbot --standalone wants port 80 to itself, so nginx has to step aside.
+  #
+  # Put it back afterwards, via a trap rather than a line further down: this
+  # script runs under `set -e`, so a certbot failure used to exit here and
+  # leave nginx stopped. The web UI, the WSS proxy and the interpreter socket
+  # all sit behind nginx, so everything downstream then fails with
+  # ECONNREFUSED on 443 — and the next script reports a *successful* reload,
+  # which sends you looking at DNS and firewalls instead of at nginx.
+  NGINX_WAS_RUNNING=false
+  if systemctl is-active --quiet nginx; then
+    NGINX_WAS_RUNNING=true
+    systemctl stop nginx
+    restore_nginx() {
+      if $NGINX_WAS_RUNNING && ! systemctl is-active --quiet nginx; then
+        systemctl start nginx 2>/dev/null \
+          && log "nginx restarted after the certificate challenge" \
+          || err "nginx did NOT come back up — run: nginx -t && systemctl start nginx"
+      fi
+    }
+    trap restore_nginx EXIT
+  fi
 
   certbot certonly --standalone --non-interactive --agree-tos \
     --register-unsafely-without-email \
     -d "${DOMAIN}"
+
+  restore_nginx 2>/dev/null || true
+  trap - EXIT
 
   # Copy certs to our directory (certbot stores in /etc/letsencrypt)
   cp /etc/letsencrypt/live/${DOMAIN}/fullchain.pem ${CERT_DIR}/fullchain.pem

@@ -360,11 +360,19 @@ server {
 NGXEOF
     ln -sf /etc/nginx/sites-available/shadowpbx /etc/nginx/sites-enabled/shadowpbx
     if nginx -t >/dev/null 2>&1; then
-      systemctl reload nginx
-      log "nginx vhost written and reloaded (https://${WEB_DOMAIN} + /ws)"
-      NGINX_FILE=/etc/nginx/sites-available/shadowpbx
-      CHANGED=true
-      FAILURES=$((FAILURES-1))
+      # reload-or-restart, not reload: a plain reload fails outright when nginx
+      # is stopped, which is the state setup-tls.sh used to leave it in. And
+      # check the result — claiming success here while nginx is down is worse
+      # than failing, because every later step then fails for a reason that
+      # looks like DNS or a firewall.
+      if systemctl reload-or-restart nginx 2>/dev/null && systemctl is-active --quiet nginx; then
+        log "nginx vhost written and nginx is up (https://${WEB_DOMAIN} + /ws + /interpreter/ws)"
+        NGINX_FILE=/etc/nginx/sites-available/shadowpbx
+        CHANGED=true
+        FAILURES=$((FAILURES-1))
+      else
+        err "nginx vhost written but nginx is NOT running — run: nginx -t && systemctl start nginx"
+      fi
     else
       err "nginx config test failed after writing the vhost — check: nginx -t"
     fi
@@ -421,7 +429,14 @@ else
       log "wss://${WEB_DOMAIN}/ws answered 101 Switching Protocols (TLS + nginx + Drachtio OK)"
     else
       err "wss://${WEB_DOMAIN}/ws returned HTTP ${CODE:-no response} (expected 101)"
-      info "000 = TLS/DNS/firewall problem · 502 = nginx cannot reach Drachtio (is 5062 listening?) · 404 = /ws location missing"
+      # Check the cheapest cause first and say so plainly. "000" used to send
+      # people hunting DNS and firewalls when nginx was simply stopped —
+      # which is the state certbot's standalone challenge leaves it in.
+      if ! systemctl is-active --quiet nginx; then
+        err "nginx is NOT running — that alone explains this. Run: nginx -t && systemctl start nginx && systemctl enable nginx"
+      else
+        info "000 = nothing listening on 443, or TLS/DNS/firewall · 502 = nginx cannot reach Drachtio (is 5062 listening?) · 404 = /ws location missing"
+      fi
     fi
   fi
 fi
