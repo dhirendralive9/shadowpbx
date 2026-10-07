@@ -150,6 +150,30 @@ else
   echo "$D_ARGS" | grep -q 'transport=tls' && HAS_TLS=true
   echo "$D_ARGS" | grep -q 'transport=wss' && HAS_WSS=true
 
+  # The arguments are not the whole truth. Once Drachtio runs from a config
+  # file (-f /etc/drachtio.conf.xml, which is the only way to give it TLS key
+  # paths, and what the WSS repair below sets up) there are no --contact
+  # arguments at all — so every flag above reads false while the listeners are
+  # perfectly fine.
+  #
+  # That mattered: the WS check further down then "repaired" a working box by
+  # rebuilding Drachtio from command-line arguments that have no wss contact,
+  # which removed the 5062 listener nginx proxies /ws to and turned a working
+  # setup into a 502. Believe the open sockets and the config file instead.
+  D_CONF=""
+  echo "$D_ARGS" | grep -qE '(^| )-f ' && D_CONF=$(echo "$D_ARGS" | sed -nE 's/.*(^| )-f +([^ ]+).*/\2/p')
+  if [ -n "$D_CONF" ]; then
+    D_CONF_HOST="/etc/shadowpbx/drachtio.conf.xml"
+    [ -f "$D_CONF_HOST" ] && {
+      grep -q 'transport=ws'  "$D_CONF_HOST" && HAS_WS=true
+      grep -q 'transport=tls' "$D_CONF_HOST" && HAS_TLS=true
+      grep -q 'transport=wss' "$D_CONF_HOST" && HAS_WSS=true
+    }
+  fi
+  # A listener that is actually up outranks any declaration of it.
+  ss -ltn 2>/dev/null | grep -q '127.0.0.1:5061' && HAS_WS=true
+  ss -ltn 2>/dev/null | grep -q '127.0.0.1:5062' && HAS_WSS=true
+
   # Browsers connect over wss://, so SIP.js writes "Via: SIP/2.0/WSS".
   # Sofia-sip drops any message whose Via transport has no listener — silently,
   # with no log line anywhere — so a missing wss contact looks like a hang.
@@ -234,6 +258,11 @@ XMLEOF
 
   if $HAS_WS; then
     log "Drachtio has a WS contact"
+  elif $HAS_WSS; then
+    # Never trade a working wss listener for a ws one. nginx proxies /ws to
+    # 5062 (browsers send "Via: SIP/2.0/WSS"), so wss is the listener that
+    # actually carries browser traffic; the rebuild below would drop it.
+    log "Drachtio has a WSS contact on 5062 — leaving it alone (that is the one nginx uses)"
   else
     err "Drachtio has NO WS contact — browsers cannot register (commonly caused by an older setup-tls.sh)"
     TLS_LABEL=""; $HAS_TLS && TLS_LABEL=" + existing TLS 5061"

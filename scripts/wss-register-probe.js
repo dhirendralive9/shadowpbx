@@ -25,6 +25,7 @@
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
+let SENT = '';                // the REGISTER we put on the wire, for diagnostics
 let WebSocket;
 try { WebSocket = require('ws'); }
 catch (e) { console.error('The "ws" module is missing — run npm install in /opt/shadowpbx'); process.exit(1); }
@@ -69,20 +70,38 @@ const timer = setTimeout(() => {
 ws.on('open', () => {
   if (!asJson) console.log(`${D}WebSocket open, sending REGISTER…${N}`);
   const id = Date.now();
-  ws.send([
+  // Mimic what SIP.js actually puts on the wire, because the point of this
+  // probe is to prove the browser's path — a message no browser would send
+  // tests nothing useful.
+  //
+  // Two details matter, and getting the second wrong made this probe report
+  // 400 Bad Request on a perfectly working server:
+  //
+  //  - The Via host is a random *.invalid name. A WebSocket client has no
+  //    routable address, so RFC 7118 has it invent one; it is deliberately
+  //    unresolvable, and that is correct rather than a problem to fix.
+  //  - The Contact transport parameter is "ws" even over wss. RFC 7118
+  //    registers only "ws" and uses it for both, so "transport=wss" is not a
+  //    defined value and sofia-sip rejects the whole message with 400 before
+  //    the application ever sees it. The Via transport is the thing that says
+  //    WSS; the URI parameter is not.
+  const viaHost = `${Math.random().toString(36).slice(2, 10)}.invalid`;
+  SENT = [
     `REGISTER sip:${domain} SIP/2.0`,
-    // The Via host and Contact must be resolvable names or sofia-sip answers
-    // 400 Bad Request before the app ever sees the message.
-    `Via: SIP/2.0/${viaTransport} ${domain};branch=z9hG4bK${id}`,
+    `Via: SIP/2.0/${viaTransport} ${viaHost};branch=z9hG4bK${id}`,
     'Max-Forwards: 70',
     `From: <sip:probe@${domain}>;tag=probe${id}`,
     `To: <sip:probe@${domain}>`,
     `Call-ID: shadowpbx-probe-${id}`,
     'CSeq: 1 REGISTER',
-    `Contact: <sip:probe@${domain};transport=${viaTransport.toLowerCase()}>`,
+    `Contact: <sip:probe@${viaHost};transport=ws>`,
+    'Allow: INVITE,ACK,CANCEL,BYE,OPTIONS,INFO,NOTIFY,REFER,MESSAGE',
+    'Supported: path,gruu,outbound',
+    'User-Agent: ShadowPBX-WSS-Probe',
     'Expires: 60',
     'Content-Length: 0', '', ''
-  ].join('\r\n'));
+  ].join('\r\n');
+  ws.send(SENT);
 });
 
 ws.on('message', (data) => {
@@ -92,9 +111,18 @@ ws.on('message', (data) => {
   const realm = (text.match(/realm="([^"]+)"/) || [])[1];
   try { ws.close(); } catch (e) {}
 
+  // Any SIP response at all means the thing this probe exists to test is
+  // working: the WebSocket upgraded, nginx reached Drachtio, and Drachtio
+  // parsed far enough to reply. Reporting that as a failure is what sent us
+  // chasing nginx and Drachtio on a server where both were fine — so a 400 is
+  // now a pass with a loud note, not a FAIL.
   if (status === '400') {
-    done(false, 'Drachtio answered 400 Bad Request',
-      'The path works, but the probe message was rejected — report this, it is a probe bug, not a server fault.');
+    if (!asJson) {
+      console.log(`${D}Drachtio replied 400 — it rejected this probe's REGISTER, but it DID reply.${N}`);
+      console.log(`${D}Sent:${N}\n${D}${SENT.split('\r\n').slice(0, 9).join('\n')}${N}`);
+    }
+    done(true, 'The browser path works (Drachtio answered 400 Bad Request)',
+      'nginx reached Drachtio and Drachtio parsed the message — the path is proven. The 400 is about this probe\'s REGISTER, not your configuration. A real browser at /phone is the test that matters next.');
   }
   if (status === '401' || status === '403' || status === '404') {
     done(true, `Drachtio and ShadowPBX answered (${status})`,
