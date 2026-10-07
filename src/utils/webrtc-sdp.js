@@ -96,6 +96,32 @@ function isWebSocketTransport(t) {
 }
 
 /**
+ * Which transport to name when dialling a browser back.
+ *
+ * This is subtle enough that having two copies of the reasoning cost us a
+ * production bug, so it lives here and nowhere else.
+ *
+ * A browser's Contact host is an unroutable "*.invalid" name — a JS stack
+ * cannot know its own address — so we dial the source address the REGISTER
+ * arrived on and name the transport explicitly. Naming it wrong is not a
+ * cosmetic error: drachtio looks for an existing connection of exactly that
+ * transport, finds none, and answers 503.
+ *
+ * The trap is that behind nginx the browser's WebSocket is terminated as TLS
+ * and proxied to drachtio's wss listener, so the registration is recorded with
+ * transport "tcp" — neither "ws" nor "wss". Treating anything-not-wss as "ws"
+ * therefore picks a plain-ws connection that does not exist. Default to wss
+ * and only use ws when the contact actually said ws, or when
+ * WEBRTC_CONTACT_TRANSPORT=ws says nginx proxies to the plain listener.
+ */
+function webrtcDialTransport(contact) {
+  const want = String(process.env.WEBRTC_CONTACT_TRANSPORT || '').toLowerCase();
+  if (want === 'ws' || want === 'wss') return want;
+  const t = normalizeTransport(contact && contact.transport);
+  return t === 'ws' ? 'ws' : 'wss';
+}
+
+/**
  * Work out which transport a SIP request arrived on.
  * drachtio-srf exposes req.protocol; fall back to the top Via.
  */
@@ -133,6 +159,7 @@ module.exports = {
   summaryLine,
   normalizeTransport,
   isWebSocketTransport,
+  webrtcDialTransport,
   requestTransport,
   contactTransport,
   isLoopback

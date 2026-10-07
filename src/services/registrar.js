@@ -608,8 +608,14 @@ class Registrar {
     const webrtc = this.isWebRTCContact(contact);
     let uri = `sip:${ext}@${contact.ip}:${contact.port}`;
     if (webrtc) {
-      const t = sdpUtil.normalizeTransport(contact.transport);
-      uri += `;transport=${t === 'wss' ? 'wss' : 'ws'}`;
+      // Shared with ring groups deliberately. This used to read
+      // `t === 'wss' ? 'wss' : 'ws'`, which picks "ws" for a registration
+      // recorded as "tcp" — which is exactly what a browser behind nginx
+      // produces. Drachtio then looked for a plain-ws connection that did not
+      // exist and answered 503, so every direct inbound call to a browser
+      // agent failed to voicemail while ring groups, which had the correct
+      // logic, worked fine.
+      uri += `;transport=${sdpUtil.webrtcDialTransport(contact)}`;
     }
     return { uri, media: webrtc ? 'webrtc' : 'sip', webrtc };
   }

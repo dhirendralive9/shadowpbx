@@ -287,20 +287,10 @@ class RingGroupHandler {
     const webrtc = this._isWebRTCMember(m);
     let uri = `sip:${m.extension}@${m.contact.ip}:${m.contact.port}`;
     if (webrtc) {
-      // A browser's Contact host is an unroutable "*.invalid" name (a JS stack
-      // cannot know its own address), so we must target the source address the
-      // REGISTER arrived on and name the transport explicitly.
-      //
-      // Behind nginx the browser's WebSocket is terminated as TLS and proxied
-      // to drachtio's *wss* listener (5062), so the registration is recorded
-      // with transport "tcp" — asking for ";transport=ws" makes drachtio look
-      // for a plain-ws connection that does not exist and answer 503. Default
-      // to wss; set WEBRTC_CONTACT_TRANSPORT=ws if nginx proxies to the plain
-      // ws listener instead.
-      const want = String(process.env.WEBRTC_CONTACT_TRANSPORT || '').toLowerCase();
-      const t = want === 'ws' ? 'ws'
-        : (String(m.contact.transport || '').toLowerCase() === 'ws' ? 'ws' : 'wss');
-      uri += `;transport=${t}`;
+      // Why this is not simply the contact's transport: see
+      // webrtcDialTransport in utils/webrtc-sdp. The registrar's direct-dial
+      // path had its own copy of this that got it wrong, so there is now one.
+      uri += `;transport=${require('../utils/webrtc-sdp').webrtcDialTransport(m.contact)}`;
     }
     return { uri, media: webrtc ? 'webrtc' : 'sip', webrtc };
   }
