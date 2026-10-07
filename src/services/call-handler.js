@@ -384,13 +384,24 @@ class CallHandler {
         // ourselves. The customer's leg is left on the normal RTPEngine path.
         let interpreter = null;
         if (await this._shouldTranslate(target)) {
-          try {
-            interpreter = await this._startInterpreter(callId, target, fromTag, dest);
-            if (interpreter) offerSdp = interpreter.media.sdp;   // offer OUR address to the agent
-          } catch (e) {
-            // Never fail a call because translation could not start.
-            logger.error(`INTERPRETER: could not start for ${callId}: ${e.message} — continuing untranslated`);
-            interpreter = null;
+          if (dest.webrtc) {
+            // A browser or desktop agent application translates its own side:
+            // it sends its microphone up the interpreter socket and puts only
+            // the synthesised speech into the call. So there is nothing for us
+            // to hold here, and trying to is actively harmful — the SDP below
+            // is a plain RTP/AVP socket, while a browser leg requires
+            // UDP/TLS/RTP/SAVPF with ICE and DTLS. Offering it one got a 503
+            // and dropped every translated call to voicemail.
+            logger.info(`INTERPRETER: ${target} is a WebRTC agent — its application handles translation, leaving the media path alone`);
+          } else {
+            try {
+              interpreter = await this._startInterpreter(callId, target, fromTag, dest);
+              if (interpreter) offerSdp = interpreter.media.sdp;   // offer OUR address to the agent
+            } catch (e) {
+              // Never fail a call because translation could not start.
+              logger.error(`INTERPRETER: could not start for ${callId}: ${e.message} — continuing untranslated`);
+              interpreter = null;
+            }
           }
         }
 
