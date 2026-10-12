@@ -14,10 +14,43 @@ const { verifyWebhook } = require('../utils/webhook-verify');
 //                  ↕ paused
 // ============================================================
 
-// Normalize phone to digits only, strip leading +/1 for US
-function normalizePhone(raw) {
-  if (!raw) return '';
-  let num = raw.replace(/[^\d]/g, '');
+// Normalize a phone number to a dialable digit string.
+//
+//   - If a country code / prefix is supplied (e.g. from a separate CSV
+//     "Prefix" column), the number is treated as international: the prefix
+//     is prepended (dropping a national trunk "0" and avoiding a double
+//     prefix) and NO national-trunk stripping is applied. This is what
+//     keeps non-US numbers (e.g. German "49 1573…") intact.
+//   - A number already written in international form (leading "+" or "00")
+//     is complete and returned as-is.
+//   - Otherwise, as a fallback, a bare NANP "1 + 10 digit" number has its
+//     leading country/trunk "1" removed (US/Canada convention only).
+function normalizePhone(raw, countryCode) {
+  if (raw === undefined || raw === null) return '';
+  const str = String(raw).trim();
+  if (!str) return '';
+
+  const isIntl = str.startsWith('+') || /^00\d/.test(str);
+  let num = str.replace(/[^\d]/g, '');
+  if (!num) return '';
+
+  // Separate country-code / prefix column present → build full
+  // international number. Never strip subscriber digits in this path.
+  const cc = countryCode != null ? String(countryCode).replace(/[^\d]/g, '') : '';
+  if (cc) {
+    if (!num.startsWith(cc)) {
+      num = cc + num.replace(/^0/, ''); // drop a single national trunk "0"
+    }
+    return num;
+  }
+
+  // Already international (had "+" or "00") → leave subscriber digits alone.
+  if (isIntl) {
+    if (num.startsWith('00')) num = num.slice(2);
+    return num;
+  }
+
+  // Fallback NANP normalization for bare 11-digit US/Canada numbers.
   if (num.length === 11 && num.startsWith('1')) num = num.substring(1);
   return num;
 }
@@ -1682,30 +1715,42 @@ class DialerEngine {
     const campaign = await Campaign.findById(campaignId);
     if (!campaign) throw new Error('Campaign not found');
 
+    // Strip a UTF-8 BOM (Excel/Windows exports prepend one) so the first
+    // header name matches its aliases instead of becoming "﻿first name".
+    if (csvContent.charCodeAt(0) === 0xFEFF) csvContent = csvContent.slice(1);
+
     // Parse CSV
     const lines = csvContent.split(/\r?\n/).filter(l => l.trim());
     if (lines.length < 2) throw new Error('CSV must have a header row and at least one data row');
 
-    const headers = lines[0].split(',').map(h => h.trim().replace(/^"(.*)"$/, '$1').toLowerCase());
+    const headers = this._parseCSVLine(lines[0])
+      .map(h => h.trim().replace(/^"(.*)"$/, '$1').replace(/^﻿/, '').toLowerCase());
 
     // Column mapping: { phone: 'phone_number', name: 'full_name', ... }
     // If not provided, auto-detect common column names
     const mapping = columnMapping || {};
     if (!mapping.phone) {
-      const phoneAliases = ['phone', 'phone_number', 'phonenumber', 'number', 'tel', 'telephone', 'mobile', 'cell'];
+      const phoneAliases = ['phone', 'phone_number', 'phonenumber', 'number', 'tel', 'telephone', 'mobile', 'cell', 'msisdn'];
       mapping.phone = headers.find(h => phoneAliases.includes(h)) || headers[0];
     }
     if (!mapping.name) {
-      const nameAliases = ['name', 'full_name', 'fullname', 'contact', 'contact_name'];
+      const nameAliases = ['name', 'full_name', 'fullname', 'full name', 'contact', 'contact_name', 'contact name'];
       mapping.name = headers.find(h => nameAliases.includes(h)) || '';
     }
     if (!mapping.company) {
-      const companyAliases = ['company', 'business', 'organization', 'org'];
+      const companyAliases = ['company', 'business', 'organization', 'organisation', 'org'];
       mapping.company = headers.find(h => companyAliases.includes(h)) || '';
     }
     if (!mapping.email) {
-      const emailAliases = ['email', 'email_address', 'mail'];
+      const emailAliases = ['email', 'email_address', 'e-mail', 'mail'];
       mapping.email = headers.find(h => emailAliases.includes(h)) || '';
+    }
+    // Country code / dialing prefix supplied in its own column (e.g. "49").
+    // When present it is combined with the phone to form the full
+    // international number, so the leading subscriber digit is never lost.
+    if (!mapping.prefix) {
+      const prefixAliases = ['prefix', 'country_code', 'countrycode', 'country code', 'cc', 'dial_code', 'dialcode', 'dialing_code', 'dialling_code'];
+      mapping.prefix = headers.find(h => prefixAliases.includes(h)) || '';
     }
 
     const phoneIdx = headers.indexOf(mapping.phone);
@@ -1714,6 +1759,16 @@ class DialerEngine {
     const nameIdx = mapping.name ? headers.indexOf(mapping.name) : -1;
     const companyIdx = mapping.company ? headers.indexOf(mapping.company) : -1;
     const emailIdx = mapping.email ? headers.indexOf(mapping.email) : -1;
+    const prefixIdx = mapping.prefix ? headers.indexOf(mapping.prefix) : -1;
+
+    // When there is no single "name" column, fall back to building the
+    // name from separate first/last-name columns.
+    const firstNameAliases = ['first name', 'first_name', 'firstname', 'fname', 'given name', 'given_name', 'givenname'];
+    const lastNameAliases = ['last name', 'last_name', 'lastname', 'lname', 'surname', 'family name', 'family_name', 'familyname'];
+    const firstNameIdx = nameIdx === -1 ? headers.findIndex(h => firstNameAliases.includes(h)) : -1;
+    const lastNameIdx = nameIdx === -1 ? headers.findIndex(h => lastNameAliases.includes(h)) : -1;
+
+    const cell = (cols, idx) => (idx >= 0 && cols[idx] != null ? cols[idx].trim().replace(/^"(.*)"$/, '$1') : '');
 
     // Parse rows
     const leads = [];
@@ -1726,8 +1781,9 @@ class DialerEngine {
       const cols = this._parseCSVLine(lines[i]);
       if (!cols || cols.length <= phoneIdx) continue;
 
-      const rawPhone = cols[phoneIdx].trim().replace(/^"(.*)"$/, '$1');
-      const phone = normalizePhone(rawPhone);
+      const rawPhone = cell(cols, phoneIdx);
+      const rawPrefix = cell(cols, prefixIdx);
+      const phone = normalizePhone(rawPhone, rawPrefix);
 
       if (!phone || phone.length < 7) {
         invalid++;
@@ -1749,12 +1805,18 @@ class DialerEngine {
         }
       });
 
+      // Name: prefer a dedicated name column, otherwise combine first/last.
+      let name = cell(cols, nameIdx);
+      if (!name) {
+        name = [cell(cols, firstNameIdx), cell(cols, lastNameIdx)].filter(Boolean).join(' ').trim();
+      }
+
       leads.push({
         campaignId: campaign._id,
         phone,
-        name: nameIdx >= 0 && cols[nameIdx] ? cols[nameIdx].trim().replace(/^"(.*)"$/, '$1') : '',
-        company: companyIdx >= 0 && cols[companyIdx] ? cols[companyIdx].trim().replace(/^"(.*)"$/, '$1') : '',
-        email: emailIdx >= 0 && cols[emailIdx] ? cols[emailIdx].trim().replace(/^"(.*)"$/, '$1') : '',
+        name,
+        company: cell(cols, companyIdx),
+        email: cell(cols, emailIdx),
         status: 'pending',
         customFields
       });
