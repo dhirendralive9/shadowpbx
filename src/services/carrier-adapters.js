@@ -2,6 +2,41 @@ const https = require('https');
 const logger = require('../utils/logger');
 
 // ============================================================
+// Convert a stored number to E.164 (+<country><subscriber>) for the
+// carrier REST APIs.
+//
+// Campaign numbers already carry their country code when imported from a
+// CSV that has a Prefix column (e.g. German "49…"), so we must NOT blindly
+// prepend "+1" — doing so turned "4915732742722" into "+14915732742722"
+// and broke every non-US call. Rules:
+//   - already "+E.164"            → unchanged
+//   - "00" international prefix    → replaced with "+"
+//   - bare NANP national (≤10)     → "+1" + number  (US/Canada default)
+//   - "1" + 10-digit NANP          → "+" + number
+//   - anything longer (11+ digits) → assumed to already include a country
+//                                    code → just prefix "+"
+// Set DEFAULT_COUNTRY_CODE (digits only, e.g. "49") to force a different
+// default for bare national numbers.
+function toE164(num) {
+  if (num === undefined || num === null) return num;
+  let s = String(num).trim();
+  if (!s) return s;
+  if (s.startsWith('+')) return s;
+  s = s.replace(/[^\d]/g, '');
+  if (!s) return '';
+  if (s.startsWith('00')) return '+' + s.slice(2);
+
+  const cc = (process.env.DEFAULT_COUNTRY_CODE || '').replace(/[^\d]/g, '');
+  if (cc) {
+    return s.startsWith(cc) ? '+' + s : '+' + cc + s.replace(/^0/, '');
+  }
+
+  if (s.length <= 10) return '+1' + s;                     // bare NANP national
+  if (s.length === 11 && s.startsWith('1')) return '+' + s; // 1 + NANP
+  return '+' + s;                                           // already has a CC
+}
+
+// ============================================================
 // Carrier Adapters for AMD-enabled outbound calling
 //
 // When AMD is enabled on a campaign, the dialer uses the carrier's
@@ -53,8 +88,8 @@ class TelnyxAdapter extends CarrierAdapter {
 
     const body = {
       connection_id: this.credentials.connectionId,
-      to: phone.startsWith('+') ? phone : `+1${phone}`,
-      from: callerId.startsWith('+') ? callerId : `+1${callerId}`,
+      to: toE164(phone),
+      from: toE164(callerId),
       webhook_url: webhookUrl,
       webhook_url_method: 'POST',
       timeout_secs: ringTimeout || 30,
@@ -177,8 +212,8 @@ class SignalWireAdapter extends CarrierAdapter {
 
     const params = new URLSearchParams();
     params.append('Url', webhookUrl);
-    params.append('To', phone.startsWith('+') ? phone : `+1${phone}`);
-    params.append('From', callerId.startsWith('+') ? callerId : `+1${callerId}`);
+    params.append('To', toE164(phone));
+    params.append('From', toE164(callerId));
     params.append('Timeout', String(ringTimeout || 30));
     params.append('StatusCallback', webhookUrl.replace('/voice', '/status'));
     params.append('StatusCallbackEvent', 'completed');
@@ -287,8 +322,8 @@ class TwilioAdapter extends CarrierAdapter {
 
     const params = new URLSearchParams();
     params.append('Url', webhookUrl);
-    params.append('To', phone.startsWith('+') ? phone : `+1${phone}`);
-    params.append('From', callerId.startsWith('+') ? callerId : `+1${callerId}`);
+    params.append('To', toE164(phone));
+    params.append('From', toE164(callerId));
     params.append('Timeout', String(ringTimeout || 30));
     params.append('StatusCallback', webhookUrl.replace('/voice', '/status'));
     params.append('StatusCallbackEvent', 'completed');
