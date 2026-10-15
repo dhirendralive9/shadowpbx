@@ -361,6 +361,13 @@ const campaignSchema = new mongoose.Schema({
     endTime: { type: String, default: '17:00' }
   },
 
+  // Record the lead leg (including the pre-connect greeting) so you can play
+  // the call back and confirm the audio was actually delivered. Recordings
+  // are linked to the CDR and playable from the CDR tab.
+  // NOTE: call recording consent rules vary by country and are strict in
+  // Germany — make sure your prompt/consent covers it before enabling.
+  recordCalls: { type: Boolean, default: true },
+
   // DNC
   dncEnabled: { type: Boolean, default: true },
 

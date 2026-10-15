@@ -122,6 +122,9 @@ class DialerEngine {
       const isOnline = await this.registrar.isRegistered(ext);
       stateMap.set(ext, {
         state: isOnline ? 'idle' : 'logged-out',
+        registered: isOnline,   // SIP phone actually registered — shown separately
+                                // from the dialer state, so a paused/wrap-up
+                                // agent still reports whether its phone is up.
         since: Date.now(),
         callCount: 0,
         lastCallEnd: 0,
@@ -347,6 +350,7 @@ class DialerEngine {
 
     for (const [ext, state] of stateMap) {
       const isOnline = await this.registrar.isRegistered(ext);
+      state.registered = isOnline;
 
       if (isOnline) {
         state._missedChecks = 0;
@@ -640,7 +644,8 @@ class DialerEngine {
       if (this.rtpengine && uac.remote && uac.remote.sdp) {
         try {
           const rtpHelper = require('../utils/rtp-helper');
-          const rtpOffer = await rtpHelper.offer(this.rtpengine, callId, mediaTag, uac.remote.sdp, { 'record call': 'yes' });
+          const recordFlag = (config.recordCalls === false) ? 'no' : 'yes';
+          const rtpOffer = await rtpHelper.offer(this.rtpengine, callId, mediaTag, uac.remote.sdp, { 'record call': recordFlag });
           if (rtpOffer && rtpOffer.sdp) {
             await uac.modify(rtpOffer.sdp);   // re-INVITE: pull audio through RTPEngine
             await this._sleep(500);           // let the RTP session settle before playing

@@ -48,6 +48,7 @@
         <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="c-amd" onchange="toggleAmd()"> AMD</label>
         <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="c-dnc" checked> DNC</label>
         <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="c-preconnect" onchange="togglePreConnect()"> Pre-connect message</label>
+        <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer" title="Record the call so you can play it back and verify the greeting was delivered. Check local consent rules."><input type="checkbox" id="c-record" checked> Record calls</label>
       </div>
       <div class="form-group" id="amd-carrier-wrap" style="display:none"><label class="form-label">Carrier</label>
         <select class="form-select" id="c-carrier"><option value="telnyx">Telnyx</option><option value="signalwire">SignalWire</option><option value="twilio">Twilio</option></select></div>
@@ -262,7 +263,7 @@ function showAdd(){
   document.getElementById('c-strategy').value='auto';document.getElementById('c-route').value='';
   document.getElementById('c-maxconcurrent').value='10';document.getElementById('c-ringtimeout').value='30';
   document.getElementById('c-wrapup').value='10';document.getElementById('c-retries').value='3';document.getElementById('c-retrydelay').value='30';
-  document.getElementById('c-amd').checked=false;document.getElementById('c-dnc').checked=true;
+  document.getElementById('c-amd').checked=false;document.getElementById('c-dnc').checked=true;document.getElementById('c-record').checked=true;
   document.getElementById('c-carrier').value='telnyx';document.getElementById('c-amdaction').value='hangup';
   document.getElementById('c-preconnect').checked=false;togglePreConnect();
   toggleAmd();document.getElementById('c-submit-btn').textContent='Create';
@@ -275,7 +276,7 @@ function showEdit(c){
   document.getElementById('c-route').value=c.outboundRoute||c.trunk||'';document.getElementById('c-maxconcurrent').value=c.maxConcurrent;
   document.getElementById('c-ringtimeout').value=c.ringTimeout;document.getElementById('c-wrapup').value=c.wrapUpTime;
   document.getElementById('c-retries').value=c.retryAttempts;document.getElementById('c-retrydelay').value=c.retryDelay;
-  document.getElementById('c-amd').checked=c.amd;document.getElementById('c-dnc').checked=c.dncEnabled!==false;
+  document.getElementById('c-amd').checked=c.amd;document.getElementById('c-dnc').checked=c.dncEnabled!==false;document.getElementById('c-record').checked=c.recordCalls!==false;
   document.getElementById('c-carrier').value=c.carrier||'telnyx';document.getElementById('c-amdaction').value=c.amdAction||'hangup';
   window.__amdMessageAudio=c.amdMessageAudio||'';toggleAmdMessage();if(document.getElementById('c-amdmessage'))document.getElementById('c-amdmessage').value=c.amdMessageAudio||'';
   toggleAmd();document.getElementById('c-submit-btn').textContent='Update';
@@ -383,8 +384,14 @@ async function refreshLive(){
           else callInfo=esc(agentCall.status)+' '+esc(agentCall.phone);
         }
         var dur=a.since?Math.round((Date.now()-a.since)/1000):0;
+        // SIP registration is reported separately from the dialer state, so
+        // you can tell "phone is up but agent paused" from "phone is gone".
+        var reg=(a.registered===true);
+        var regHtml='<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+(reg?'var(--color-ok)':'var(--color-error)')+';margin-right:5px"></span>'+
+          '<span style="color:'+(reg?'var(--color-ok)':'var(--color-error)')+';font-weight:600">'+(reg?'Online':'Offline')+'</span>';
         return '<tr>'+
           '<td><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:'+col+';margin-right:6px'+(a.state==='on-call'?';animation:pulse 1s infinite':'')+'"></span><span class="mono" style="font-weight:600">'+esc(a.extension)+'</span></td>'+
+          '<td style="font-size:11px">'+regHtml+'</td>'+
           '<td><span style="color:'+col+';font-weight:600">'+lbl+'</span></td>'+
           '<td style="font-size:11px">'+callInfo+'</td>'+
           '<td class="muted" style="font-size:11px">'+fmtSec(dur)+'</td>'+
@@ -392,7 +399,7 @@ async function refreshLive(){
         '</tr>';
       });
       document.getElementById('live-agent-table').innerHTML=
-        '<table class="tbl"><thead><tr><th>Agent</th><th>State</th><th>Current call</th><th>In state</th><th>Calls</th></tr></thead><tbody>'+rows.join('')+'</tbody></table>';
+        '<table class="tbl"><thead><tr><th>Agent</th><th>Phone</th><th>State</th><th>Current call</th><th>In state</th><th>Calls</th></tr></thead><tbody>'+rows.join('')+'</tbody></table>';
     }
 
     // ─── Active Calls Feed ───
@@ -438,7 +445,7 @@ async function saveCampaign(e){
     retryAttempts:parseInt(document.getElementById('c-retries').value)||3,retryDelay:parseInt(document.getElementById('c-retrydelay').value)||30,
     amd:document.getElementById('c-amd').checked,amdAction:document.getElementById('c-amdaction').value,amdMessageAudio:(document.getElementById('c-amdmessage')||{}).value||'',
     carrier:document.getElementById('c-amd').checked?document.getElementById('c-carrier').value:'',
-    dncEnabled:document.getElementById('c-dnc').checked};
+    dncEnabled:document.getElementById('c-dnc').checked,recordCalls:document.getElementById('c-record').checked};
   if(document.getElementById('c-preconnect').checked){
     b.preConnect={enabled:true,mode:document.getElementById('c-pc-mode').value,audioFile:document.getElementById('c-pc-audio').value,
       confirmKey:document.getElementById('c-pc-confirm').value||'1',optOutKey:document.getElementById('c-pc-optout').value||'2',
