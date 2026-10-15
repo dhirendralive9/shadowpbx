@@ -645,7 +645,17 @@ class DialerEngine {
         try {
           const rtpHelper = require('../utils/rtp-helper');
           const recordFlag = (config.recordCalls === false) ? 'no' : 'yes';
-          const rtpOffer = await rtpHelper.offer(this.rtpengine, callId, mediaTag, uac.remote.sdp, { 'record call': recordFlag });
+          // Force G.711 on the trunk leg. Carriers commonly answer with G.729
+          // (payload type 18), and RTPEngine can only inject a WAV prompt into
+          // a stream whose codec it can encode — G.729 is patent-encumbered and
+          // normally absent, so the prompt silently fails and the lead hears
+          // nothing. Stripping the non-G.711 codecs makes the re-INVITE offer
+          // PCMA/PCMU only, which RTPEngine plays natively, DTMF (RFC2833)
+          // rides on, and the pcap→WAV recorder can actually decode.
+          const rtpOffer = await rtpHelper.offer(this.rtpengine, callId, mediaTag, uac.remote.sdp, {
+            'record call': recordFlag,
+            codec: { strip: ['opus', 'G722', 'red', 'ISAC', 'ILBC', 'G729', 'CN'], transcode: ['PCMA', 'PCMU'] }
+          });
           if (rtpOffer && rtpOffer.sdp) {
             await uac.modify(rtpOffer.sdp);   // re-INVITE: pull audio through RTPEngine
             await this._sleep(500);           // let the RTP session settle before playing

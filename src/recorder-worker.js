@@ -195,7 +195,13 @@ function convertPcap(pcapFileName) {
       law_for() {  # $1 = ssrc filter (or empty for all)
         local FILT="$1"
         local PT=$(tshark -n -r "${pcapPath}" -o rtp.heuristic_rtp:TRUE -Y "rtp\${FILT:+ && \$FILT}" -T fields -e rtp.p_type 2>/dev/null | grep -E '^[0-9]+$' | sort | uniq -c | sort -rn | head -1 | awk '{print $2}')
-        if [ "$PT" = "8" ]; then echo "a-law"; else echo "mu-law"; fi
+        # Only G.711 (PT 0 = mu-law, PT 8 = A-law) can be decoded here. Anything
+        # else (G.729 = 18, G.722 = 9, Opus = dynamic) would be written out as
+        # G.711 and play back as loud static, which looks like a broken call
+        # rather than an unsupported codec. Shout about it instead.
+        if [ "$PT" = "8" ]; then echo "a-law";
+        elif [ "$PT" = "0" ]; then echo "mu-law";
+        else echo "UNSUPPORTED:$PT"; fi
       }
       extract() {  # $1 = ssrc filter, $2 = out.raw
         tshark -n -r "${pcapPath}" -o rtp.heuristic_rtp:TRUE -Y "rtp\${1:+ && $1}" -T fields -e rtp.timestamp -e rtp.payload 2>/dev/null \\
@@ -208,6 +214,9 @@ function convertPcap(pcapFileName) {
         SSRC2=$(echo "$SSRCS" | head -2 | tail -1)
         LAW1=$(law_for "rtp.ssrc==$SSRC1")
         LAW2=$(law_for "rtp.ssrc==$SSRC2")
+        case "$LAW1$LAW2" in *UNSUPPORTED*)
+          echo "SHADOWPBX_UNSUPPORTED_CODEC $LAW1 $LAW2" >&2; exit 90;;
+        esac
         extract "rtp.ssrc==$SSRC1" "${raw1}"
         extract "rtp.ssrc==$SSRC2" "${raw2}"
         sox -t raw -r 8000 -e "$LAW1" -b 8 -c 1 "${raw1}" "${wav1}" 2>/dev/null
@@ -216,6 +225,9 @@ function convertPcap(pcapFileName) {
         rm -f "${raw1}" "${raw2}" "${wav1}" "${wav2}"
       else
         LAW=$(law_for "")
+        case "$LAW" in *UNSUPPORTED*)
+          echo "SHADOWPBX_UNSUPPORTED_CODEC $LAW" >&2; exit 90;;
+        esac
         extract "" "${rawPath}"
         if [ -s "${rawPath}" ]; then
           sox -t raw -r 8000 -e "$LAW" -b 8 -c 1 "${rawPath}" "${wavPath}" 2>/dev/null
@@ -224,8 +236,15 @@ function convertPcap(pcapFileName) {
       fi
     `;
 
-    exec(`/bin/bash -c '${script.replace(/'/g, "'\\''")}'`, { timeout: timeoutMs }, async (err) => {
+    exec(`/bin/bash -c '${script.replace(/'/g, "'\\''")}'`, { timeout: timeoutMs }, async (err, stdout, stderr) => {
       if (err) {
+        if (String(stderr || '').includes('SHADOWPBX_UNSUPPORTED_CODEC')) {
+          const pt = (String(stderr).match(/UNSUPPORTED:(\d+)/) || [])[1] || '?';
+          const name = { '18': 'G.729', '9': 'G.722', '4': 'G.723', '3': 'GSM' }[pt] || `payload type ${pt}`;
+          log('warn', `Cannot decode recording for ${pcapFileName}: call used ${name}, which this recorder cannot convert. ` +
+                      `Force G.711 (PCMA/PCMU) on the trunk so calls are recordable.`);
+          return resolve(null);
+        }
         log('error', `tshark/sox failed for ${pcapFileName}: ${err.message}`);
         return resolve(null);
       }
