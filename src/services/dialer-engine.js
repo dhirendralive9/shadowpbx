@@ -348,16 +348,26 @@ class DialerEngine {
     for (const [ext, state] of stateMap) {
       const isOnline = await this.registrar.isRegistered(ext);
 
-      if (isOnline && state.state === 'logged-out') {
-        // Phone came online — auto-login
-        state.state = 'idle';
-        state.since = Date.now();
-        logger.info(`DIALER: agent ${ext} auto-login (phone registered) — campaign ${campaignId}`);
-      } else if (!isOnline && state.state === 'idle') {
-        // Phone went offline — auto-logout (only if idle, don't interrupt calls)
-        state.state = 'logged-out';
-        state.since = Date.now();
-        logger.info(`DIALER: agent ${ext} auto-logout (phone unregistered) — campaign ${campaignId}`);
+      if (isOnline) {
+        state._missedChecks = 0;
+        if (state.state === 'logged-out') {
+          // Phone came online — auto-login
+          state.state = 'idle';
+          state.since = Date.now();
+          logger.info(`DIALER: agent ${ext} auto-login (phone registered) — campaign ${campaignId}`);
+        }
+      } else if (state.state === 'idle') {
+        // Phone looks offline. A SIP re-REGISTER can briefly leave no live
+        // contact (especially under call load), so require two consecutive
+        // misses before logging the agent out — otherwise an online agent
+        // flickers to "offline" and the dialer loses a seat.
+        state._missedChecks = (state._missedChecks || 0) + 1;
+        if (state._missedChecks >= 2) {
+          state.state = 'logged-out';
+          state.since = Date.now();
+          state._missedChecks = 0;
+          logger.info(`DIALER: agent ${ext} auto-logout (phone unregistered) — campaign ${campaignId}`);
+        }
       }
     }
   }
@@ -396,12 +406,17 @@ class DialerEngine {
     const idleAgents = this._getIdleAgents(campaignId);
     if (idleAgents.length === 0) return;
 
-    // Count active outbound calls for this campaign
+    // Count ALL in-flight outbound calls for this campaign — not just
+    // 'ringing'/'connected'. Once a lead answers, the call sits in the
+    // 'answered' pre-connect greeting loop (up to ~tens of seconds) before it
+    // bridges or drops; those calls are still live lines and MUST count toward
+    // the concurrency cap. Missing them let overdial (pool) mode redial every
+    // second with no ceiling — flooding the trunk with hundreds of calls.
+    // Entries are removed from activeCalls at every terminal path, so the map
+    // size for this campaign is the true live-call count.
     let activeCount = 0;
     for (const [, call] of this.activeCalls) {
-      if (call.campaignId === campaignId && (call.status === 'ringing' || call.status === 'connected')) {
-        activeCount++;
-      }
+      if (call.campaignId === campaignId) activeCount++;
     }
 
     // Overdial ("pool") mode: fire several lines per idle agent and grab an
