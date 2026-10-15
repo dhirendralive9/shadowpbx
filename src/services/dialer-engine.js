@@ -627,13 +627,51 @@ class DialerEngine {
 
       this._incrementStat(campaignId, 'answered');
 
+      // ─── Put RTPEngine in the media path for the lead leg ───
+      // The INVITE above is sent without an SDP offer, so until RTPEngine is
+      // attached there is NO media on this leg: the pre-connect prompt is
+      // played into a session RTPEngine has never seen (silently failing) and
+      // RFC2833 DTMF never reaches the DTMF listener. The lead hears silence,
+      // hangs up after a few seconds, and the dialer immediately redials —
+      // which looks like "it keeps dialing and nobody hears the message".
+      // Same offer → uac.modify() → play sequence the appointment callback uses.
+      const mediaTag = `dialer-${callId}`;
+      let mediaReady = false;
+      if (this.rtpengine && uac.remote && uac.remote.sdp) {
+        try {
+          const rtpHelper = require('../utils/rtp-helper');
+          const rtpOffer = await rtpHelper.offer(this.rtpengine, callId, mediaTag, uac.remote.sdp, { 'record call': 'yes' });
+          if (rtpOffer && rtpOffer.sdp) {
+            await uac.modify(rtpOffer.sdp);   // re-INVITE: pull audio through RTPEngine
+            await this._sleep(500);           // let the RTP session settle before playing
+            mediaReady = true;
+            logger.debug(`DIALER: RTPEngine attached to lead leg [${callId}]`);
+          }
+        } catch (e) {
+          logger.warn(`DIALER: RTPEngine setup failed for lead leg [${callId}]: ${e.message}`);
+        }
+      }
+
+      const needsMedia = config.preConnect && config.preConnect.enabled && config.preConnect.audioFile;
+      if (needsMedia && !mediaReady) {
+        // Without media the lead cannot hear the prompt and cannot press a
+        // key. Drop the call instead of holding a silent line and churning
+        // through the lead list.
+        logger.error(`DIALER: no media path for ${lead.phone} — cannot play pre-connect prompt, dropping [${callId}]`);
+        try { uac.destroy(); } catch (e) {}
+        await this._releaseMedia(callId, mediaTag);
+        await this._callFailed(callId, campaignId, lead, agentExt, 'failed', config, cdr);
+        return;
+      }
+
       // ─── Pre-connect IVR / whisper message ───
       if (config.preConnect && config.preConnect.enabled && config.preConnect.audioFile) {
-        const proceed = await this._playPreConnect(callId, uac, lead, campaignId, config);
+        const proceed = await this._playPreConnect(callId, uac, lead, campaignId, config, mediaTag);
         if (!proceed) {
           // Lead opted out or didn't press the key — hang up, don't bridge
           logger.info(`DIALER PRE-CONNECT: ${lead.phone} did not confirm [${callId}]`);
           try { uac.destroy(); } catch (e) {}
+          await this._releaseMedia(callId, mediaTag);
           this.activeCalls.delete(callId);
           return;
         }
@@ -650,6 +688,7 @@ class DialerEngine {
           logger.warn(`DIALER: ${lead.phone} confirmed but no agent free — abandoning [${callId}]`);
           this._incrementStat(campaignId, 'abandoned');
           try { uac.destroy(); } catch (e) {}
+          await this._releaseMedia(callId, mediaTag);
           await this._callFailed(callId, campaignId, lead, null, 'abandoned', config, cdr);
           this.activeCalls.delete(callId);
           return;
@@ -1203,9 +1242,12 @@ class DialerEngine {
   // PRE-CONNECT IVR — play a message to the lead, optionally require keypress
   // Returns true if the lead should be bridged to an agent, false to hang up
   // ============================================================
-  async _playPreConnect(callId, leadUac, lead, campaignId, config) {
+  async _playPreConnect(callId, leadUac, lead, campaignId, config, mediaTag) {
     const pc = config.preConnect;
-    const fromTag = leadUac.sip ? leadUac.sip.remoteTag : null;
+    // Must match the from-tag the RTPEngine session was created with in
+    // _originateViaSIP — playing to the SIP remote tag targets a leg
+    // RTPEngine doesn't know about, so the lead hears nothing.
+    const fromTag = mediaTag || (leadUac.sip ? leadUac.sip.remoteTag : null);
     const audioPath = pc.audioFile.startsWith('/audio/') ? pc.audioFile : '/audio/' + pc.audioFile;
 
     // Play the audio message
@@ -1216,6 +1258,7 @@ class DialerEngine {
           'from-tag': fromTag,
           'file': audioPath
         });
+        logger.info(`DIALER PRE-CONNECT: playing prompt to ${lead.phone} [${callId}]`);
       }
     } catch (e) {
       logger.warn(`DIALER PRE-CONNECT: playMedia failed [${callId}]: ${e.message}`);
@@ -1340,6 +1383,19 @@ class DialerEngine {
 
   _sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+  // Tear down the RTPEngine session for a lead leg that never reached the
+  // bridge (no media, no confirm, or abandoned). Without this every dropped
+  // pre-connect call leaks an RTPEngine session.
+  async _releaseMedia(callId, tag) {
+    if (!this.rtpengine || !tag) return;
+    try {
+      const rtpHelper = require('../utils/rtp-helper');
+      await rtpHelper.del(this.rtpengine, callId, tag);
+    } catch (e) {
+      logger.debug(`DIALER: RTPEngine release failed [${callId}]: ${e.message}`);
+    }
+  }
+
   // ============================================================
   // BRIDGE TO AGENT — Connect answered lead to the reserved agent
   //
@@ -1369,7 +1425,9 @@ class DialerEngine {
 
     // Play hold music to the lead while the agent's phone rings (if configured)
     const pc = config.preConnect || {};
-    const leadHoldTag = leadUac.sip ? leadUac.sip.remoteTag : null;
+    // Use the same from-tag the RTPEngine session was created with, otherwise
+    // the hold music is played to a leg RTPEngine doesn't know about.
+    const leadHoldTag = bridgeTag;
     let patienceTimer = null;
     if (pc.enabled && pc.holdMusic) {
       try {
