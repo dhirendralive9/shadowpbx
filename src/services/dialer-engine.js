@@ -1157,9 +1157,18 @@ class DialerEngine {
       return true;
     }
 
-    // Press-1 mode: wait for the confirmation key
+    // Press-1 mode: play the greeting up to `maxGreetings` times, listening
+    // for a confirm/opt-out key the whole time. A live person can press the
+    // key during any round; an answering machine never will — so after the
+    // final greeting with no key we reject the call (no agent is ever
+    // bridged, and nothing is left on the machine). This is the lightweight
+    // voicemail filter: no AMD, works on a plain SIP trunk.
+    const maxGreetings = Math.max(1, parseInt(pc.maxGreetings) || 1);
+    const perRoundMs = (pc.timeout || 8) * 1000;
+
     return await new Promise((resolve) => {
       let resolved = false;
+      let handling = false; // a confirm/opt-out key arrived — stop replaying while we act on it
       const finish = (result) => {
         if (resolved) return;
         resolved = true;
@@ -1168,35 +1177,57 @@ class DialerEngine {
         resolve(result);
       };
 
+      // A relevant keypress (confirm or opt-out) must halt the greeting loop
+      // immediately so a replay doesn't talk over the hold/goodbye message.
+      const handleDigit = (digit, source) => {
+        const k = String(digit).trim();
+        if (k === (pc.confirmKey || '1') || k === (pc.optOutKey || '2')) {
+          handling = true;
+        }
+        logger.info(`DIALER PRE-CONNECT: DTMF ${k} via ${source} [${callId}]`);
+        this._handlePreConnectKey(k, pc, lead, finish, callId, fromTag);
+      };
+
       // DTMF via SIP INFO
       const onInfo = (infoReq, infoRes) => {
         const body = infoReq.body || '';
         const m = body.match(/Signal\s*=\s*(\S+)/i) || body.match(/^(\d|\*|#)/);
-        if (m) {
-          const digit = m[1].trim();
-          logger.info(`DIALER PRE-CONNECT: DTMF ${digit} via SIP INFO [${callId}]`);
-          this._handlePreConnectKey(digit, pc, lead, finish, callId, fromTag);
-        }
+        if (m) handleDigit(m[1], 'SIP INFO');
         try { infoRes.send(200); } catch (e) {}
       };
       leadUac.on('info', onInfo);
 
       // DTMF via RTPEngine (RFC 2833)
       if (this.dtmfListener) {
-        this.dtmfListener.register(callId, (digit) => {
-          logger.info(`DIALER PRE-CONNECT: DTMF ${digit} via RTPEngine [${callId}]`);
-          this._handlePreConnectKey(digit, pc, lead, finish, callId, fromTag);
-        }, fromTag);
+        this.dtmfListener.register(callId, (digit) => handleDigit(digit, 'RTPEngine'), fromTag);
       }
 
       // Lead hung up during the message
       leadUac.on('destroy', () => finish(false));
 
-      // Timeout — no keypress = don't bridge
-      setTimeout(() => {
-        logger.info(`DIALER PRE-CONNECT: timeout, no keypress [${callId}]`);
-        finish(false);
-      }, (pc.timeout || 8) * 1000);
+      // Greeting replay loop. Round 1's audio is already playing (started
+      // at the top of this method); rounds 2..N are replayed here.
+      (async () => {
+        for (let round = 1; round <= maxGreetings && !resolved && !handling; round++) {
+          if (round > 1) {
+            logger.info(`DIALER PRE-CONNECT: replaying greeting (round ${round}/${maxGreetings}) [${callId}]`);
+            try {
+              await this.rtpengine.playMedia(this.rtpengineConfig, { 'call-id': callId, 'from-tag': fromTag, 'file': audioPath });
+            } catch (e) {
+              logger.warn(`DIALER PRE-CONNECT: replay failed [${callId}]: ${e.message}`);
+            }
+          }
+          // Listening window for this round
+          const waited = Date.now();
+          while (Date.now() - waited < perRoundMs && !resolved && !handling) {
+            await this._sleep(250);
+          }
+        }
+        if (!resolved && !handling) {
+          logger.info(`DIALER PRE-CONNECT: no keypress after ${maxGreetings} greeting(s), rejecting [${callId}]`);
+          finish(false);
+        }
+      })();
     });
   }
 

@@ -339,7 +339,8 @@ const campaignSchema = new mongoose.Schema({
     audioFile: { type: String, default: '' },       // main intro message
     confirmKey: { type: String, default: '1' },      // key that confirms interest
     optOutKey: { type: String, default: '2' },       // key that opts out
-    timeout: { type: Number, default: 8 },           // seconds to wait for keypress
+    timeout: { type: Number, default: 8 },           // seconds to wait for a keypress per greeting round
+    maxGreetings: { type: Number, default: 2 },      // times to (re)play the greeting before rejecting (voicemail filter: a human presses the key, a machine never does)
     // Press-1 (confirm) action
     holdMessage: { type: String, default: '' },      // "please hold" audio played after confirm
     holdMusic: { type: String, default: '' },        // music while waiting for an agent

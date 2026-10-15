@@ -70,6 +70,10 @@
         <div class="form-group"><label class="form-label">Wait timeout (s)</label>
           <input class="form-input" id="c-pc-timeout" type="number" value="8" min="3" max="30">
         </div>
+        <div class="form-group"><label class="form-label">Greetings before reject</label>
+          <input class="form-input" id="c-pc-maxgreetings" type="number" value="2" min="1" max="5">
+          <div class="muted" style="font-size:10px;margin-top:2px">Press-1 mode: replay the intro this many times; no key by the last one = reject (voicemail filter).</div>
+        </div>
       </div>
 
       <!-- Press-1 specific options -->
@@ -274,7 +278,7 @@ function showEdit(c){
   document.getElementById('predictive-settings').style.display=c.strategy==='predictive'?'block':'none';
   if(c.strategy==='predictive'){document.getElementById('c-dialratio').value=c.dialRatio||1.2;document.getElementById('c-maxabandoned').value=c.maxAbandoned||3}
   var pc=c.preConnect||{};document.getElementById('c-preconnect').checked=!!pc.enabled;togglePreConnect();
-  if(pc.enabled){document.getElementById('c-pc-mode').value=pc.mode||'press1';document.getElementById('c-pc-timeout').value=pc.timeout||8;
+  if(pc.enabled){document.getElementById('c-pc-mode').value=pc.mode||'press1';document.getElementById('c-pc-timeout').value=pc.timeout||8;document.getElementById('c-pc-maxgreetings').value=pc.maxGreetings||2;
     document.getElementById('c-pc-confirm').value=pc.confirmKey||'1';document.getElementById('c-pc-optout').value=pc.optOutKey||'2';
     document.getElementById('c-pc-patience-after').value=pc.patienceAfter||20;document.getElementById('c-pc-optout-dnc').checked=pc.optOutAddDnc!==false;togglePcMode();
     setTimeout(function(){
@@ -430,6 +434,7 @@ async function saveCampaign(e){
     b.preConnect={enabled:true,mode:document.getElementById('c-pc-mode').value,audioFile:document.getElementById('c-pc-audio').value,
       confirmKey:document.getElementById('c-pc-confirm').value||'1',optOutKey:document.getElementById('c-pc-optout').value||'2',
       timeout:parseInt(document.getElementById('c-pc-timeout').value)||8,
+      maxGreetings:parseInt(document.getElementById('c-pc-maxgreetings').value)||2,
       holdMessage:document.getElementById('c-pc-hold').value,holdMusic:document.getElementById('c-pc-music').value,
       patienceMessage:document.getElementById('c-pc-patience').value,patienceAfter:parseInt(document.getElementById('c-pc-patience-after').value)||20,
       optOutMessage:document.getElementById('c-pc-optout-msg').value,optOutAddDnc:document.getElementById('c-pc-optout-dnc').checked};
