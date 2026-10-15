@@ -287,13 +287,28 @@ function showEdit(c){
   if(pc.enabled){document.getElementById('c-pc-mode').value=pc.mode||'press1';document.getElementById('c-pc-timeout').value=pc.timeout||8;document.getElementById('c-pc-maxgreetings').value=pc.maxGreetings||2;
     document.getElementById('c-pc-confirm').value=pc.confirmKey||'1';document.getElementById('c-pc-optout').value=pc.optOutKey||'2';
     document.getElementById('c-pc-patience-after').value=pc.patienceAfter||20;document.getElementById('c-pc-optout-dnc').checked=pc.optOutAddDnc!==false;togglePcMode();
-    setTimeout(function(){
-      if(pc.audioFile)document.getElementById('c-pc-audio').value=pc.audioFile;
-      if(pc.holdMessage)document.getElementById('c-pc-hold').value=pc.holdMessage;
-      if(pc.holdMusic)document.getElementById('c-pc-music').value=pc.holdMusic;
-      if(pc.patienceMessage)document.getElementById('c-pc-patience').value=pc.patienceMessage;
-      if(pc.optOutMessage)document.getElementById('c-pc-optout-msg').value=pc.optOutMessage;
-    },400)}
+    // The audio dropdowns are filled asynchronously. Restoring on a fixed
+    // timer was a race: if the list hadn't loaded, setting .value silently
+    // did nothing, the field showed "— none —", and the next save wrote an
+    // EMPTY audioFile — which disables screening and bridges every call.
+    // Wait for the options to actually exist, then restore.
+    (function restorePcAudio(tries){
+      var sel=document.getElementById('c-pc-audio');
+      if((!sel||sel.options.length<=1)&&tries<40){return setTimeout(function(){restorePcAudio(tries+1)},100)}
+      var set=function(id,val){
+        if(!val)return;
+        var el=document.getElementById(id); if(!el)return;
+        el.value=val;
+        if(el.value!==val){ // saved file no longer in the list — don't silently blank it
+          var o=document.createElement('option'); o.value=val; o.textContent=val+' (missing)'; el.appendChild(o); el.value=val;
+        }
+      };
+      set('c-pc-audio',pc.audioFile);
+      set('c-pc-hold',pc.holdMessage);
+      set('c-pc-music',pc.holdMusic);
+      set('c-pc-patience',pc.patienceMessage);
+      set('c-pc-optout-msg',pc.optOutMessage);
+    })(0)}
   setAgents(c.agents||[]);document.getElementById('add-form').style.display='block';
 }
 function hideAdd(){document.getElementById('add-form').style.display='none'}
@@ -447,6 +462,13 @@ async function saveCampaign(e){
     carrier:document.getElementById('c-amd').checked?document.getElementById('c-carrier').value:'',
     dncEnabled:document.getElementById('c-dnc').checked,recordCalls:document.getElementById('c-record').checked};
   if(document.getElementById('c-preconnect').checked){
+    // Saving screening ON with no intro message silently disables the press-1
+    // gate and bridges every answered call (voicemails included) to an agent.
+    if(!document.getElementById('c-pc-audio').value){
+      showToast('Pick an Intro message — Pre-connect cannot screen calls without one');
+      document.getElementById('c-pc-audio').focus();
+      return;
+    }
     b.preConnect={enabled:true,mode:document.getElementById('c-pc-mode').value,audioFile:document.getElementById('c-pc-audio').value,
       confirmKey:document.getElementById('c-pc-confirm').value||'1',optOutKey:document.getElementById('c-pc-optout').value||'2',
       timeout:parseInt(document.getElementById('c-pc-timeout').value)||8,

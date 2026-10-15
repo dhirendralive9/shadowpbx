@@ -109,6 +109,14 @@ class DialerEngine {
       }
     }
 
+    // Pre-connect screening with no prompt selected is a trap: the engine
+    // skips the whole press-1 gate and bridges EVERY answered call straight
+    // to an agent — voicemails included — which is the opposite of what
+    // screening is for. Refuse to start rather than silently misbehave.
+    if (campaign.preConnect && campaign.preConnect.enabled && !campaign.preConnect.audioFile) {
+      throw new Error('Pre-connect message is enabled but no intro message is selected. Pick an intro message in the campaign settings, or turn Pre-connect off.');
+    }
+
     // Count leads
     const pendingLeads = await Lead.countDocuments({
       campaignId: campaign._id,
@@ -676,6 +684,23 @@ class DialerEngine {
         try { uac.destroy(); } catch (e) {}
         await this._releaseMedia(callId, mediaTag);
         await this._callFailed(callId, campaignId, lead, agentExt, 'failed', config, cdr);
+        return;
+      }
+
+      // Backstop: if screening is on but the prompt went missing while the
+      // campaign was running, do NOT fall through and bridge the lead
+      // unscreened. Hang up, keep the lead dialable, and pause the campaign
+      // so the whole list isn't burned connecting agents to voicemail.
+      if (config.preConnect && config.preConnect.enabled && !config.preConnect.audioFile) {
+        logger.error(`DIALER: Pre-connect enabled but no intro message selected — refusing to bridge ${lead.phone} unscreened [${callId}]. Pausing campaign ${campaignId}.`);
+        try { uac.destroy(); } catch (e) {}
+        await this._releaseMedia(callId, mediaTag);
+        try {
+          const { Lead: LeadModel } = require('../models');
+          await LeadModel.findByIdAndUpdate(lead._id, { status: 'pending', nextAttempt: null });
+        } catch (e) {}
+        this.activeCalls.delete(callId);
+        this.pauseCampaign(campaignId).catch(() => {});
         return;
       }
 
