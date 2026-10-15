@@ -666,16 +666,28 @@ class DialerEngine {
 
       // ─── Pre-connect IVR / whisper message ───
       if (config.preConnect && config.preConnect.enabled && config.preConnect.audioFile) {
-        const proceed = await this._playPreConnect(callId, uac, lead, campaignId, config, mediaTag);
-        if (!proceed) {
-          // Lead opted out or didn't press the key — hang up, don't bridge
-          logger.info(`DIALER PRE-CONNECT: ${lead.phone} did not confirm [${callId}]`);
+        const result = await this._playPreConnect(callId, uac, lead, campaignId, config, mediaTag);
+        if (result !== 'confirmed') {
+          // Not bridging. Record WHY so the lead gets a real outcome instead
+          // of being left stuck in 'calling' forever, and so the monitor can
+          // report how many heard the prompt but never pressed a key.
+          logger.info(`DIALER PRE-CONNECT: ${lead.phone} did not confirm (${result}) [${callId}]`);
           try { uac.destroy(); } catch (e) {}
           await this._releaseMedia(callId, mediaTag);
+
+          if (result === 'opted-out') {
+            this._incrementStat(campaignId, 'optedOut');
+            await this._finalizeLead(callId, campaignId, lead, 'opted-out', 'dnc', cdr);
+          } else {
+            // 'no-key' or 'hangup' — heard the prompt, never confirmed.
+            this._incrementStat(campaignId, 'noConfirm');
+            await this._finalizeLead(callId, campaignId, lead, 'no-confirm', 'failed', cdr);
+          }
           this.activeCalls.delete(callId);
           return;
         }
-        logger.info(`DIALER PRE-CONNECT: ${lead.phone} confirmed, bridging [${callId}]`);
+        this._incrementStat(campaignId, 'confirmed');
+        logger.info(`DIALER PRE-CONNECT: ${lead.phone} CONFIRMED (pressed key), bridging [${callId}]`);
       }
 
       // In pool/overdial mode the call was dialed with no agent reserved.
@@ -1250,7 +1262,15 @@ class DialerEngine {
     const fromTag = mediaTag || (leadUac.sip ? leadUac.sip.remoteTag : null);
     const audioPath = pc.audioFile.startsWith('/audio/') ? pc.audioFile : '/audio/' + pc.audioFile;
 
+    // Live call state, so the monitor can show what each call is actually
+    // doing instead of sitting on "ringing" for the whole prompt/wait phase.
+    const setCallState = (s) => {
+      const ac = this.activeCalls.get(callId);
+      if (ac) ac.status = s;
+    };
+
     // Play the audio message
+    setCallState('playing-prompt');
     try {
       if (this.rtpengine && this.rtpengine.playMedia) {
         await this.rtpengine.playMedia(this.rtpengineConfig, {
@@ -1259,6 +1279,7 @@ class DialerEngine {
           'file': audioPath
         });
         logger.info(`DIALER PRE-CONNECT: playing prompt to ${lead.phone} [${callId}]`);
+        this._incrementStat(campaignId, 'heardPrompt');
       }
     } catch (e) {
       logger.warn(`DIALER PRE-CONNECT: playMedia failed [${callId}]: ${e.message}`);
@@ -1267,7 +1288,7 @@ class DialerEngine {
     // Announce mode: just play the message, then bridge (no keypress needed)
     if (pc.mode === 'announce') {
       await this._sleep(2000); // let the message finish
-      return true;
+      return 'confirmed';
     }
 
     // Press-1 mode: play the greeting up to `maxGreetings` times, listening
@@ -1316,7 +1337,7 @@ class DialerEngine {
       }
 
       // Lead hung up during the message
-      leadUac.on('destroy', () => finish(false));
+      leadUac.on('destroy', () => finish('hangup'));
 
       // Greeting replay loop. Round 1's audio is already playing (started
       // at the top of this method); rounds 2..N are replayed here.
@@ -1324,6 +1345,7 @@ class DialerEngine {
         for (let round = 1; round <= maxGreetings && !resolved && !handling; round++) {
           if (round > 1) {
             logger.info(`DIALER PRE-CONNECT: replaying greeting (round ${round}/${maxGreetings}) [${callId}]`);
+            setCallState('playing-prompt');
             try {
               await this.rtpengine.playMedia(this.rtpengineConfig, { 'call-id': callId, 'from-tag': fromTag, 'file': audioPath });
             } catch (e) {
@@ -1331,6 +1353,7 @@ class DialerEngine {
             }
           }
           // Listening window for this round
+          setCallState(`awaiting-key (${round}/${maxGreetings})`);
           const waited = Date.now();
           while (Date.now() - waited < perRoundMs && !resolved && !handling) {
             await this._sleep(250);
@@ -1338,7 +1361,7 @@ class DialerEngine {
         }
         if (!resolved && !handling) {
           logger.info(`DIALER PRE-CONNECT: no keypress after ${maxGreetings} greeting(s), rejecting [${callId}]`);
-          finish(false);
+          finish('no-key');
         }
       })();
     });
@@ -1354,7 +1377,7 @@ class DialerEngine {
           await this._sleep(2000);
         } catch (e) {}
       }
-      finish(true); // bridge to agent
+      finish('confirmed'); // bridge to agent
     } else if (digit === (pc.optOutKey || '2')) {
       // Press 2 → play "thank you" message, then hang up
       if (pc.optOutMessage) {
@@ -1376,12 +1399,39 @@ class DialerEngine {
           logger.info(`DIALER PRE-CONNECT: ${lead.phone} opted out, added to DNC`);
         } catch (e) {}
       }
-      finish(false); // hang up
+      finish('opted-out'); // hang up
     }
     // Other keys ignored — keep waiting
   }
 
   _sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+  // Close out a lead that answered but will not be bridged (no keypress, or
+  // opted out). Previously these calls just returned, leaving the lead stuck
+  // in 'calling' forever with no outcome — invisible in the Leads view and
+  // never counted as processed. These outcomes are final: not re-dialed.
+  async _finalizeLead(callId, campaignId, lead, outcome, status, cdr) {
+    const { Lead: LeadModel } = require('../models');
+    try {
+      if (cdr) {
+        cdr.status = 'completed';
+        cdr.endTime = new Date();
+        cdr.duration = Math.round((cdr.endTime - cdr.startTime) / 1000);
+        cdr.hangupCause = outcome;
+        cdr.hangupBy = 'system';
+        await cdr.save();
+      }
+      await LeadModel.findByIdAndUpdate(lead._id, {
+        status,
+        outcome,
+        $push: { callIds: callId }
+      });
+      logger.debug(`DIALER: lead ${lead.phone} finalized as ${outcome} [${callId}]`);
+    } catch (e) {
+      logger.warn(`DIALER: could not finalize lead ${lead.phone}: ${e.message}`);
+    }
+    this._checkCampaignComplete(campaignId);
+  }
 
   // Tear down the RTPEngine session for a lead leg that never reached the
   // bridge (no media, no confirm, or abandoned). Without this every dropped
@@ -1849,6 +1899,10 @@ class DialerEngine {
         'stats.failed': stats.failed || 0,
         'stats.machine': stats.machine || 0,
         'stats.abandoned': stats.abandoned || 0,
+        'stats.heardPrompt': stats.heardPrompt || 0,
+        'stats.confirmed': stats.confirmed || 0,
+        'stats.noConfirm': stats.noConfirm || 0,
+        'stats.optedOut': stats.optedOut || 0,
         'stats.totalTalkTime': stats.totalTalkTime || 0,
         'stats.avgTalkTime': stats.answered > 0 ? Math.round(stats.totalTalkTime / stats.answered) : 0,
         'stats.answerRate': Math.round((stats.answerRate || 0) * 100) / 100,
@@ -2121,6 +2175,10 @@ class DialerEngine {
         failed: stats.failed || 0,
         machine: stats.machine || 0,
         abandoned: stats.abandoned || 0,
+        heardPrompt: stats.heardPrompt || 0,
+        confirmed: stats.confirmed || 0,
+        noConfirm: stats.noConfirm || 0,
+        optedOut: stats.optedOut || 0,
         answerRate: Math.round((stats.answerRate || 0) * 100),
         abandonRate: Math.round((stats.abandonRate || 0) * 100),
         avgTalkTime: Math.round(stats.avgTalkTime || 0),

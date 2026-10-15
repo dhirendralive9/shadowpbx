@@ -374,6 +374,10 @@ const campaignSchema = new mongoose.Schema({
     failed: { type: Number, default: 0 },
     machine: { type: Number, default: 0 },
     abandoned: { type: Number, default: 0 },
+    heardPrompt: { type: Number, default: 0 },          // answered AND the pre-connect prompt started playing
+    confirmed: { type: Number, default: 0 },            // pressed the confirm key
+    noConfirm: { type: Number, default: 0 },            // heard the prompt, never pressed a key
+    optedOut: { type: Number, default: 0 },             // pressed the opt-out key
     completed: { type: Number, default: 0 },
     totalTalkTime: { type: Number, default: 0 },         // seconds
     avgTalkTime: { type: Number, default: 0 },
@@ -411,7 +415,10 @@ const leadSchema = new mongoose.Schema({
   nextAttempt: Date,                                    // null = ready to dial now
   outcome: {
     type: String,
-    enum: ['', 'answered', 'no-answer', 'busy', 'machine', 'failed', 'abandoned'],
+    // no-confirm = answered and heard the prompt but never pressed the confirm
+    // key (voicemail, or a person who didn't respond). opted-out = pressed the
+    // opt-out key. Both are final: they are not re-dialed.
+    enum: ['', 'answered', 'no-answer', 'busy', 'machine', 'failed', 'abandoned', 'no-confirm', 'opted-out'],
     default: ''
   },
   disposition: {

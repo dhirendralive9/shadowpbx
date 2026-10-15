@@ -355,6 +355,10 @@ async function refreshLive(){
       sc(l.connectedCalls||0,'Connected','var(--color-ok)')+sc(s.dialed||0,'Dialed','')+
       sc(s.answered||0,'Answered','var(--color-ok)')+sc(s.answerRate+'%','Answer rate','')+
       sc(fmtSec(s.avgTalkTime),'Avg talk','')+sc(s.callsPerHour||0,'Calls/hr','')+
+      sc(s.heardPrompt||0,'Heard message','var(--accent)')+
+      sc(s.confirmed||0,'Pressed 1','var(--color-ok)')+
+      sc(s.noConfirm||0,'No keypress','')+
+      sc(s.optedOut||0,'Opted out','')+
       sc(s.abandoned||0,'Abandoned',s.rollingAbandonRate>3?'var(--color-error)':'')+
       sc(s.rollingAbandonRate+'%','Abandon rate',s.rollingAbandonRate>3?'var(--color-error)':'')+
       sc(s.currentDialRatio||'—','Dial ratio','var(--accent)')+
