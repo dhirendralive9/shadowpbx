@@ -1664,7 +1664,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
     try {
       const { name, strategy, outboundRoute, trunk, callerId, carrier, agents, maxConcurrent, ringTimeout,
               wrapUpTime, retryAttempts, retryDelay, amd, amdAction, amdMessageAudio, schedule,
-              dialRatio, maxAbandoned, dncEnabled, preConnect } = req.body;
+              dialRatio, maxAbandoned, linesPerAgent, dncEnabled, preConnect } = req.body;
       if (!name || !callerId) {
         return res.status(400).json({ success: false, error: 'name and callerId required' });
       }
@@ -1680,7 +1680,8 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
         retryAttempts: retryAttempts || 3, retryDelay: retryDelay || 30,
         amd: amd || false, amdAction: amdAction || 'hangup', amdMessageAudio: amdMessageAudio || '',
         schedule: schedule || {}, dialRatio: dialRatio || 1.2,
-        maxAbandoned: maxAbandoned || 3, dncEnabled: dncEnabled !== false,
+        maxAbandoned: maxAbandoned || 3, linesPerAgent: linesPerAgent || 1,
+        dncEnabled: dncEnabled !== false,
         preConnect: preConnect || {}
       });
       logger.info(`Campaign created: ${name} (${c._id})`);
@@ -1693,7 +1694,7 @@ function createApiRouter(registrar, callHandler, trunkManager, transferHandler, 
       const updates = {};
       ['name', 'strategy', 'outboundRoute', 'trunk', 'callerId', 'carrier', 'agents', 'maxConcurrent', 'ringTimeout',
        'wrapUpTime', 'retryAttempts', 'retryDelay', 'amd', 'amdAction', 'amdMessageAudio', 'schedule',
-       'dialRatio', 'maxAbandoned', 'dncEnabled', 'enabled', 'preConnect'].forEach(k => {
+       'dialRatio', 'maxAbandoned', 'linesPerAgent', 'dncEnabled', 'enabled', 'preConnect'].forEach(k => {
         if (req.body[k] !== undefined) updates[k] = req.body[k];
       });
       const c = await Campaign.findByIdAndUpdate(req.params.id, updates, { new: true });

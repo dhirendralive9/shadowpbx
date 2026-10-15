@@ -326,6 +326,7 @@ const campaignSchema = new mongoose.Schema({
   // Predictive settings
   dialRatio: { type: Number, default: 1.2 },           // calls per available agent
   maxAbandoned: { type: Number, default: 3 },           // max abandon rate %
+  linesPerAgent: { type: Number, default: 1 },         // overdial: lines fired per idle agent. >1 enables the predictive pool — many lines ring at once and an agent is grabbed only when a lead presses the confirm key (requires pre-connect press-1). Capped by maxConcurrent.
 
   // AMD
   amd: { type: Boolean, default: false },

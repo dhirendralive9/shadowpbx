@@ -37,6 +37,10 @@
       <div class="grid-3" style="margin-bottom:0">
         <div class="form-group"><label class="form-label">Initial dial ratio</label><input class="form-input" id="c-dialratio" type="number" value="1.2" min="1" max="5" step="0.1"></div>
         <div class="form-group"><label class="form-label">Max abandon %</label><input class="form-input" id="c-maxabandoned" type="number" value="3" min="1" max="10"></div>
+        <div class="form-group"><label class="form-label">Lines per agent (overdial)</label>
+          <input class="form-input" id="c-linesperagent" type="number" value="1" min="1" max="50">
+          <div class="muted" style="font-size:10px;margin-top:2px">&gt;1 fires this many calls per idle agent; whoever presses 1 gets an agent. Needs Pre-connect (press-1). Total capped by Max concurrent.</div>
+        </div>
       </div>
     </div>
     <div class="grid-3" style="margin-bottom:0">
@@ -277,6 +281,7 @@ function showEdit(c){
   toggleAmd();document.getElementById('c-submit-btn').textContent='Update';
   document.getElementById('predictive-settings').style.display=c.strategy==='predictive'?'block':'none';
   if(c.strategy==='predictive'){document.getElementById('c-dialratio').value=c.dialRatio||1.2;document.getElementById('c-maxabandoned').value=c.maxAbandoned||3}
+  document.getElementById('c-linesperagent').value=c.linesPerAgent||1;
   var pc=c.preConnect||{};document.getElementById('c-preconnect').checked=!!pc.enabled;togglePreConnect();
   if(pc.enabled){document.getElementById('c-pc-mode').value=pc.mode||'press1';document.getElementById('c-pc-timeout').value=pc.timeout||8;document.getElementById('c-pc-maxgreetings').value=pc.maxGreetings||2;
     document.getElementById('c-pc-confirm').value=pc.confirmKey||'1';document.getElementById('c-pc-optout').value=pc.optOutKey||'2';
@@ -440,6 +445,7 @@ async function saveCampaign(e){
       optOutMessage:document.getElementById('c-pc-optout-msg').value,optOutAddDnc:document.getElementById('c-pc-optout-dnc').checked};
   }else{b.preConnect={enabled:false}}
   if(b.strategy==='predictive'){b.dialRatio=parseFloat(document.getElementById('c-dialratio').value)||1.2;b.maxAbandoned=parseInt(document.getElementById('c-maxabandoned').value)||3}
+  b.linesPerAgent=parseInt(document.getElementById('c-linesperagent').value)||1;
   if(!b.outboundRoute){showToast('Select an outbound route',true);return}if(b.agents.length===0){showToast('Select at least one agent',true);return}
   var d=await(await fetch(id?API+'/campaigns/'+id:API+'/campaigns',{method:id?'PUT':'POST',headers:J,body:JSON.stringify(b)})).json();
   if(d.success){hideAdd();showToast(id?'Updated':'Created');loadCampaigns()}else showToast(d.error||'Failed',true);

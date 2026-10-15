@@ -290,6 +290,24 @@ class DialerEngine {
     this.setAgentState(campaignId, ext, 'idle');
   }
 
+  // Atomically claim one idle agent (pool/overdial mode): find the first
+  // idle agent, flip it to 'reserved', and return its extension. Returns null
+  // if none is free. Synchronous — no await — so concurrent press-1 handlers
+  // can't hand the same agent to two calls.
+  _acquireIdleAgent(campaignId) {
+    const stateMap = this.agentStates.get(campaignId);
+    if (!stateMap) return null;
+    for (const [ext, state] of stateMap) {
+      if (state.state === 'idle') {
+        state.state = 'reserved';
+        state.since = Date.now();
+        logger.debug(`DIALER: agent ${ext} claimed on confirm (campaign ${campaignId})`);
+        return ext;
+      }
+    }
+    return null;
+  }
+
   // Get idle agents for a campaign
   _getIdleAgents(campaignId) {
     const stateMap = this.agentStates.get(campaignId);
@@ -354,8 +372,11 @@ class DialerEngine {
     const config = running.config;
 
     // ─── TCPA Compliance: auto-pause if abandon rate too high ───
+    // Applies to predictive and to overdial/pool mode (linesPerAgent > 1),
+    // since both dial ahead of agent availability and can abandon calls.
     const stats = this.statsCache.get(campaignId);
-    if (stats && config.strategy === 'predictive') {
+    const overdialing = (parseInt(config.linesPerAgent) || 1) > 1;
+    if (stats && (config.strategy === 'predictive' || overdialing)) {
       const rollingAbandon = stats._rollingAbandonRate || 0;
       const maxAbandon = (config.maxAbandoned || 3) / 100;
       // If rolling abandon rate exceeds 2x the target, auto-pause to protect compliance
@@ -383,10 +404,23 @@ class DialerEngine {
       }
     }
 
+    // Overdial ("pool") mode: fire several lines per idle agent and grab an
+    // agent only when a lead presses the confirm key (see _originateViaSIP).
+    // Needs the press-1 pre-connect gate, so it's disabled on the carrier/AMD
+    // path. linesPerAgent <= 1 keeps the classic one-agent-per-call behavior.
+    const linesPerAgent = Math.max(1, parseInt(config.linesPerAgent) || 1);
+    const poolMode = linesPerAgent > 1 && !(config.amd && config.carrier);
+
     // Calculate how many calls to place
     let toDial = 0;
 
-    if (config.strategy === 'auto') {
+    if (poolMode) {
+      // Keep up to (idle agents × linesPerAgent) lines ringing, capped by
+      // maxConcurrent. No agent is reserved up front — the first lead to
+      // press 1 claims an agent; if none is free that call is abandoned.
+      const target = Math.min(config.maxConcurrent, idleAgents.length * linesPerAgent);
+      toDial = target - activeCount;
+    } else if (config.strategy === 'auto') {
       // Auto: 1 call per idle agent, minus active ringing calls
       toDial = Math.max(0, idleAgents.length - activeCount);
     } else {
@@ -443,16 +477,19 @@ class DialerEngine {
         }
       }
 
-      // Reserve an agent
-      const agent = idleAgents.shift();
-      if (!agent) {
-        lead.status = 'pending';
-        lead.attempts = Math.max(0, lead.attempts - 1);
-        await lead.save();
-        break;
+      // Reserve an agent — only in classic (one-per-call) mode. In pool mode
+      // we dial with no agent and claim one when the lead presses 1.
+      let agent = null;
+      if (!poolMode) {
+        agent = idleAgents.shift();
+        if (!agent) {
+          lead.status = 'pending';
+          lead.attempts = Math.max(0, lead.attempts - 1);
+          await lead.save();
+          break;
+        }
+        this.setAgentState(campaignId, agent, 'reserved');
       }
-
-      this.setAgentState(campaignId, agent, 'reserved');
       this._incrementStat(campaignId, 'dialed');
 
       // Originate the outbound call (async — don't block the loop)
@@ -588,7 +625,25 @@ class DialerEngine {
         logger.info(`DIALER PRE-CONNECT: ${lead.phone} confirmed, bridging [${callId}]`);
       }
 
-      await this._bridgeToAgent(callId, campaignId, uac, lead, agentExt, config, cdr);
+      // In pool/overdial mode the call was dialed with no agent reserved.
+      // The lead has now confirmed, so claim a free agent. If every agent is
+      // busy this is an abandoned call (TCPA) — hang up and retry the lead.
+      let bridgeAgent = agentExt;
+      if (!bridgeAgent) {
+        bridgeAgent = this._acquireIdleAgent(campaignId);
+        if (!bridgeAgent) {
+          logger.warn(`DIALER: ${lead.phone} confirmed but no agent free — abandoning [${callId}]`);
+          this._incrementStat(campaignId, 'abandoned');
+          try { uac.destroy(); } catch (e) {}
+          await this._callFailed(callId, campaignId, lead, null, 'abandoned', config, cdr);
+          this.activeCalls.delete(callId);
+          return;
+        }
+        const ac = this.activeCalls.get(callId);
+        if (ac) ac.agentExt = bridgeAgent;
+      }
+
+      await this._bridgeToAgent(callId, campaignId, uac, lead, bridgeAgent, config, cdr);
 
     } catch (err) {
       const sipStatus = err.status || 0;
