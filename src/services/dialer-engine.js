@@ -662,7 +662,17 @@ class DialerEngine {
           // rides on, and the pcap→WAV recorder can actually decode.
           const rtpOffer = await rtpHelper.offer(this.rtpengine, callId, mediaTag, uac.remote.sdp, {
             'record call': recordFlag,
-            codec: { strip: ['opus', 'G722', 'red', 'ISAC', 'ILBC', 'G729', 'CN'], transcode: ['PCMA', 'PCMU'] }
+            // 'telephone-event' must be in the transcode list, not just left to
+            // the carrier. RFC2833 DTMF only works if a telephone-event payload
+            // type is negotiated; carriers often omit it, and then a keypress
+            // travels as an in-band tone that the DTMF logger never sees.
+            // Asking RTPEngine to transcode telephone-event makes it offer the
+            // payload type AND run in-band tone detection when the far end
+            // doesn't support it, emitting proper DTMF events either way.
+            codec: {
+              strip: ['opus', 'G722', 'red', 'ISAC', 'ILBC', 'G729', 'CN'],
+              transcode: ['PCMA', 'PCMU', 'telephone-event']
+            }
           });
           if (rtpOffer && rtpOffer.sdp) {
             await uac.modify(rtpOffer.sdp);   // re-INVITE: pull audio through RTPEngine

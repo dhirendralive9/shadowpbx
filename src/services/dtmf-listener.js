@@ -66,7 +66,10 @@ class DtmfListener {
           if (cb) {
             cb(digit, fromTag, callId);
           } else {
-            logger.debug(`DTMF EVENT: no handler registered for call-id=${callId} from-tag=${fromTag}`);
+            // Visible on purpose: if RTPEngine is reporting digits but nothing
+            // is listening for that call-id, DTMF looks "not detected" when it
+            // is really a registration/matching problem. Don't bury it.
+            logger.warn(`DTMF EVENT: digit=${digit} received but NO handler registered for call-id=${callId} from-tag=${fromTag} (registered: ${[...this.callbacks.keys()].join(',') || 'none'})`);
           }
         }
       } catch (err) {
