@@ -68,13 +68,37 @@ function wsUrlFor(req, keyId) {
  * connection.
  */
 function attachCampaignWs({ server, presenceHandler }) {
-  let WebSocketServer;
-  try { ({ WebSocketServer } = require('ws')); } catch (e) {
+  // This is a bolt-on feature on a PBX that carries live calls. Nothing in here
+  // may stop the process from starting, so every step is guarded and every
+  // failure degrades to REST-only rather than throwing.
+  let WsServer = null;
+  try {
+    const ws = require('ws');
+    // ws >= 7.4 exports WebSocketServer; older releases — which arrive as a
+    // transitive dependency of the SIP stack — only have .Server. Destructuring
+    // the name that does not exist yields undefined, and `new undefined()`
+    // throws at startup: "WebSocketServer is not a constructor".
+    WsServer = ws.WebSocketServer || ws.Server || null;
+  } catch (e) {
     logger.warn('campaign API: ws package not installed — REST only, no live pushes');
     return null;
   }
+  if (typeof WsServer !== 'function') {
+    logger.warn('campaign API: this version of ws exposes no server class — REST only. '
+      + 'Run npm install to pick up ws >= 8.');
+    return null;
+  }
 
-  const wss = new WebSocketServer({ noServer: true });
+  try {
+    return startWs({ server, presenceHandler, WsServer });
+  } catch (e) {
+    logger.error(`campaign API: live pushes disabled (${e.message}) — REST still works`);
+    return null;
+  }
+}
+
+function startWs({ server, presenceHandler, WsServer }) {
+  const wss = new WsServer({ noServer: true });
   const clients = new Set();   // { socket, key, last }
 
   server.on('upgrade', async (req, socket, head) => {
