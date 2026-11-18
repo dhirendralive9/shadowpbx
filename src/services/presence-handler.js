@@ -1,4 +1,5 @@
 const { v4: uuidv4 } = require('uuid');
+const EventEmitter = require('events');
 const logger = require('../utils/logger');
 
 // ============================================================
@@ -20,6 +21,12 @@ class PresenceHandler {
     this.srf = srf;
     this.registrar = registrar;
     this.callHandler = callHandler;
+
+    // Anything that needs to react to a state change without being a SIP
+    // subscriber -- the campaign agent API, for one -- listens here instead of
+    // polling. Emitting is fire-and-forget: a listener that throws must not
+    // break BLF for the phones.
+    this.events = new EventEmitter();
 
     // Extension states: extension -> { state, since, callId, remoteParty }
     // States: 'idle', 'ringing', 'confirmed', 'held', 'dnd'
@@ -168,6 +175,8 @@ class PresenceHandler {
 
     // Notify all subscribers of this extension
     this._notifyAll(ext);
+    try { this.events.emit('state', { extension: ext, state, previous: prevState }); }
+    catch (e) { logger.debug(`presence listener threw: ${e.message}`); }
   }
 
   /**

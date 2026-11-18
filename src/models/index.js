@@ -661,6 +661,33 @@ const crmConfigSchema = new mongoose.Schema({
 crmConfigSchema.index({ provider: 1 });
 crmConfigSchema.index({ enabled: 1 });
 
+// ============================================================
+// Campaign API key
+//
+// Credentials handed to an outside dialler (the campaign module) so it can read
+// how many agents are free on one ring group, queue or extension, and nothing
+// else. Each key is scoped to a single target: a key for the sales queue cannot
+// read the support queue, so handing one to a contractor hands over one number.
+//
+// The secret is stored as a SHA-256 hash and shown to the admin exactly once.
+// A leaked database therefore does not hand anyone a working key.
+// ============================================================
+const campaignApiKeySchema = new mongoose.Schema({
+  keyId: { type: String, required: true, unique: true, index: true },  // public, in the URL
+  keyHash: { type: String, required: true },                            // sha256 of the secret
+  name: { type: String, required: true },
+  target: {
+    type: { type: String, enum: ['ringgroup', 'queue', 'extension'], required: true },
+    number: { type: String, required: true }
+  },
+  enabled: { type: Boolean, default: true },
+  createdBy: { type: String, default: '' },
+  createdAt: { type: Date, default: Date.now },
+  lastUsedAt: Date,
+  lastUsedIp: String,
+  lastTransport: String                                                 // rest | ws
+}, { collection: 'campaignapikeys' });
+
 const Extension = mongoose.model('Extension', extensionSchema);
 const RingGroup = mongoose.model('RingGroup', ringGroupSchema);
 const Trunk = mongoose.model('Trunk', trunkSchema);
@@ -722,5 +749,6 @@ const Lead = mongoose.model('Lead', leadSchema);
 const DNC = mongoose.model('DNC', dncSchema);
 const CrmConfig = mongoose.model('CrmConfig', crmConfigSchema);
 const WebCallWidget = mongoose.model('WebCallWidget', webCallWidgetSchema);
+const CampaignApiKey = mongoose.model('CampaignApiKey', campaignApiKeySchema);
 
-module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, IVR, TimeCondition, Queue, User, ChatMessage, BlockedNumber, CDR, VoicemailMessage, ActiveCall, SystemSettings, Appointment, AppointmentMessage, SIPDomain, Campaign, Lead, DNC, CrmConfig, WebCallWidget };
+module.exports = { Extension, RingGroup, Trunk, InboundRoute, OutboundRoute, IVR, TimeCondition, Queue, User, ChatMessage, BlockedNumber, CDR, VoicemailMessage, ActiveCall, SystemSettings, Appointment, AppointmentMessage, SIPDomain, Campaign, Lead, DNC, CrmConfig, WebCallWidget, CampaignApiKey };

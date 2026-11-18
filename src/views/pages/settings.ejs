@@ -11,6 +11,7 @@
   <a href="#maintenance" class="sub-tab" data-tab="maintenance" onclick="switchTab('maintenance')">Maintenance</a>
   <a href="#backup" class="sub-tab" data-tab="backup" onclick="switchTab('backup')">Backup</a>
   <a href="#crm" class="sub-tab" data-tab="crm" onclick="switchTab('crm')">CRM</a>
+  <a href="#campaignapi" class="sub-tab" data-tab="campaignapi" onclick="switchTab('campaignapi')">Campaign API</a>
   <a href="#system" class="sub-tab" data-tab="system" onclick="switchTab('system')">System</a>
   <a href="#migration" class="sub-tab" data-tab="migration" onclick="switchTab('migration')">Migration</a>
 </div>
@@ -83,6 +84,53 @@
 </div>
 
 <!-- ═══════════════════ SIP DOMAINS ═══════════════════ -->
+<div id="panel-campaignapi" class="settings-panel">
+  <div class="card" style="margin-bottom:16px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+      <div><strong>Campaign API keys</strong>
+        <span class="muted" style="font-size:11px" id="ck-summary"></span></div>
+      <button class="btn btn-sm" onclick="document.getElementById('ck-add').style.display='block'">+ New key</button>
+    </div>
+    <div class="muted" style="font-size:12px">
+      Lets an outside dialler read how many agents are free on one ring group, queue or extension —
+      and nothing else. It cannot place calls, read CDRs or see other groups. The dialler polls the
+      URL and subscribes to the WebSocket for changes as they happen.
+    </div>
+  </div>
+
+  <div id="ck-add" style="display:none;margin-bottom:16px" class="card">
+    <form onsubmit="createCampaignKey(event)">
+      <div style="display:flex;gap:12px;flex-wrap:wrap">
+        <div class="form-group" style="flex:1;min-width:180px"><label class="form-label">Name</label>
+          <input class="form-input" id="ck-name" placeholder="Campaign module — sales" required></div>
+        <div class="form-group" style="flex:1;min-width:220px"><label class="form-label">Attach to</label>
+          <select class="form-input" id="ck-target" required><option value="">Loading…</option></select></div>
+      </div>
+      <div style="margin-top:8px">
+        <button class="btn btn-primary btn-sm" type="submit">Generate key</button>
+        <button class="btn btn-sm" type="button" onclick="document.getElementById('ck-add').style.display='none'">Cancel</button>
+      </div>
+    </form>
+  </div>
+
+  <div id="ck-new" style="display:none;margin-bottom:16px" class="card">
+    <div style="margin-bottom:8px"><strong>Copy these now</strong>
+      <span class="muted" style="font-size:11px">— the secret is hashed on save and cannot be shown again</span></div>
+    <div class="form-group"><label class="form-label">API URL</label>
+      <input class="form-input mono" id="ck-url" readonly onclick="this.select()"></div>
+    <div class="form-group"><label class="form-label">WebSocket URL</label>
+      <input class="form-input mono" id="ck-ws" readonly onclick="this.select()"></div>
+    <div class="form-group"><label class="form-label">API key (secret)</label>
+      <input class="form-input mono" id="ck-secret" readonly onclick="this.select()"></div>
+    <button class="btn btn-sm" onclick="document.getElementById('ck-new').style.display='none'">Done</button>
+  </div>
+
+  <table class="tbl">
+    <thead><tr><th>Status</th><th>Name</th><th>Attached to</th><th>API URL</th><th>Last used</th><th>Live</th><th></th></tr></thead>
+    <tbody id="ck-body"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody>
+  </table>
+</div>
+
 <div id="panel-sipdomains" class="settings-panel">
   <div class="sec-head">
     <span class="sec-title">Allowed SIP sources</span>
@@ -655,6 +703,7 @@ function switchTab(tab) {
   if (tab === 'security') loadSecurity();
   if (tab === 'users') loadUsers();
   if (tab === 'migration') loadMigration();
+  if (tab === 'campaignapi') loadCampaignKeys();
   if (tab === 'maintenance') { loadSettings(); loadStorage(); }
   if (tab === 'backup') { loadDbStats(); loadBackups(); loadSettings(); }
   if (tab === 'system') loadSystem();
@@ -1536,6 +1585,110 @@ function showSipDomainAdd() {
   document.getElementById('sd-name').value = '';
   document.getElementById('sd-desc').value = '';
   document.getElementById('sd-add').style.display = 'block';
+}
+
+// ============================================================
+// Campaign API keys
+// ============================================================
+async function loadCampaignKeys() {
+  try {
+    var d = await (await fetch(API + '/campaign-keys', { headers: H })).json();
+    var body = document.getElementById('ck-body');
+    if (!d.success || !d.keys.length) {
+      body.innerHTML = '<tr><td colspan="7" class="empty">No campaign API keys yet</td></tr>';
+      document.getElementById('ck-summary').textContent = '';
+    } else {
+      document.getElementById('ck-summary').textContent = ' — ' + d.keys.length + ' key(s)';
+      body.innerHTML = d.keys.map(function(k) {
+        return '<tr>' +
+          '<td><span class="pill ' + (k.enabled ? 'p-ok' : 'p-gray') + '">' + (k.enabled ? 'active' : 'disabled') + '</span></td>' +
+          '<td><strong>' + esc(k.name) + '</strong></td>' +
+          '<td><span class="pill p-info" style="font-size:10px">' + esc(k.target.type) + '</span> ' +
+            '<span class="mono">' + esc(k.target.number) + '</span></td>' +
+          '<td class="mono" style="font-size:11px">' + esc(k.apiUrl) + '</td>' +
+          '<td style="font-size:11px">' + (k.lastUsedAt
+              ? new Date(k.lastUsedAt).toLocaleString() + (k.lastTransport ? ' · ' + esc(k.lastTransport) : '')
+              : '<span class="muted">never</span>') + '</td>' +
+          '<td><span class="pill p-gray" id="ck-live-' + esc(k.keyId) + '">—</span></td>' +
+          '<td style="text-align:right;white-space:nowrap">' +
+            '<button class="btn btn-sm" onclick="toggleCampaignKey(\'' + esc(k.keyId) + '\',' + !k.enabled + ')">' +
+              (k.enabled ? 'Disable' : 'Enable') + '</button> ' +
+            '<button class="btn btn-sm btn-danger" onclick="revokeCampaignKey(\'' + esc(k.keyId) + '\',\'' + esc(k.name) + '\')">Revoke</button>' +
+          '</td></tr>';
+      }).join('');
+      // Show the admin the same numbers the dialler is reading.
+      d.keys.forEach(function(k) { previewCampaignKey(k.keyId); });
+    }
+    loadCampaignTargets();
+  } catch (e) { console.error('campaign keys', e); }
+}
+
+async function previewCampaignKey(keyId) {
+  try {
+    var d = await (await fetch(API + '/campaign-keys/' + keyId + '/preview', { headers: H })).json();
+    var el = document.getElementById('ck-live-' + keyId);
+    if (!el || !d.success) return;
+    var s = d.snapshot;
+    if (s.error) { el.textContent = 'target gone'; el.className = 'pill p-err'; return; }
+    el.textContent = s.available + '/' + s.total + ' free';
+    el.className = 'pill ' + (s.available > 0 ? 'p-ok' : 'p-gray');
+  } catch (e) {}
+}
+
+async function loadCampaignTargets() {
+  try {
+    var d = await (await fetch(API + '/campaign-keys/targets', { headers: H })).json();
+    var sel = document.getElementById('ck-target');
+    if (!d.success) return;
+    sel.innerHTML = '<option value="">Select a ring group, queue or extension…</option>' +
+      d.targets.map(function(t) {
+        var label = t.type === 'extension'
+          ? 'Extension ' + t.number + ' — ' + t.name
+          : (t.type === 'queue' ? 'Queue ' : 'Ring group ') + t.number + ' — ' + t.name +
+            ' (' + t.size + ' agent' + (t.size === 1 ? '' : 's') + ')';
+        return '<option value="' + esc(t.type) + ':' + esc(t.number) + '">' + esc(label) + '</option>';
+      }).join('');
+  } catch (e) {}
+}
+
+async function createCampaignKey(e) {
+  e.preventDefault();
+  var pick = (document.getElementById('ck-target').value || '').split(':');
+  if (pick.length !== 2) return alert('Pick what this key should read.');
+  try {
+    var r = await fetch(API + '/campaign-keys', {
+      method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, H),
+      body: JSON.stringify({ name: document.getElementById('ck-name').value.trim(),
+                             targetType: pick[0], targetNumber: pick[1] })
+    });
+    var d = await r.json();
+    if (!d.success) return alert(d.error || 'Could not create the key');
+    document.getElementById('ck-url').value = d.apiUrl;
+    document.getElementById('ck-ws').value = d.wsUrl;
+    document.getElementById('ck-secret').value = d.secret;
+    document.getElementById('ck-new').style.display = 'block';
+    document.getElementById('ck-add').style.display = 'none';
+    document.getElementById('ck-name').value = '';
+    loadCampaignKeys();
+  } catch (err) { alert('Could not create the key: ' + err.message); }
+}
+
+async function toggleCampaignKey(keyId, enabled) {
+  try {
+    await fetch(API + '/campaign-keys/' + keyId, {
+      method: 'PUT', headers: Object.assign({ 'Content-Type': 'application/json' }, H),
+      body: JSON.stringify({ enabled: enabled })
+    });
+    loadCampaignKeys();
+  } catch (e) { alert('Failed: ' + e.message); }
+}
+
+async function revokeCampaignKey(keyId, name) {
+  if (!confirm('Revoke "' + name + '"?\n\nAny dialler using it stops reading agent availability immediately.')) return;
+  try {
+    await fetch(API + '/campaign-keys/' + keyId, { method: 'DELETE', headers: H });
+    loadCampaignKeys();
+  } catch (e) { alert('Failed: ' + e.message); }
 }
 
 async function loadSipDomains() {

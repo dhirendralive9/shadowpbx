@@ -407,6 +407,15 @@ async function main() {
   const webcallRoutes = require('./routes/webcall');
   app.use('/api', webcallRoutes.createWebcallPublicRouter({ guestManager }));
 
+  // Campaign agent API (PUBLIC — an outside dialler authenticates with a
+  // bearer token scoped to one ring group, queue or extension, so it must be
+  // mounted before the session auth below)
+  // The settings UI previews what a campaign key reports; it reaches presence
+  // through the app rather than another global.
+  app.set('presenceHandler', presenceHandler);
+  const campaignApi = require('./routes/campaign-api');
+  app.use('/api', campaignApi.createCampaignPublicRouter({ presenceHandler }));
+
   // Appointment webhook routes (PUBLIC — Twilio/SignalWire must reach these)
   appointmentHandler.registerWebhookRoutes(app);
 
@@ -520,6 +529,10 @@ async function main() {
   const { Server: SocketIO } = require('socket.io');
   const server = http.createServer(app);
   const io = new SocketIO(server);
+
+  // Live agent availability for outside diallers. Claims one explicit upgrade
+  // path and ignores every other, so socket.io keeps /socket.io to itself.
+  const campaignWs = campaignApi.attachCampaignWs({ server, presenceHandler });
 
   // Socket.IO real-time updates
   const { ChatMessage } = require('./models');
@@ -801,6 +814,9 @@ async function main() {
   }, 300000); // every 5 minutes
 
   server.listen(apiPort, () => logger.info(`API + GUI on port ${apiPort}`));
+  if (campaignWs) {
+    logger.info('Campaign agent API: REST + WebSocket at /api/campaign/agents/:keyId');
+  }
 
   // ─── Startup Self-Check ───
   setTimeout(async () => {

@@ -25,6 +25,125 @@ function formatBytes(bytes) {
 
 function registerSettingsRoutes(router) {
   const { SystemSettings, CDR } = require('../models');
+  const { CampaignApiKey, RingGroup, Queue, Extension } = require('../models');
+  const campaignAgents = require('../services/campaign-agents');
+
+  // ============================================================
+  // Campaign API keys — credentials for an outside dialler
+  //
+  // Each key is scoped to one ring group, queue or extension. The secret is
+  // shown once, at creation, and only its SHA-256 hash is stored: there is no
+  // "show key" later because there is nothing left to show.
+  // ============================================================
+  router.get('/campaign-keys', async (req, res) => {
+    try {
+      const keys = await CampaignApiKey.find().sort({ createdAt: -1 }).lean();
+      const base = `${req.protocol}://${req.get('host')}`;
+      res.json({
+        success: true,
+        keys: keys.map((k) => ({
+          keyId: k.keyId,
+          name: k.name,
+          target: k.target,
+          enabled: k.enabled,
+          createdAt: k.createdAt,
+          lastUsedAt: k.lastUsedAt || null,
+          lastUsedIp: k.lastUsedIp || '',
+          lastTransport: k.lastTransport || '',
+          apiUrl: `${base}/api/campaign/agents/${k.keyId}`,
+          wsUrl: `${base.replace(/^http/, 'ws')}/api/campaign/agents/${k.keyId}/ws`,
+        })),
+      });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // Targets the admin can attach a key to, for the dropdown.
+  router.get('/campaign-keys/targets', async (req, res) => {
+    try {
+      const [groups, queues, exts] = await Promise.all([
+        RingGroup.find({ enabled: true }).select('number name members').lean(),
+        Queue.find({ enabled: true }).select('number name agents').lean(),
+        Extension.find({ enabled: true }).select('extension name').lean(),
+      ]);
+      res.json({
+        success: true,
+        targets: [
+          ...groups.map((g) => ({ type: 'ringgroup', number: g.number, name: g.name,
+            size: (g.members || []).length })),
+          ...queues.map((q) => ({ type: 'queue', number: q.number, name: q.name,
+            size: (q.agents || []).length })),
+          ...exts.map((e) => ({ type: 'extension', number: e.extension, name: e.name, size: 1 })),
+        ],
+      });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.post('/campaign-keys', async (req, res) => {
+    try {
+      const name = String(req.body.name || '').trim();
+      const type = String(req.body.targetType || '').trim();
+      const number = String(req.body.targetNumber || '').trim();
+      if (!name) return res.status(400).json({ success: false, error: 'Name is required' });
+      if (!['ringgroup', 'queue', 'extension'].includes(type)) {
+        return res.status(400).json({ success: false, error: 'Pick a ring group, queue or extension' });
+      }
+      // Refuse a key pointing at something that does not exist: the dialler
+      // would read zero agents forever and look like a network problem.
+      const { missing } = await campaignAgents.membersOf({ type, number });
+      if (missing) return res.status(400).json({ success: false, error: `No ${type} numbered ${number}` });
+
+      const secret = campaignAgents.newSecret();
+      const keyId = campaignAgents.newKeyId();
+      await CampaignApiKey.create({
+        keyId,
+        keyHash: campaignAgents.sha256(secret),
+        name,
+        target: { type, number },
+        createdBy: (req.session && req.session.username) || '',
+      });
+      const base = `${req.protocol}://${req.get('host')}`;
+      logger.info(`Campaign API key created: ${name} -> ${type}/${number}`);
+      res.json({
+        success: true,
+        // The only time the secret exists in readable form.
+        secret,
+        keyId,
+        apiUrl: `${base}/api/campaign/agents/${keyId}`,
+        wsUrl: `${base.replace(/^http/, 'ws')}/api/campaign/agents/${keyId}/ws`,
+      });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.put('/campaign-keys/:keyId', async (req, res) => {
+    try {
+      const k = await CampaignApiKey.findOneAndUpdate(
+        { keyId: req.params.keyId },
+        { $set: { enabled: !!req.body.enabled } }, { new: true });
+      if (!k) return res.status(404).json({ success: false, error: 'No such key' });
+      res.json({ success: true, enabled: k.enabled });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  router.delete('/campaign-keys/:keyId', async (req, res) => {
+    try {
+      const r = await CampaignApiKey.deleteOne({ keyId: req.params.keyId });
+      if (!r.deletedCount) return res.status(404).json({ success: false, error: 'No such key' });
+      logger.info(`Campaign API key revoked: ${req.params.keyId}`);
+      res.json({ success: true });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
+  // What that key currently reports — so an admin can see the same numbers the
+  // dialler sees, without having the secret.
+  router.get('/campaign-keys/:keyId/preview', async (req, res) => {
+    try {
+      const k = await CampaignApiKey.findOne({ keyId: req.params.keyId }).lean();
+      if (!k) return res.status(404).json({ success: false, error: 'No such key' });
+      const presence = req.app.get('presenceHandler') || null;
+      res.json({ success: true, snapshot: await campaignAgents.snapshot(k.target, presence) });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+  });
+
 
   // ============================================================
   // GET /api/settings — get all system settings

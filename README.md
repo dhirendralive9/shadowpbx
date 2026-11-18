@@ -400,6 +400,7 @@ proxies `/ws` to it.
 |-----|--------|
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | **Day-to-day running**: logs, live tailing, restarts, updates, troubleshooting, fresh-install checklist |
 | [docs/SECURITY.md](docs/SECURITY.md) | API authentication and per-role authorization model |
+| [docs/CAMPAIGN-API.md](docs/CAMPAIGN-API.md) | **Campaign Agent API**: live agent availability for outside diallers — REST + WebSocket, scoped keys |
 | [docs/BUGFIXES-P1.md](docs/BUGFIXES-P1.md) | Feature-code routing, overnight time conditions, path-traversal hardening |
 | [docs/TOLL-FRAUD-FIX.md](docs/TOLL-FRAUD-FIX.md) | Anti-spoofing + outbound destination guard (toll-fraud protection) |
 | [docs/SECURITY-REVIEW-FIXES.md](docs/SECURITY-REVIEW-FIXES.md) | Trunk-trust hardening, idempotent teardown, recording fixes, login hardening |
